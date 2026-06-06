@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.mpy
+
+.DS_Store
+Thumbs.db
+desktop.ini
+*.textClipping
+*.bak_*
+
+.venv/
+venv/
+env/
+
+*.log
