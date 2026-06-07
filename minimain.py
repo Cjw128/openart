@@ -1,5 +1,5 @@
 # ======================================================================
-# OpenART Plus Ç°ÖÃÉãÏñÍ· - ¶àÑÕÉ«É³°üÊ¶±ğ³ÌĞò
+# OpenART Mini å‰ç½®æ‘„åƒå¤´ - å¤šé¢œè‰²ç›®æ ‡è¯†åˆ«ç¨‹åº
 # ======================================================================
 
 
@@ -8,29 +8,29 @@ from machine import UART
 from yellow_crossline_ipm import create_crossline_ipm
 
 # ======================================================================
-# Ä£Ê½Ñ¡Ôñ
+# æ¨¡å¼é€‰æ‹©
 # ======================================================================
-CALIBRATION_MODE = False   # True = ÄæÍ¸ÊÓ±ê¶¨Ä£Ê½, False = Õı³£Ê¶±ğ
-BIRDVIEW_DEBUG = False     # True = IDEÏÔÊ¾Äñî«Í¼(Âı), False = ¸ßËÙ¼ì²â
+CALIBRATION_MODE = False   # True = é€†é€è§†æ ‡å®šæ¨¡å¼, False = æ­£å¸¸è¯†åˆ«
+BIRDVIEW_DEBUG = False     # True = IDEæ˜¾ç¤ºé¸Ÿç°å›¾(æ…¢), False = é«˜é€Ÿæ£€æµ‹
 IS_SLAVE_CAR = True       # False=master OpenART(UART12), True=slave OpenART(UART2)
 SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
 
 # ======================================================================
-# Ó²¼ş³õÊ¼»¯
+# ç¡¬ä»¶åˆå§‹åŒ–
 # ======================================================================
 
-# ÉãÏñÍ·³õÊ¼»¯
+# æ‘„åƒå¤´åˆå§‹åŒ–
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)      # 320x240
 sensor.set_framerate(60)
 
-# ------ °×Æ½ºâÅäÖÃ ------
-# True = Ê¹ÓÃ¹Ì¶¨ÔöÒæ(±ÈÈüÓÃ), False = ×Ô¶¯ÊÕÁ²ºóËø¶¨(µ÷ÊÔÓÃ)
+# ç™½å¹³è¡¡é…ç½®
+# True = ä½¿ç”¨å›ºå®šå¢ç›Š(æ¯”èµ›ç”¨), False = è‡ªåŠ¨æ”¶æ•›åé”å®š(è°ƒè¯•ç”¨)
 WB_FIXED = True
-# ¹Ì¶¨°×Æ½ºâÔöÒæ (R_db, G_db, B_db)
-# ÓÃ wb_calibrate.py ÔÚ±ÈÈüµÆ¹âÏÂ±ê¶¨ºóÌîÈë
-WB_GAINS = (101.00, 64.00, 97.00) # Ğ´ËÀ°×Æ½ºâ
+# å›ºå®šç™½å¹³è¡¡å¢ç›Š (R_db, G_db, B_db)
+# ç”¨ wb_calibrate.py åœ¨æ¯”èµ›ç¯å…‰ä¸‹æ ‡å®šåå¡«å…¥
+WB_GAINS = (101.00, 64.00, 97.00) # å†™æ­»ç™½å¹³è¡¡
 
 if WB_FIXED:
     sensor.set_auto_whitebal(False, rgb_gain_db=WB_GAINS)
@@ -41,7 +41,7 @@ else:
     sensor.set_auto_whitebal(False)
 
 # ======================================================================
-# Æô¶¯Ê±ÁÁ¶ÈĞ£×¼
+# å¯åŠ¨äº®åº¦æ ¡å‡†
 # ======================================================================
 
 TARGET_BRIGHTNESS = 45.0
@@ -85,7 +85,7 @@ def calculate_exposure_adjustment(current_brightness, target_brightness, current
 
 def calibrate_brightness_startup(target=TARGET_BRIGHTNESS, samples=5, roi=None, max_iterations=3):
     print("=" * 40)
-    print(">>> Æô¶¯ÁÁ¶ÈĞ£×¼ <<<")
+    print(">>> å¯åŠ¨äº®åº¦æ ¡å‡† <<<")
 
     sensor.set_auto_exposure(False, exposure_us=EXPOSURE_INIT)
     sensor.set_auto_gain(False, gain_db=GAIN_INIT)
@@ -104,43 +104,43 @@ def calibrate_brightness_startup(target=TARGET_BRIGHTNESS, samples=5, roi=None, 
         time.sleep_ms(CALIBRATION_SETTLE_MS)
 
     if WB_FIXED:
-        print("°×Æ½ºâ: Ê¹ÓÃ¹Ì¶¨ÔöÒæ {}".format(WB_GAINS))
+        print("ç™½å¹³è¡¡: ä½¿ç”¨å›ºå®šå¢ç›Š {}".format(WB_GAINS))
     else:
-        print("µÈ´ı°×Æ½ºâÊÕÁ²...")
+        print("ç­‰å¾…ç™½å¹³è¡¡æ”¶æ•›...")
         sensor.skip_frames(time=1500)
         sensor.set_auto_whitebal(False)
-        print("°×Æ½ºâÒÑËø¶¨")
+        print("ç™½å¹³è¡¡å·²é”å®š")
     print("=" * 40)
     return exposure
 
-# ¹Ì¶¨ÆØ¹â
+# å›ºå®šæ›å…‰
 sensor.set_auto_exposure(False, exposure_us=1200)
 sensor.set_auto_gain(False, gain_db=0)
 
-# ´®¿Ú³õÊ¼»¯ (UART12, 115200²¨ÌØÂÊ)
+# ä¸²å£åˆå§‹åŒ–ï¼ŒMini ä»è½¦ä½¿ç”¨ UART2ï¼Œä¸»è½¦ä½¿ç”¨ UART12
 if IS_SLAVE_CAR:
     uart = UART(2, baudrate=115200)
 else:
     uart = UART(12, baudrate=115200)
 
-# Ö¡ÂÊ¼ÆÊ±Æ÷
+# å¸§ç‡è®¡æ—¶å™¨
 clock = time.clock()
 
 # ======================================================================
-# ÑÕÉ«ãĞÖµÅäÖÃ (LABÉ«²Ê¿Õ¼ä) - ¶àÑÕÉ«¶¯Ì¬¼ì²â
+# é¢œè‰²é˜ˆå€¼é…ç½® (LABè‰²å½©ç©ºé—´) - å¤šé¢œè‰²åŠ¨æ€æ£€æµ‹
 # ======================================================================
-# LAB¸ñÊ½: (L_min, L_max, A_min, A_max, B_min, B_max)
-# L: ÁÁ¶È (0-100)
-# A: ºìÂÌÖá (ÕıÖµ=ºìÉ«, ¸ºÖµ=ÂÌÉ«)
-# B: »ÆÀ¶Öá (ÕıÖµ=»ÆÉ«, ¸ºÖµ=À¶É«)
+# LABæ ¼å¼: (L_min, L_max, A_min, A_max, B_min, B_max)
+# L: äº®åº¦ (0-100)
+# A: çº¢ç»¿è½´ (æ­£å€¼=çº¢è‰², è´Ÿå€¼=ç»¿è‰²)
+# B: é»„è“è½´ (æ­£å€¼=é»„è‰², è´Ÿå€¼=è“è‰²)
 
-# ËùÓĞÖ§³ÖµÄÑÕÉ«ãĞÖµ
+# æ‰€æœ‰æ”¯æŒçš„é¢œè‰²é˜ˆå€¼
 all_color_thresholds = [
-    (23, 96, -49, 4, -53, -30),    # ÑÕÉ«1: µ­À¶É«É³°ü
-    (10, 80, 22, 122, -17, 93),    # ÑÕÉ«2: ºìÉ«É³°ü
-    (50, 100, -128, -27, 20, 127), # ÑÕÉ«3: ÍøÇò(Ç³ÂÌ/Ó«¹â»ÆÂÌ)
-    (20, 55, 30, -1, 50, 0),       # ÑÕÉ«4: ×ØÉ«Ì©µÏĞÜ ¡û ĞèÊµ¼Ê±ê¶¨!
-    (53, 100, -10, 11, -11, 8)    # ÑÕÉ«5: °×É«Ì©µÏĞÜ ¡û ĞèÊµ¼Ê±ê¶¨!
+    (23, 96, -49, 4, -53, -30),    # é¢œè‰²1: æ·¡è“è‰²æ²™åŒ…
+    (10, 80, 22, 122, -17, 93),    # é¢œè‰²2: çº¢è‰²æ²™åŒ…
+    (50, 100, -128, -27, 20, 127), # é¢œè‰²3: ç½‘çƒ(æµ…ç»¿/è§å…‰é»„ç»¿)
+    (20, 55, 30, -1, 50, 0),       # é¢œè‰²4: æ£•è‰²æ³°è¿ªç†Š â† éœ€å®é™…æ ‡å®š!
+    (53, 100, -10, 11, -11, 8)    # é¢œè‰²5: ç™½è‰²æ³°è¿ªç†Š â† éœ€å®é™…æ ‡å®š!
 ]
 
 COLOR_LOST_FRAMES = 5
@@ -148,28 +148,28 @@ COLOR_TRACK_MARGIN = 45
 COLOR_MIN_PIXELS = 100
 COLOR_MIN_AREA = 100
 
-# À¶É«±³¾°²¼ãĞÖµ (Ê¾Àı£¬ĞèÊµ²â)
-# ÖØµã¿´ B Í¨µÀ£¬À¶É«Í¨³£ÔÚ -20 ÒÔÏÂ
+# è“è‰²èƒŒæ™¯å¸ƒé˜ˆå€¼ (ç¤ºä¾‹ï¼Œéœ€å®æµ‹)
+# é‡ç‚¹çœ‹ B é€šé“ï¼Œè“è‰²é€šå¸¸åœ¨ -20 ä»¥ä¸‹
 # BLUE_GROUND_THRESHOLD = (10, 50, -20, 50, -77, -25)
 
-# ¶¯Ì¬ÇĞ»»µÄ¼ì²âãĞÖµ
-red_thresholds = all_color_thresholds  # ³õÊ¼Ê¹ÓÃËùÓĞÑÕÉ«
-active_threshold = None                 # µ±Ç°Ëø¶¨µÄµ¥Ò»ÑÕÉ«ãĞÖµ
-active_color_id = 0                     # µ±Ç°Ëø¶¨µÄÑÕÉ«ID (1=ÑÕÉ«1, 2=ÑÕÉ«2, 0=Î´Ëø¶¨)
+# åŠ¨æ€åˆ‡æ¢çš„æ£€æµ‹é˜ˆå€¼
+red_thresholds = all_color_thresholds  # åˆå§‹ä½¿ç”¨æ‰€æœ‰é¢œè‰²
+active_threshold = None                 # å½“å‰é”å®šçš„å•ä¸€é¢œè‰²é˜ˆå€¼
+active_color_id = 0                     # å½“å‰é”å®šçš„é¢œè‰²ID (1=é¢œè‰²1, 2=é¢œè‰²2, 0=æœªé”å®š)
 
-# Ä¿±ê¶ªÊ§¼ì²â
-lost_frame_count = 0                    # Á¬Ğø¶ªÊ§Ä¿±êµÄÖ¡Êı
-MAX_LOST_FRAMES = 30                    # ×î´óÔÊĞí¶ªÊ§Ö¡Êı (30Ö¡ ¡Ö 0.5Ãë)
-stable_detect_count = 0                 # ÎÈ¶¨¼ì²â¼ÆÊı£¨ÓÃÓÚÑÕÉ«Ëø¶¨£©
-STABLE_FRAMES_REQUIRED = 5              # ĞèÒªÁ¬Ğø¼ì²â5Ö¡²ÅËø¶¨ÑÕÉ«
+# ç›®æ ‡ä¸¢å¤±æ£€æµ‹
+lost_frame_count = 0                    # è¿ç»­ä¸¢å¤±ç›®æ ‡çš„å¸§æ•°
+MAX_LOST_FRAMES = 30                    # æœ€å¤§å…è®¸ä¸¢å¤±å¸§æ•° (30å¸§ â‰ˆ 0.5ç§’)
+stable_detect_count = 0                 # ç¨³å®šæ£€æµ‹è®¡æ•°ï¼ˆç”¨äºé¢œè‰²é”å®šï¼‰
+STABLE_FRAMES_REQUIRED = 5              # éœ€è¦è¿ç»­æ£€æµ‹5å¸§æ‰é”å®šé¢œè‰²
 
 # ======================================================================
-# Ê¶±ğ²ÎÊıÅäÖÃ
+# è¯†åˆ«å‚æ•°é…ç½®
 # ======================================================================
-MIN_PIXELS = 30        # ÏñËØãĞÖµ - Ğ¡ÓÚ´ËÖµ»á¹ıÂËµô
-MIN_AREA = 80          # Ãæ»ıãĞÖµ - É«¿éÍâ½Ó¾ØĞÎµÄÃæ»ıĞ¡ÓÚ´ËÖµ»á±»¹ıÂË
-MERGE_DISTANCE = False      # ½«Í¬Ò»Î»ÖÃµÄãĞÖµºÏ²¢
-DETECT_Y_MIN = 8           # Ö÷¼ì²âÇøÓòÆğÊ¼Y£ººöÂÔ y < 8 µÄÇøÓò
+MIN_PIXELS = 30        # åƒç´ é˜ˆå€¼ - å°äºæ­¤å€¼ä¼šè¿‡æ»¤æ‰
+MIN_AREA = 80          # é¢ç§¯é˜ˆå€¼ - è‰²å—å¤–æ¥çŸ©å½¢çš„é¢ç§¯å°äºæ­¤å€¼ä¼šè¢«è¿‡æ»¤
+MERGE_DISTANCE = False      # å°†åŒä¸€ä½ç½®çš„é˜ˆå€¼åˆå¹¶
+DETECT_Y_MIN = 8           # ä¸»æ£€æµ‹åŒºåŸŸèµ·å§‹Yï¼šå¿½ç•¥ y < 8 çš„åŒºåŸŸ
 DETECT_ROI = (0, DETECT_Y_MIN, 320, 240 - DETECT_Y_MIN)
 
 # ======================================================================
@@ -203,12 +203,12 @@ TRACK_MIN_ROI_H = 16
 TRACK_MAX_JUMP_PX = 90
 TRACK_AREA_CHANGE_MAX_PERCENT = 60
 
-# ³¤¿í±È¹ıÂË (·ÀÖ¹ÎóÅĞ)
-ENABLE_ASPECT_RATIO_FILTER = True   # ÊÇ·ñÆôÓÃ³¤¿í±È¹ıÂË
-MIN_ASPECT_RATIO = 0.3            # ×îĞ¡³¤¿í±È (¿í/¸ß)
-MAX_ASPECT_RATIO = 2.3             # ×î´ó³¤¿í±È (¿í/¸ß)
+# é•¿å®½æ¯”è¿‡æ»¤ (é˜²æ­¢è¯¯åˆ¤)
+ENABLE_ASPECT_RATIO_FILTER = True   # æ˜¯å¦å¯ç”¨é•¿å®½æ¯”è¿‡æ»¤
+MIN_ASPECT_RATIO = 0.3            # æœ€å°é•¿å®½æ¯” (å®½/é«˜)
+MAX_ASPECT_RATIO = 2.3             # æœ€å¤§é•¿å®½æ¯” (å®½/é«˜)
 
-MIN_ROUNDNESS = 0.4                 # ¡¾ĞÂÔö¡¿Ô²¶ÈãĞÖµ¡£ÍøÇò½Ó½ü1£¬É³°üÔ¼0.6£¬»ÆÏß¼«µÍ(<0.2)
+MIN_ROUNDNESS = 0.4                 # ã€æ–°å¢ã€‘åœ†åº¦é˜ˆå€¼ã€‚ç½‘çƒæ¥è¿‘1ï¼Œæ²™åŒ…çº¦0.6ï¼Œé»„çº¿æä½(<0.2)
 MIN_DENSITY = 0.6
 
 last_target_cx = -1
@@ -230,16 +230,16 @@ _cmd_rx_buf = bytearray()
 crossline_angle_enabled = False
 crossline_angle_result = None
 # ======================================================================
-# »ÆÏß¼ì²â²ÎÊı
+# é»„çº¿æ£€æµ‹å‚æ•°
 # ======================================================================
-yellow_threshold = [(56, 100, -56, -2, 41, 127)]    # »ÆÉ«ãĞÖµ (LAB)
-YELLOW_ROI_LEFT = (0, 60, 40, 120)      # ×ó²àÊúÌõ¼ì²âÇøÓò
-YELLOW_ROI_RIGHT = (280, 60, 40, 120)    # ÓÒ²àÊúÌõ¼ì²âÇøÓò
-YELLOW_DETECT_INTERVAL = 5              # Ã¿5Ö¡¼ì²âÒ»´Î»ÆÏß
-YELLOW_ENTER_PIXELS = 10                # Ê×´Î¿´µ½»ÆÏßĞèÒª´ïµ½µÄÏñËØãĞÖµ
-YELLOW_KEEP_PIXELS = 7                  # ÒÑ¿´µ½»ÆÏßºóµÄ±£³ÖãĞÖµ£¬·ÀÖ¹±ßÔµÉÁË¸
+yellow_threshold = [(56, 100, -56, -2, 41, 127)]    # é»„è‰²é˜ˆå€¼ (LAB)
+YELLOW_ROI_LEFT = (0, 80, 70, 160)       # å·¦ä¾§å‚ç›´æ¡ï¼Œå»¶ä¼¸åˆ°å›¾åƒåº•éƒ¨
+YELLOW_ROI_RIGHT = (250, 80, 70, 160)    # å³ä¾§å‚ç›´æ¡ï¼Œå»¶ä¼¸åˆ°å›¾åƒåº•éƒ¨
+YELLOW_DETECT_INTERVAL = 5              # æ¯5å¸§æ£€æµ‹ä¸€æ¬¡é»„çº¿
+YELLOW_ENTER_PIXELS = 10                # é¦–æ¬¡çœ‹åˆ°é»„çº¿éœ€è¦è¾¾åˆ°çš„åƒç´ é˜ˆå€¼
+YELLOW_KEEP_PIXELS = 3                  # å·²çœ‹åˆ°é»„çº¿åçš„ä¿æŒé˜ˆå€¼ï¼Œé˜²æ­¢è¾¹ç¼˜é—ªçƒ
 
-# »ÆÏß±ß½ç×´Ì¬
+# é»„çº¿è¾¹ç•ŒçŠ¶æ€
 # ======================================================================
 # Orange obstacle detection
 # ======================================================================
@@ -256,25 +256,27 @@ OBSTACLE_MOVE_LEFT = 0x02
 OBSTACLE_BLOCKED = 0x03
 OBSTACLE_TARGET_OVERLAP_PIXELS = 200
 
-yellow_boundary_y = 0       # »ÆÏß±ß½çµÄÍ¼Ïñ×ø±ê Y (ÏñËØ)
-yellow_boundary_left_y = 0  # ×ó²à»ÆÏßÖĞĞÄ Y
-yellow_boundary_right_y = 0 # ÓÒ²à»ÆÏßÖĞĞÄ Y
-yellow_boundary_wy = 0.0    # »ÆÏß±ß½çµÄÊÀ½ç×ø±ê Y (cm)
-yellow_detected = False     # »ÆÏßÊÇ·ñ±»¼ì²âµ½
-yellow_tracking = False      # »ÆÏßÖÍ»Ø×´Ì¬£ºÊ×´Î¿´µ½ºóÊ¹ÓÃ±£³ÖãĞÖµ
-yellow_lost_count = 0       # »ÆÏßÁ¬Ğø¶ªÊ§Ö¡Êı
-YELLOW_LOST_THRESHOLD = 5   # Á¬Ğø¶ªÊ§NÖ¡²ÅÅĞ¶¨¹ıÏß
-yellow_seen_in_carry = False # ½øÈë°áÔËÄ£Ê½ºóÊÇ·ñÒÑÈ·ÈÏ¿´µ½¹ı»ÆÏß£¨·ÀµôÍ·Îó´¥·¢£©
+yellow_boundary_y = 0       # é»„çº¿è¾¹ç•Œçš„å›¾åƒåæ ‡ Y (åƒç´ )
+yellow_boundary_left_y = 0  # å·¦ä¾§é»„çº¿ä¸­å¿ƒ Y
+yellow_boundary_right_y = 0 # å³ä¾§é»„çº¿ä¸­å¿ƒ Y
+yellow_boundary_wy = 0.0    # é»„çº¿è¾¹ç•Œçš„ä¸–ç•Œåæ ‡ Y (cm)
+yellow_detected = False     # é»„çº¿æ˜¯å¦è¢«æ£€æµ‹åˆ°
+yellow_tracking = False      # é»„çº¿æ»å›çŠ¶æ€ï¼šé¦–æ¬¡çœ‹åˆ°åä½¿ç”¨ä¿æŒé˜ˆå€¼
+yellow_lost_count = 0       # é»„çº¿è¿ç»­ä¸¢å¤±å¸§æ•°
+YELLOW_LOST_THRESHOLD = 5   # è¿ç»­ä¸¢å¤±Nå¸§æ‰åˆ¤å®šè¿‡çº¿
+yellow_seen_in_carry = False # è¿›å…¥æ¬è¿æ¨¡å¼åæ˜¯å¦å·²ç¡®è®¤çœ‹åˆ°è¿‡é»„çº¿ï¼ˆé˜²æ‰å¤´è¯¯è§¦å‘ï¼‰
+YELLOW_RECENT_DETECTIONS = 5 # æœ€è¿‘é»„çº¿æ£€æµ‹é”å­˜çª—å£ï¼Œç”¨äºæ¬è¿ç¬é—´é®æŒ¡
+yellow_recent_count = 0
 
-# ×´Ì¬»ú
+# çŠ¶æ€æœº
 MODE_SEARCH = 0
 MODE_CARRY = 1
 MODE_WAIT_TURN = 2
 MODE_RETURN = 3
 
-openart_mode = MODE_SEARCH   # 0=Ñ°ÕÒ¶Ô×¼, 1=°áÔËÖĞ, 2=µÈ´ıÓÒ×ªÍê³É, 3=»Ø¿â
+openart_mode = MODE_SEARCH   # 0=å¯»æ‰¾å¯¹å‡†, 1=æ¬è¿ä¸­, 2=ç­‰å¾…å³è½¬å®Œæˆ, 3=å›åº“
 
-# Î»ÖÃ¹ØÏµ³£Á¿
+# ä½ç½®å…³ç³»å¸¸é‡
 POS_NO_BOUNDARY = 0x00
 POS_RIGHT_SIDE  = 0x01
 POS_CROSSED     = 0x02
@@ -295,7 +297,7 @@ beacon_last_box = None
 beacon_lost_frames = 0
 
 def code_to_color_id(code):
-    """½«find_blobs·µ»ØµÄÎ»ÑÚÂëcodeÓ³ÉäÎªÑÕÉ«ID(1/2/3...)¡£"""
+    """å°†find_blobsè¿”å›çš„ä½æ©ç codeæ˜ å°„ä¸ºé¢œè‰²ID(1/2/3...)ã€‚"""
     if code <= 0:
         return 0
     for i in range(len(all_color_thresholds)):
@@ -304,7 +306,7 @@ def code_to_color_id(code):
     return 0
 
 def reset_target_tracking_state():
-    """Çå¿ÕÉÏÒ»ÂÖ°áÔËÁôÏÂµÄÄ¿±êËø¶¨×´Ì¬£¬ÏÂÒ»Ö¡´ÓÈ«¾ÖÖØĞÂÕÒ³¡µØÖĞÑëÄ¿±ê¡£"""
+    """æ¸…ç©ºä¸Šä¸€è½®æ¬è¿ç•™ä¸‹çš„ç›®æ ‡é”å®šçŠ¶æ€ï¼Œä¸‹ä¸€å¸§ä»å…¨å±€é‡æ–°æ‰¾åœºåœ°ä¸­å¤®ç›®æ ‡ã€‚"""
     global active_threshold, active_color_id, red_thresholds
     global lost_frame_count, stable_detect_count
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
@@ -330,14 +332,16 @@ def reset_target_tracking_state():
     color_lost_count = 0
 
 def reset_yellow_state():
-    """Çå¿Õ»ÆÏß×´Ì¬£¬±ÜÃâĞÂÒ»ÂÖÈÎÎñ¼Ì³ĞÉÏÒ»ÂÖµÄ±ß½ç/ÖÍ»Ø¡£"""
+    """æ¸…ç©ºé»„çº¿çŠ¶æ€ï¼Œé¿å…æ–°ä¸€è½®ä»»åŠ¡ç»§æ‰¿ä¸Šä¸€è½®çš„è¾¹ç•Œ/æ»å›ã€‚"""
     global yellow_lost_count, yellow_seen_in_carry, yellow_tracking, yellow_detected
+    global yellow_recent_count
     global yellow_boundary_y, yellow_boundary_left_y, yellow_boundary_right_y, yellow_boundary_wy
 
     yellow_lost_count = 0
     yellow_seen_in_carry = False
     yellow_tracking = False
     yellow_detected = False
+    yellow_recent_count = 0
     yellow_boundary_y = 0
     yellow_boundary_left_y = 0
     yellow_boundary_right_y = 0
@@ -349,7 +353,7 @@ def reset_beacon_state():
     beacon_lost_frames = 0
 
 # ======================================================================
-# µ¥Ó¦ĞÔ±ä»» (ÄæÍ¸ÊÓ)
+# å•åº”æ€§å˜æ¢ (é€†é€è§†)
 # ======================================================================
 
 def clamp_int(v, lo, hi):
@@ -701,29 +705,29 @@ def world_to_pixel(X, Y, H):
     return (int(u), int(v))
 
 # ======================================================================
-# ÄæÍ¸ÊÓ±ê¶¨Êı¾İ (ĞèÒª¸ù¾İÊµ¼ÊÉãÏñÍ·Î»ÖÃ±ê¶¨!)
+# é€†é€è§†æ ‡å®šæ•°æ®ï¼Œéœ€è¦æ ¹æ®å®é™…æ‘„åƒå¤´ä½ç½®æ ‡å®š
 # ======================================================================
 CALIB_PIXEL = [
-    [85, 240],     # µã0: ½ü´¦×ó²à
-    [267, 240],    # µã1: ½ü´¦ÓÒ²à
-    [125, 129],    # µã2: Ô¶´¦×ó²à
-    [219, 129],    # µã3: Ô¶´¦ÓÒ²à
+    [85, 240],     # ç‚¹0: è¿‘å¤„å·¦ä¾§
+    [267, 240],    # ç‚¹1: è¿‘å¤„å³ä¾§
+    [125, 129],    # ç‚¹2: è¿œå¤„å·¦ä¾§
+    [219, 129],    # ç‚¹3: è¿œå¤„å³ä¾§
 ]
 CALIB_WORLD = [
-    [-7.5, 7.5],   # µã0: ×ó7.5cm, Ç°·½7.5cm
-    [7.5, 7.5],    # µã1: ÓÒ7.5cm, Ç°·½7.5cm
-    [-7.5, 22.5],  # µã2: ×ó7.5cm, Ç°·½22.5cm
-    [7.5, 22.5],   # µã3: ÓÒ7.5cm, Ç°·½22.5cm
+    [-7.5, 7.5],   # ç‚¹0: å·¦7.5cm, å‰æ–¹7.5cm
+    [7.5, 7.5],    # ç‚¹1: å³7.5cm, å‰æ–¹7.5cm
+    [-7.5, 22.5],  # ç‚¹2: å·¦7.5cm, å‰æ–¹22.5cm
+    [7.5, 22.5],   # ç‚¹3: å³7.5cm, å‰æ–¹22.5cm
 ]
 
-# ¼ÆËãµ¥Ó¦ĞÔ¾ØÕó
+# è®¡ç®—å•åº”æ€§çŸ©é˜µ
 H_pix2world = calc_homography(CALIB_PIXEL, CALIB_WORLD)
 H_world2pix = calc_homography(CALIB_WORLD, CALIB_PIXEL)
 
 if H_pix2world:
-    print("[OK] Ç°ÊÓÄæÍ¸ÊÓ¾ØÕó¼ÆËã³É¹¦")
+    print("[OK] å‰è§†é€†é€è§†çŸ©é˜µè®¡ç®—æˆåŠŸ")
 else:
-    print("[ERROR] Ç°ÊÓÄæÍ¸ÊÓ¾ØÕó¼ÆËãÊ§°Ü!")
+    print("[ERROR] å‰è§†é€†é€è§†çŸ©é˜µè®¡ç®—å¤±è´¥!")
 
 crossline_ipm = create_crossline_ipm(uart_enabled=False)
 crossline_ipm.set_debug_draw(False)
@@ -731,40 +735,40 @@ crossline_ipm.H_pix2world = H_pix2world
 crossline_ipm.yellow_threshold = yellow_threshold
 
 # ======================================================================
-# Äñî«Í¼ÅäÖÃ (µ÷ÊÔÓÃ, BIRDVIEW_DEBUG=TrueÊ±ÉúĞ§)
+# é¸Ÿç°å›¾é…ç½® (è°ƒè¯•ç”¨, BIRDVIEW_DEBUG=Trueæ—¶ç”Ÿæ•ˆ)
 # ======================================================================
 BIRD_W = 80
 BIRD_H = 80
-X_MIN = -15.0    # ×ó 15cm
-X_MAX = 15.0     # ÓÒ 15cm
-Y_MIN = 5.0      # ½ü 5cm
-Y_MAX = 35.0     # Ô¶ 35cm
+X_MIN = -15.0    # å·¦ 15cm
+X_MAX = 15.0     # å³ 15cm
+Y_MIN = 5.0      # è¿‘ 5cm
+Y_MAX = 35.0     # è¿œ 35cm
 SX = (X_MAX - X_MIN) / BIRD_W
 SY = (Y_MAX - Y_MIN) / BIRD_H
 
 # ======================================================================
-# ¾àÀë¹ÀËã²ÎÊı (»ùÓÚÄ¿±ê¿í¶È)
+# è·ç¦»ä¼°ç®—å‚æ•° (åŸºäºç›®æ ‡å®½åº¦)
 # ======================================================================
-# ¾àÀë¹ÀËãÔ­Àí: distance = (real_width * focal_length) / pixel_width
+# è·ç¦»ä¼°ç®—åŸç†: distance = (real_width * focal_length) / pixel_width
 
-# Ä¿±êÊµ¼Ê¿í¶È (mm)
+# ç›®æ ‡å®é™…å®½åº¦ (mm)
 TARGET_REAL_WIDTH = [
-    70.0,   # ÑÕÉ«1: É³°ü 7cm
-    70.0,   # ÑÕÉ«2: É³°ü 7cm
-    67.0,   # ÑÕÉ«3: ÍøÇò Ö±¾¶Ô¼6.7cm
-    120.0,  # ÑÕÉ«4: ×ØÉ«Ì©µÏĞÜ Ìå¿íÔ¼12cm
-    120.0   # ÑÕÉ«5: °×É«Ì©µÏĞÜ Ìå¿íÔ¼12cm
+    70.0,   # é¢œè‰²1: æ²™åŒ… 7cm
+    70.0,   # é¢œè‰²2: æ²™åŒ… 7cm
+    67.0,   # é¢œè‰²3: ç½‘çƒ ç›´å¾„çº¦6.7cm
+    120.0,  # é¢œè‰²4: æ£•è‰²æ³°è¿ªç†Š ä½“å®½çº¦12cm
+    120.0   # é¢œè‰²5: ç™½è‰²æ³°è¿ªç†Š ä½“å®½çº¦12cm
 ]
 
-# Ïà»ú±ê¶¨²ÎÊı (Í¨¹ıÊµ¼Ê²âÊÔµÃµ½)
-FOCAL_LENGTH = 167.5  # ½¹¾à²ÎÊı£¬ĞèÒª¸ù¾İÊµ¼Ê±ê¶¨µ÷Õû
+# ç›¸æœºæ ‡å®šå‚æ•° (é€šè¿‡å®é™…æµ‹è¯•å¾—åˆ°)
+FOCAL_LENGTH = 167.5  # ç„¦è·å‚æ•°ï¼Œéœ€è¦æ ¹æ®å®é™…æ ‡å®šè°ƒæ•´
 
-# Ä¿±ê¾àÀë·¶Î§ÏŞÖÆ (µ¥Î»: mm)
-MIN_DETECT_DISTANCE = 50    # ×îĞ¡¼ì²â¾àÀë 50mm
-MAX_DETECT_DISTANCE = 2000  # ×î´ó¼ì²â¾àÀë 2000mm
+# ç›®æ ‡è·ç¦»èŒƒå›´é™åˆ¶ (å•ä½: mm)
+MIN_DETECT_DISTANCE = 50    # æœ€å°æ£€æµ‹è·ç¦» 50mm
+MAX_DETECT_DISTANCE = 2000  # æœ€å¤§æ£€æµ‹è·ç¦» 2000mm
 
 def calculate_distance(pixel_width, color_id=1):
-    """¸ù¾İÄ¿±êÏñËØ¿í¶ÈºÍÑÕÉ«ID¼ÆËã¾àÀë"""
+    """æ ¹æ®ç›®æ ‡åƒç´ å®½åº¦å’Œé¢œè‰²IDè®¡ç®—è·ç¦»"""
     if pixel_width <= 0:
         return -1
     real_width = TARGET_REAL_WIDTH[color_id - 1] if 1 <= color_id <= len(TARGET_REAL_WIDTH) else 70.0
@@ -824,63 +828,63 @@ def box_hits_obstacle(box, obstacle_blobs):
     return False
 
 # ======================================================================
-# ´®¿ÚÍ¨ĞÅĞ­Òé
+# ä¸²å£é€šä¿¡åè®®
 # ======================================================================
-# Êı¾İ°ü¸ñÊ½ (14×Ö½Ú):
-# [0-1]   Ö¡Í·: 0xAA 0x55
-# [2]     ÑÕÉ«ID (0=ÎŞÄ¿±ê, 1=ÑÕÉ«1(µ­À¶), 2=ÑÕÉ«2(ºìÉ«), 3+=Ô¤Áô)
-# [3-4]   ÖĞĞÄX×ø±ê (0-320, µÍ×Ö½Ú+¸ß×Ö½Ú)
-# [5-6]   ÖĞĞÄY×ø±ê (0-240, µÍ×Ö½Ú+¸ß×Ö½Ú)
-# [7-8]   ¿í¶È (0-320, µÍ×Ö½Ú+¸ß×Ö½Ú)
-# [9-10]  ¸ß¶È (0-240, µÍ×Ö½Ú+¸ß×Ö½Ú)
-# [11-12] ¾àÀë (mm, µÍ×Ö½Ú+¸ß×Ö½Ú)
-# [13]    Ğ£ÑéºÍ (ËùÓĞÊı¾İ×Ö½ÚµÄºÍ & 0xFF)
+# æ•°æ®åŒ…æ ¼å¼ (14å­—èŠ‚):
+# [0-1]   å¸§å¤´: 0xAA 0x55
+# [2]     é¢œè‰²ID (0=æ— ç›®æ ‡, 1=é¢œè‰²1(æ·¡è“), 2=é¢œè‰²2(çº¢è‰²), 3+=é¢„ç•™)
+# [3-4]   ä¸­å¿ƒXåæ ‡ (0-320, ä½å­—èŠ‚+é«˜å­—èŠ‚)
+# [5-6]   ä¸­å¿ƒYåæ ‡ (0-240, ä½å­—èŠ‚+é«˜å­—èŠ‚)
+# [7-8]   å®½åº¦ (0-320, ä½å­—èŠ‚+é«˜å­—èŠ‚)
+# [9-10]  é«˜åº¦ (0-240, ä½å­—èŠ‚+é«˜å­—èŠ‚)
+# [11-12] è·ç¦» (mm, ä½å­—èŠ‚+é«˜å­—èŠ‚)
+# [13]    æ ¡éªŒå’Œ (æ‰€æœ‰æ•°æ®å­—èŠ‚çš„å’Œ & 0xFF)
 
 def calculate_checksum(data):
-    """¼ÆËãĞ£ÑéºÍ"""
+    """è®¡ç®—æ ¡éªŒå’Œ"""
     return sum(data) & 0xFF
 
 def send_target_data(color_id, cx, cy, w, h, distance):
     """
-    ·¢ËÍÉ³°ü×ø±êÊı¾İµ½RT1021Ö÷¿Ø
+    å‘é€æ²™åŒ…åæ ‡æ•°æ®åˆ°RT1021ä¸»æ§
 
     Args:
-        color_id: ÑÕÉ«ID (1=ÑÕÉ«1, 2=ÑÕÉ«2, ...)
-        cx: ÖĞĞÄX×ø±ê (0-320)
-        cy: ÖĞĞÄY×ø±ê (0-240)
-        w: ¿í¶È
-        h: ¸ß¶È
-        distance: ¾àÀë (mm)
+        color_id: é¢œè‰²ID (1=é¢œè‰²1, 2=é¢œè‰²2, ...)
+        cx: ä¸­å¿ƒXåæ ‡ (0-320)
+        cy: ä¸­å¿ƒYåæ ‡ (0-240)
+        w: å®½åº¦
+        h: é«˜åº¦
+        distance: è·ç¦» (mm)
     """
     data = bytearray(14)
 
-    # Ö¡Í·
+    # å¸§å¤´
     data[0] = 0xAA
     data[1] = 0x55
 
-    # ÑÕÉ«ID
+    # é¢œè‰²ID
     data[2] = color_id
 
-    # ×ø±êºÍ³ß´ç (µÍ×Ö½ÚÔÚÇ°£¬¸ß×Ö½ÚÔÚºó)
-    data[3] = cx & 0xFF          # XµÍ×Ö½Ú
-    data[4] = (cx >> 8) & 0xFF   # X¸ß×Ö½Ú
-    data[5] = cy & 0xFF          # YµÍ×Ö½Ú
-    data[6] = (cy >> 8) & 0xFF   # Y¸ß×Ö½Ú
-    data[7] = w & 0xFF           # ¿í¶ÈµÍ×Ö½Ú
-    data[8] = (w >> 8) & 0xFF    # ¿í¶È¸ß×Ö½Ú
-    data[9] = h & 0xFF           # ¸ß¶ÈµÍ×Ö½Ú
-    data[10] = (h >> 8) & 0xFF   # ¸ß¶È¸ß×Ö½Ú
+    # åæ ‡å’Œå°ºå¯¸ (ä½å­—èŠ‚åœ¨å‰ï¼Œé«˜å­—èŠ‚åœ¨å)
+    data[3] = cx & 0xFF          # Xä½å­—èŠ‚
+    data[4] = (cx >> 8) & 0xFF   # Xé«˜å­—èŠ‚
+    data[5] = cy & 0xFF          # Yä½å­—èŠ‚
+    data[6] = (cy >> 8) & 0xFF   # Yé«˜å­—èŠ‚
+    data[7] = w & 0xFF           # å®½åº¦ä½å­—èŠ‚
+    data[8] = (w >> 8) & 0xFF    # å®½åº¦é«˜å­—èŠ‚
+    data[9] = h & 0xFF           # é«˜åº¦ä½å­—èŠ‚
+    data[10] = (h >> 8) & 0xFF   # é«˜åº¦é«˜å­—èŠ‚
 
-    # ¾àÀë (µÍ×Ö½ÚÔÚÇ°£¬¸ß×Ö½ÚÔÚºó)
+    # è·ç¦» (ä½å­—èŠ‚åœ¨å‰ï¼Œé«˜å­—èŠ‚åœ¨å)
     if distance < 0:
         distance = 0
-    data[11] = distance & 0xFF          # ¾àÀëµÍ×Ö½Ú
-    data[12] = (distance >> 8) & 0xFF   # ¾àÀë¸ß×Ö½Ú
+    data[11] = distance & 0xFF          # è·ç¦»ä½å­—èŠ‚
+    data[12] = (distance >> 8) & 0xFF   # è·ç¦»é«˜å­—èŠ‚
 
-    # Ğ£ÑéºÍ (Êı¾İ×Ö½Ú2-12µÄºÍ)
+    # æ ¡éªŒå’Œ (æ•°æ®å­—èŠ‚2-12çš„å’Œ)
     data[13] = calculate_checksum(data[2:13])
 
-    # µ÷ÊÔ£º´òÓ¡·¢ËÍµÄÊı¾İ°ü£¨Ã¿ÃëÒ»´Î£©
+    # è°ƒè¯•ï¼šæ‰“å°å‘é€çš„æ•°æ®åŒ…ï¼ˆæ¯ç§’ä¸€æ¬¡ï¼‰
     global last_print_time
     now = time.ticks_ms()
     if time.ticks_diff(now, last_print_time) >= 1000:
@@ -892,27 +896,27 @@ def send_target_data(color_id, cx, cy, w, h, distance):
         print("]")
         last_print_time = now
 
-    # ·¢ËÍ
+    # å‘é€
     uart.write(data)
 
 def send_no_target():
-    """·¢ËÍÎŞÄ¿±êÊı¾İ"""
+    """å‘é€æ— ç›®æ ‡æ•°æ®"""
     data = bytearray(14)
     data[0] = 0xAA
     data[1] = 0x55
-    # data[2-12] Ä¬ÈÏ¶¼ÊÇ0 (ÑÕÉ«ID=0±íÊ¾ÎŞÄ¿±ê)
-    data[13] = 0  # È«0µÄĞ£ÑéºÍÒ²ÊÇ0
+    # data[2-12] é»˜è®¤éƒ½æ˜¯0 (é¢œè‰²ID=0è¡¨ç¤ºæ— ç›®æ ‡)
+    data[13] = 0  # å…¨0çš„æ ¡éªŒå’Œä¹Ÿæ˜¯0
     uart.write(data)
 
 # ======================================================================
-# ´®¿ÚÍ¨ĞÅĞ­Òé (10×Ö½ÚÊÀ½ç×ø±ê°æ)
+# ä¸²å£é€šä¿¡åè®® (10å­—èŠ‚ä¸–ç•Œåæ ‡ç‰ˆ)
 # ======================================================================
-# [0-1]  Ö¡Í·: 0xAA 0x55
-# [2]    ÑÕÉ«ID (0=ÎŞÄ¿±ê, 1=µ­À¶, 2=ºìÉ«, 3=ÍøÇò, 4=×ØĞÜ, 5=°×ĞÜ)
-# [3-4]  ÊÀ½çX (mm*10, int16, Ğ¡¶ËĞò, ×óÕıÓÒ¸º)
-# [5-6]  ÊÀ½çY (mm*10, int16, Ğ¡¶ËĞò, Ç°Õı)
-# [7-8]  ÏñËØ¿í¶È (uint16, Ğ¡¶ËĞò)
-# [9]    Ğ£ÑéºÍ (data[2:9]Ö®ºÍ & 0xFF)
+# [0-1]  å¸§å¤´: 0xAA 0x55
+# [2]    é¢œè‰²ID (0=æ— ç›®æ ‡, 1=æ·¡è“, 2=çº¢è‰², 3=ç½‘çƒ, 4=æ£•ç†Š, 5=ç™½ç†Š)
+# [3-4]  ä¸–ç•ŒX (mm*10, int16, å°ç«¯åº, å·¦æ­£å³è´Ÿ)
+# [5-6]  ä¸–ç•ŒY (mm*10, int16, å°ç«¯åº, å‰æ­£)
+# [7-8]  åƒç´ å®½åº¦ (uint16, å°ç«¯åº)
+# [9]    æ ¡éªŒå’Œ (data[2:9]ä¹‹å’Œ & 0xFF)
 
 def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00, obstacle_flag=0x00,
                     angle_flag=0x00, angle_cdeg=0):
@@ -920,15 +924,15 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     # [12] angle_flag: bit0=angle enabled, bit1=angle valid
     # [13-14] crossline angle, int16 little-endian, degree * 100
     # [15] checksum = sum(data[2:15]) & 0xFF
-    """·¢ËÍÊÀ½ç×ø±êÊı¾İ°ü (12×Ö½Ú, º¬»ÆÏßĞÅÏ¢)
-    [0-1]  Ö¡Í· 0xAA 0x55
-    [2]    ÑÕÉ«ID
-    [3-4]  ÊÀ½çX (mm, int16, Ğ¡¶ËĞò)
-    [5-6]  ÊÀ½çY (mm, int16, Ğ¡¶ËĞò)
-    [7-8]  ÏñËØ¿í¶È (uint16)
-    [9]    »ÆÏß±êÖ¾ 0x00/0x01
-    [10]   Î»ÖÃ¹ØÏµ 0x00/0x01/0x02
-    [11]   Ğ£ÑéºÍ (data[2:11])
+    """å‘é€ä¸–ç•Œåæ ‡æ•°æ®åŒ… (12å­—èŠ‚, å«é»„çº¿ä¿¡æ¯)
+    [0-1]  å¸§å¤´ 0xAA 0x55
+    [2]    é¢œè‰²ID
+    [3-4]  ä¸–ç•ŒX (mm, int16, å°ç«¯åº)
+    [5-6]  ä¸–ç•ŒY (mm, int16, å°ç«¯åº)
+    [7-8]  åƒç´ å®½åº¦ (uint16)
+    [9]    é»„çº¿æ ‡å¿— 0x00/0x01
+    [10]   ä½ç½®å…³ç³» 0x00/0x01/0x02
+    [11]   æ ¡éªŒå’Œ (data[2:11])
     """
     data = bytearray(16)
     data[0] = 0xAA
@@ -952,7 +956,7 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
 def send_world_no_target(yellow_flag=False, pos_flag=0x00, obstacle_flag=0x00,
                          angle_flag=0x00, angle_cdeg=0):
     # Same 16-byte packet layout as send_world_data(), with color_id/position fields zero.
-    """·¢ËÍÎŞÄ¿±êÊı¾İ°ü (12×Ö½Ú)"""
+    """å‘é€æ— ç›®æ ‡æ•°æ®åŒ… (12å­—èŠ‚)"""
     data = bytearray(16)
     data[0] = 0xAA
     data[1] = 0x55
@@ -1017,13 +1021,14 @@ def process_return_beacon_frame(img):
             last_print_time = now
 
 def receive_command_from_host():
-    """½ÓÊÕRT1021Ö÷»úÃüÁî"""
+    """æ¥æ”¶RT1021ä¸»æœºå‘½ä»¤"""
     global active_threshold, active_color_id, red_thresholds
     global lost_frame_count, stable_detect_count, openart_mode
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
     global target_color_id
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
     global _cmd_rx_buf, crossline_angle_enabled, crossline_angle_result
+    global yellow_seen_in_carry, yellow_tracking, yellow_detected, yellow_recent_count
 
     if uart.any():
         chunk = uart.read(uart.any())
@@ -1083,9 +1088,13 @@ def receive_command_from_host():
                 track_force_global_next = False
                 track_local_miss_count = 0
                 print(">>> Color lock command: ID={} <<<".format(param))
-        elif command == 0x01:  # ½øÈë°áÔËÄ£Ê½
+        elif command == 0x01:  # è¿›å…¥æ¬è¿æ¨¡å¼
+            carry_had_seen_yellow = yellow_detected or yellow_recent_count > 0
             openart_mode = MODE_CARRY
             reset_yellow_state()
+            if carry_had_seen_yellow:
+                yellow_seen_in_carry = True
+                yellow_tracking = True
             reset_beacon_state()
             print(">>> Enter carry mode <<<")
         elif command == 0x04:  # SET_CROSSLINE_ANGLE_ENABLE
@@ -1101,7 +1110,7 @@ def receive_command_from_host():
             crossline_angle_enabled = False
             crossline_angle_result = None
             print(">>> Enter return mode <<<")
-        elif command == 0x00 or command == 0x02:  # »Øµ½Ñ°ÕÒÄ£Ê½/ÓÒ×ªÍê³É/ÖØÖÃ
+        elif command == 0x00 or command == 0x02:  # å›åˆ°å¯»æ‰¾æ¨¡å¼/å³è½¬å®Œæˆ/é‡ç½®
             openart_mode = MODE_SEARCH
             reset_target_tracking_state()
             reset_yellow_state()
@@ -1133,6 +1142,52 @@ def current_pos_flag():
             return POS_RIGHT_SIDE
     return POS_NO_BOUNDARY
 
+def update_yellow_detection(img, frame_count):
+    global yellow_tracking, yellow_detected
+    global yellow_recent_count
+    global yellow_boundary_y, yellow_boundary_left_y, yellow_boundary_right_y, yellow_boundary_wy
+
+    if frame_count % YELLOW_DETECT_INTERVAL != 0:
+        return
+
+    yellow_pixels_threshold = YELLOW_KEEP_PIXELS if yellow_tracking else YELLOW_ENTER_PIXELS
+
+    yellow_blobs_left = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_LEFT,
+                                       pixels_threshold=yellow_pixels_threshold,
+                                       area_threshold=20, merge=True)
+    yellow_blobs_right = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_RIGHT,
+                                        pixels_threshold=yellow_pixels_threshold,
+                                        area_threshold=20, merge=True)
+
+    raw_yellow_seen = (yellow_blobs_left and yellow_blobs_right)
+
+    # é¦–æ¬¡è¿›å…¥ç”¨è¾ƒé«˜é˜ˆå€¼ï¼Œè·Ÿè¸ªä¸­ç”¨è¾ƒä½ä¿æŒé˜ˆå€¼ï¼Œå‡å°‘è¾¹ç¼˜é—ªçƒé€ æˆçš„ä¸¢å¤±ã€‚
+    if raw_yellow_seen:
+        yellow_tracking = True
+        yellow_detected = True
+        yellow_recent_count = YELLOW_RECENT_DETECTIONS
+    else:
+        yellow_detected = False
+        if yellow_recent_count > 0:
+            yellow_recent_count -= 1
+        if openart_mode == MODE_SEARCH:
+            yellow_tracking = False
+
+    if yellow_detected:
+        left_blob = max(yellow_blobs_left, key=lambda b: b.pixels())
+        right_blob = max(yellow_blobs_right, key=lambda b: b.pixels())
+        yellow_boundary_left_y = left_blob.cy()
+        yellow_boundary_right_y = right_blob.cy()
+        yellow_boundary_y = (yellow_boundary_left_y + yellow_boundary_right_y) // 2
+
+        if H_pix2world:
+            _, yellow_boundary_wy = pixel_to_world(160, yellow_boundary_y, H_pix2world)
+    elif openart_mode == MODE_SEARCH:
+        yellow_boundary_y = 0
+        yellow_boundary_left_y = 0
+        yellow_boundary_right_y = 0
+        yellow_boundary_wy = 0.0
+
 def get_crossline_angle_fields():
     if not crossline_angle_enabled or crossline_angle_result is None:
         return (0x00, 0)
@@ -1143,42 +1198,42 @@ def get_crossline_angle_fields():
     return (flag, crossline_angle_result["angle_cdeg"])
 
 # ======================================================================
-# Ö÷Ñ­»·
+# ä¸»å¾ªç¯
 # ======================================================================
 frame_count = 0
 detect_count = 0
 last_print_time = time.ticks_ms()
 
 print("=" * 50)
-print("OpenART Plus ¶àÑÕÉ«É³°üÊ¶±ğ³ÌĞò")
+print("OpenART Mini å¤šé¢œè‰²ç›®æ ‡è¯†åˆ«ç¨‹åº")
 print("=" * 50)
-print("·Ö±æÂÊ: 320x240 (QVGA)")
-print("Ö¡ÂÊ: 60 FPS")
-print("´®¿Ú: UART{}, 115200bps".format(2 if IS_SLAVE_CAR else 12))
-print("ÑÕÉ«Ä£Ê½: ³õÊ¼¶àÑÕÉ«¼ì²â -> Ëø¶¨µ¥ÑÕÉ«¸ú×Ù")
-print("Ö§³ÖÑÕÉ«: {} ÖÖ".format(len(all_color_thresholds)))
-print("ÑÕÉ«ãĞÖµ:", all_color_thresholds)
+print("åˆ†è¾¨ç‡: 320x240 (QVGA)")
+print("å¸§ç‡: 60 FPS")
+print("ä¸²å£: UART{}, 115200bps".format(2 if IS_SLAVE_CAR else 12))
+print("é¢œè‰²æ¨¡å¼: åˆå§‹å¤šé¢œè‰²æ£€æµ‹ -> é”å®šå•é¢œè‰²è·Ÿè¸ª")
+print("æ”¯æŒé¢œè‰²: {} ç§".format(len(all_color_thresholds)))
+print("é¢œè‰²é˜ˆå€¼:", all_color_thresholds)
 if ENABLE_ASPECT_RATIO_FILTER:
-    print("³¤¿í±È¹ıÂË: ÆôÓÃ ({:.1f} ~ {:.1f})".format(MIN_ASPECT_RATIO, MAX_ASPECT_RATIO))
+    print("é•¿å®½æ¯”è¿‡æ»¤: å¯ç”¨ ({:.1f} ~ {:.1f})".format(MIN_ASPECT_RATIO, MAX_ASPECT_RATIO))
 else:
-    print("³¤¿í±È¹ıÂË: ¹Ø±Õ")
+    print("é•¿å®½æ¯”è¿‡æ»¤: å…³é—­")
 print("-" * 50)
-print("»ÆÏß¼ì²â²ÎÊı:")
-print("  ãĞÖµ(LAB)  : {}".format(yellow_threshold))
-print("  ×ó²àROI    : {}".format(YELLOW_ROI_LEFT))
-print("  ÓÒ²àROI    : {}".format(YELLOW_ROI_RIGHT))
-print("  ¼ì²â¼ä¸ô   : Ã¿{}Ö¡".format(YELLOW_DETECT_INTERVAL))
-print("  ½øÈëÏñËØ   : {}".format(YELLOW_ENTER_PIXELS))
-print("  ±£³ÖÏñËØ   : {}".format(YELLOW_KEEP_PIXELS))
-print("  ¶ªÊ§ãĞÖµ   : Á¬Ğø{}Ö¡ÅĞ¶¨¹ıÏß".format(YELLOW_LOST_THRESHOLD))
-print("Ö÷»úÃüÁî: 0x00=ÖØÖÃ/Ñ°ÕÒ, 0x01=°áÔË, 0x02=ÓÒ×ªÍê³É, 0x03=ËøÉ«, 0x04=»ÆÏß½Ç¶È¿ª¹Ø(param 1/0), 0x05=»Ø¿â")
-print("»Ø´«Ğ­Òé: 16×Ö½Ú, [12]=½Ç¶È±êÖ¾, [13-14]=»ÆÏßÆ«ÒÆ½Ç¶È*100(int16 LE), [15]=checksum")
+print("é»„çº¿æ£€æµ‹å‚æ•°:")
+print("  é˜ˆå€¼(LAB)  : {}".format(yellow_threshold))
+print("  å·¦ä¾§ROI    : {}".format(YELLOW_ROI_LEFT))
+print("  å³ä¾§ROI    : {}".format(YELLOW_ROI_RIGHT))
+print("  æ£€æµ‹é—´éš”   : æ¯{}å¸§".format(YELLOW_DETECT_INTERVAL))
+print("  è¿›å…¥åƒç´    : {}".format(YELLOW_ENTER_PIXELS))
+print("  ä¿æŒåƒç´    : {}".format(YELLOW_KEEP_PIXELS))
+print("  ä¸¢å¤±é˜ˆå€¼   : è¿ç»­{}å¸§åˆ¤å®šè¿‡çº¿".format(YELLOW_LOST_THRESHOLD))
+print("ä¸»æœºå‘½ä»¤: 0x00=é‡ç½®/å¯»æ‰¾, 0x01=æ¬è¿, 0x02=å³è½¬å®Œæˆ, 0x03=é”è‰², 0x04=é»„çº¿è§’åº¦å¼€å…³(param 1/0), 0x05=å›åº“")
+print("å›ä¼ åè®®: 16å­—èŠ‚, [12]=è§’åº¦æ ‡å¿—, [13-14]=é»„çº¿åç§»è§’åº¦*100(int16 LE), [15]=checksum")
 print("=" * 50)
-print("¿ªÊ¼Ê¶±ğ...")
+print("å¼€å§‹è¯†åˆ«...")
 print()
 
 # ======================================================================
-# ±ê¶¨Ä£Ê½ (CALIBRATION_MODE=TrueÊ±ÔËĞĞ)
+# æ ‡å®šæ¨¡å¼ï¼ŒCALIBRATION_MODE=True æ—¶è¿è¡Œ
 # ======================================================================
 if CALIBRATION_MODE:
     _calib_pts = []
@@ -1190,14 +1245,14 @@ if CALIBRATION_MODE:
     _calib_t = time.ticks_ms()
 
     print("=" * 50)
-    print(">>> Ç°ÊÓÄæÍ¸ÊÓ±ê¶¨Ä£Ê½ <<<")
-    print("  [2]----[3]  Ô¶´¦")
+    print(">>> å‰è§†é€†é€è§†æ ‡å®šæ¨¡å¼ <<<")
+    print("  [2]----[3]  è¿œå¤„")
     print("   |      |")
-    print("  [0]----[1]  ½ü´¦")
+    print("  [0]----[1]  è¿‘å¤„")
     print("=" * 50)
-    print("Çë½«±ê¼ÇÎï·ÅÔÚÎ»ÖÃ 0 ...")
+    print("è¯·å°†æ ‡è®°ç‰©æ”¾åœ¨ä½ç½® 0 ...")
 
-    # ±ê¶¨ÓÃãĞÖµ£ºÖ»ÓÃÇ°2¸ö¿É¿¿µÄÉ³°üÑÕÉ«£¬±ÜÃâÌ©µÏĞÜµÈ¿íËÉãĞÖµ²úÉú¼ÙÉ«¿é
+    # æ ‡å®šç”¨é˜ˆå€¼ï¼šåªç”¨å‰2ä¸ªå¯é çš„æ²™åŒ…é¢œè‰²ï¼Œé¿å…æ³°è¿ªç†Šç­‰å®½æ¾é˜ˆå€¼äº§ç”Ÿå‡è‰²å—
     _calib_thresholds = all_color_thresholds[:2]
 
     while len(_calib_pts) < 4:
@@ -1249,7 +1304,7 @@ if CALIBRATION_MODE:
                         _calib_stable = 0
                         _calib_wait_remove = True
                         if len(_calib_pts) < 4:
-                            print("ÇëÄÃ×ß±ê¼ÇÎï£¬·Åµ½Î»ÖÃ {} ...".format(len(_calib_pts)))
+                            print("è¯·æ‹¿èµ°æ ‡è®°ç‰©ï¼Œæ”¾åˆ°ä½ç½® {} ...".format(len(_calib_pts)))
                 else:
                     _calib_stable = 0
                 _calib_last = [_bx, _by]
@@ -1259,18 +1314,18 @@ if CALIBRATION_MODE:
 
     print("")
     print("=" * 50)
-    print("±ê¶¨Íê³É! ¸´ÖÆÒÔÏÂÄÚÈİµ½ CALIB_PIXEL:")
+    print("æ ‡å®šå®Œæˆ! å¤åˆ¶ä»¥ä¸‹å†…å®¹åˆ° CALIB_PIXEL:")
     print("")
     print("CALIB_PIXEL = [")
     for _ci in range(4):
         _cp = _calib_pts[_ci]
-        print("    [{}, {}],     # µã{}".format(_cp[0], _cp[1], _ci))
+        print("    [{}, {}],     # ç‚¹{}".format(_cp[0], _cp[1], _ci))
     print("]")
     print("")
 
     _H_test = calc_homography(_calib_pts, CALIB_WORLD)
     if _H_test:
-        print("½øÈëÑéÖ¤Ä£Ê½: ÒÆ¶¯±ê¼ÇÎï²é¿´ÊÀ½ç×ø±ê")
+        print("è¿›å…¥éªŒè¯æ¨¡å¼: ç§»åŠ¨æ ‡è®°ç‰©æŸ¥çœ‹ä¸–ç•Œåæ ‡")
 
     while True:
         clock.tick()
@@ -1299,20 +1354,20 @@ if CALIBRATION_MODE:
                 _calib_t = _now
 
 # ======================================================================
-# Äñî«Í¼»º³åÇø (µ÷ÊÔÄ£Ê½)
+# é¸Ÿç°å›¾ç¼“å†²åŒºï¼ˆè°ƒè¯•æ¨¡å¼ï¼‰
 # ======================================================================
 if BIRDVIEW_DEBUG and not CALIBRATION_MODE:
     bird = sensor.alloc_extra_fb(BIRD_W, BIRD_H, sensor.RGB565)
 
 while True:
-    # Ö¡ÂÊ¼ÆËã
+    # å¸§ç‡è®¡ç®—
     clock.tick()
     frame_count += 1
 
-    # ½ÓÊÕÖ÷»úÃüÁî
+    # æ¥æ”¶ä¸»æœºå‘½ä»¤
     cmd, param = receive_command_from_host()
 
-    # »ñÈ¡Í¼Ïñ + ¾µÍ·»û±äĞ£Õı
+    # è·å–å›¾åƒ + é•œå¤´ç•¸å˜æ ¡æ­£
     img = sensor.snapshot().lens_corr(2)
     world_x = 0.0
     world_y = 0.0
@@ -1327,6 +1382,7 @@ while True:
     # ===== Dynamic cut update =====
     update_dynamic_cut(img, frame_count)
     obstacle_flag, obstacle_blobs = detect_obstacle(img)
+    update_yellow_detection(img, frame_count)
 
     # ===== Color blob detection / tracking =====
     best = None
@@ -1417,66 +1473,25 @@ while True:
         stable_detect_count = 0
         if lost_frame_count > MAX_LOST_FRAMES and (target_color_id > 0 or active_threshold is not None or color_track_active):
             reset_target_tracking_state()
-        send_world_no_target(yellow_detected, POS_NO_BOUNDARY, obstacle_flag, angle_flag, angle_cdeg)
+        send_world_no_target(yellow_detected, pos_flag, obstacle_flag, angle_flag, angle_cdeg)
         now = time.ticks_ms()
         if time.ticks_diff(now, last_print_time) >= 1000:
-            print('[{}] src=none cid=0 yflag={} obs={} fps={:.1f}'.format(frame_count, yellow_detected, obstacle_flag, clock.fps()))
+            print('[{}] src=none cid=0 yflag={} pos={} obs={} fps={:.1f}'.format(
+                frame_count, yellow_detected, pos_flag, obstacle_flag, clock.fps()))
             last_print_time = now
-    # ===== »ÆÏß¼ì²â (Ã¿NÖ¡Ö´ĞĞ£¬×óÓÒÊúÌõÉ¨Ãè) =====
-    if frame_count % YELLOW_DETECT_INTERVAL == 0:
-        yellow_pixels_threshold = YELLOW_KEEP_PIXELS if yellow_tracking else YELLOW_ENTER_PIXELS
-
-        yellow_blobs_left = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_LEFT,
-                                           pixels_threshold=yellow_pixels_threshold,
-                                           area_threshold=20, merge=True)
-        yellow_blobs_right = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_RIGHT,
-                                            pixels_threshold=yellow_pixels_threshold,
-                                            area_threshold=20, merge=True)
-
-        raw_yellow_seen = (yellow_blobs_left and yellow_blobs_right)
-
-        # Ê×´Î½øÈëÓÃ½Ï¸ßãĞÖµ£¬¿´µ½ºóÇĞµ½½ÏµÍ±£³ÖãĞÖµ£¬¼õÉÙ±ßÔµÏñËØÉÁË¸µ¼ÖÂµÄÎó¶ªÊ§¡£
-        if raw_yellow_seen:
-            yellow_tracking = True
-            yellow_detected = True
-        else:
-            yellow_detected = False
-            if openart_mode == MODE_SEARCH:
-                yellow_tracking = False
-
-        if yellow_detected:
-            if yellow_blobs_left and yellow_blobs_right:
-                left_blob = max(yellow_blobs_left, key=lambda b: b.pixels())
-                right_blob = max(yellow_blobs_right, key=lambda b: b.pixels())
-                left_cy = left_blob.cy()
-                right_cy = right_blob.cy()
-
-                yellow_boundary_left_y = left_cy
-                yellow_boundary_right_y = right_cy
-                yellow_boundary_y = (yellow_boundary_left_y + yellow_boundary_right_y) // 2
-
-                if H_pix2world:
-                    # ×ªÊÀ½ç×ø±ê£¨ÓÃÓÚµ÷ÊÔÏÔÊ¾£©
-                    _, yellow_boundary_wy = pixel_to_world(160, yellow_boundary_y, H_pix2world)
-        else:
-            # °áÔËÖĞ±£³Ö¾ÉÖµ£¬Ñ°ÕÒ½×¶Î²ÅÇåÁã
-            if openart_mode == MODE_SEARCH:
-                yellow_boundary_y = 0
-                yellow_boundary_left_y = 0
-                yellow_boundary_right_y = 0
-                yellow_boundary_wy = 0.0
+    # é»„çº¿æ£€æµ‹å·²æå‰æ›´æ–°ï¼Œä¿è¯ pos_flag ä½¿ç”¨å½“å‰å¸§çŠ¶æ€ã€‚
 
     # Draw dynamic cut line (debug)
     if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
         img.draw_line(CUT_LEFT_X, dynamic_cut_left_y, CUT_RIGHT_X, dynamic_cut_right_y,
                       color=(0, 180, 255), thickness=2)
 
-    # »æÖÆ»ÆÉ«±ß½çÎ»ÖÃÏß£¨ºáÏß£©
+    # ç»˜åˆ¶é»„è‰²è¾¹ç•Œä½ç½®çº¿ï¼ˆæ¨ªçº¿ï¼‰
     if yellow_boundary_y > 0:
         img.draw_line(0, yellow_boundary_y, 320, yellow_boundary_y,
                      color=(255, 255, 0), thickness=2)
 
-    # ===== Äñî«Í¼äÖÈ¾ (µ÷ÊÔÓÃ) =====
+    # ===== é¸Ÿç°å›¾æ¸²æŸ“ (è°ƒè¯•ç”¨) =====
     if BIRDVIEW_DEBUG:
         bird.clear()
         for _by in range(BIRD_H):
