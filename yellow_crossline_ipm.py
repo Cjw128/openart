@@ -156,7 +156,7 @@ class YellowCrosslineIPM:
 
         sensor.set_auto_whitebal(False, rgb_gain_db=(101.00, 64.00, 97.00))
         sensor.skip_frames(time=500)
-        sensor.set_auto_exposure(False, exposure_us=1600)
+        sensor.set_auto_exposure(False, exposure_us=1200)
         sensor.set_auto_gain(False, gain_db=0)
         sensor.skip_frames(time=300)
 
@@ -178,8 +178,9 @@ class YellowCrosslineIPM:
         best_blob = None
         best_score = -100000
         for blob in blobs:
-            # Prefer the lowest visible yellow segment in each vertical scan strip.
-            score = blob.cy() * 1000 + blob.pixels()
+            # Prefer the yellow segment whose bottom edge is closest to the car.
+            bottom_y = blob.y() + blob.h() - 1
+            score = bottom_y * 1000 + blob.pixels()
             if score > best_score:
                 best_score = score
                 best_blob = blob
@@ -204,8 +205,9 @@ class YellowCrosslineIPM:
             if blob is None:
                 continue
 
+            # Use the nearest edge of the yellow band as the stable angle baseline.
             px = blob.cx()
-            py = blob.cy()
+            py = blob.y() + blob.h() - 1
             wx, wy = pixel_to_world(px, py, self.H_pix2world)
             points.append({
                 "px": px,

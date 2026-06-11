@@ -6,30 +6,52 @@
 
 | 文件 | 设备 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus | Plus 入口，选择 Plus 配置并启动共享运行逻辑 |
-| `minimain.py` | OpenART Mini | Mini 入口，选择 Mini 配置并启动共享运行逻辑 |
-| `openart_config.py` | OpenART Plus / Mini | Plus/Mini 配置，包括串口角色、阈值、模型路径和标定点 |
-| `openart_app.py` | OpenART Plus / Mini | 共享视觉运行逻辑，包括初始化、检测流水线、主机命令、标定模式和主循环 |
-| `openart_detectors.py` | OpenART Plus / Mini | 动态裁剪、颜色目标、白熊模型、障碍和回库信标检测 |
-| `openart_trackers.py` | OpenART Plus / Mini | 目标、黄线过线、回库信标的运行状态类 |
-| `openart_calibration.py` | OpenART Plus / Mini | 逆透视标定模式 |
-| `openart_camera.py` | OpenART Plus / Mini | 启动亮度校准等相机辅助工具 |
-| `openart_uart.py` | OpenART Plus / Mini | RT1021 串口协议封包与发送 |
-| `openart_math.py` | OpenART Plus / Mini | 几何、单应性、IoU 和坐标转换工具 |
-| `yellow_crossline_ipm.py` | OpenART Plus / 测试 | 黄线横线与逆透视工具 |
+| `main.py` | OpenART Plus | Plus 单文件正式脱机主程序 |
+| `minimain.py` | OpenART Mini | Mini / 从车单文件正式脱机主程序 |
+| `yellow_crossline_ipm.py` | OpenART Plus / Mini / 测试 | 黄线横线角度与逆透视工具，被 `main.py` / `minimain.py` 导入 |
 | `openart_test_3class.py` | 测试 | 三分类视觉测试 |
 | `return_beacon_ipm_test.py` | 测试 | 回库信标逆透视测试 |
 | `test_model.py` | 测试 | 模型测试脚本 |
+| `main.py.bak_20260331` | 备份 | 本地历史单文件备份，不作为正式入口 |
 
 ## 结构说明
 
-- `main.py` 和 `minimain.py` 只作为入口文件使用，不再维护两套重复主逻辑。
-- Plus/Mini 的设备差异集中放在 `openart_config.py`；除非硬件行为确实不同，否则不要在入口文件中添加分支逻辑。
-- `openart_app.py` 是共享运行模块，导入后会启动 OpenMV/OpenART 主循环；检测、状态、串口、数学和标定细节拆在独立模块中。
-- 白熊检测在 Plus 和 Mini 上都使用 TFLite 模型。配置中保留 5 号颜色阈值用于协议和编号一致性；模型启用时运行时会跳过白熊 LAB 阈值匹配。
+- 当前比赛/脱机部署使用单文件结构，`main.py` 和 `minimain.py` 分别维护 Plus 与 Mini / 从车的完整主逻辑。
+- 多文件运行模块已移除，不再使用 `openart_app.py`、`openart_config.py`、`openart_detectors.py`、`openart_trackers.py`、`openart_uart.py`、`openart_math.py`、`openart_camera.py`、`openart_calibration.py`。
+- `yellow_crossline_ipm.py` 是当前唯一保留的运行辅助模块；部署正式程序时需要和 `main.py` / `minimain.py` 一起复制。
+- 白熊检测、颜色目标检测、黄线状态、回库信标、UART 协议、IPM 和主循环都在对应的单文件主程序内。
+- 多文件版本曾导致 TFLite 检测卡死，原因和维护约束见 v0.4.0 日志；不要把 v0.3.0 的模块化结构重新作为比赛部署结构。
 - 以后所有结构说明和迭代记录都写入 `README_ch.md` / `README_en.md`，并保持中英文同步更新。
 
 ## 更新日志
+
+### 2026-06-10 - v0.4.0 - 回退单文件运行结构并保留黄线角度修复
+
+范围：`main.py`, `minimain.py`, `yellow_crossline_ipm.py`, `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, `openart_calibration.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+
+- 将 Plus 正式运行入口回退为单文件 `main.py`，来源为 Git 初始单文件版本。
+- 将 Mini / 从车运行入口恢复为单文件 `minimain.py`，来源为 Mini 黄线同步后的历史版本。
+- 删除多文件运行模块：`openart_app.py`、`openart_config.py`、`openart_detectors.py`、`openart_trackers.py`、`openart_uart.py`、`openart_math.py`、`openart_camera.py`、`openart_calibration.py`。
+- 保留 `yellow_crossline_ipm.py`，因为单文件 `main.py` / `minimain.py` 仍会导入它用于黄线横线角度矫正。
+- 黄线角度采样改为每个竖向采样条取最靠近图像底部的黄色 blob 下边缘，减少黄线有宽度时中心点跳变造成的角度抖动。
+
+卡死排查结论：
+
+- 单独模型测试脚本可以运行，更换 SD 卡后多文件版本仍会卡死，因此问题主要不是 SD 卡或模型路径。
+- 多文件结构在 OpenART/MicroPython 上导入模块更多，增加 RAM 占用和内存碎片；TFLite 推理需要连续内存，内存不足或碎片化时可能表现为卡死而不是正常异常。
+- `lens_corr()`、`img.copy()`、调试绘图、黄线检测、障碍检测和模型推理叠加会加重问题，但最终有效修复是回退到单文件运行结构。
+
+维护约束：
+
+- 比赛/脱机部署不要再恢复多文件运行结构。
+- 如果以后必须模块化，必须先在板子上实测 `tf.load()` 和 `tf.detect()` 前后的剩余内存，并完整跑通模型检测主循环。
+- 后续模块化应优先考虑 `.mpy` 预编译、延迟导入、减少调试代码和显式内存日志。
+
+验证：
+
+- `python -m py_compile main.py minimain.py yellow_crossline_ipm.py test_model.py return_beacon_ipm_test.py` 已通过。
 
 ### 2026-06-08 - v0.3.0 - Plus/Mini 共享模块化重构
 
