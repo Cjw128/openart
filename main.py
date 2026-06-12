@@ -23,7 +23,7 @@ SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)      # 320x240
-sensor.set_framerate(30)
+sensor.set_framerate(60)
 
 # White balance configuration
 # True = fixed gains for competition, False = auto-converge then lock for tuning
@@ -114,7 +114,7 @@ sensor.set_auto_gain(False, gain_db=0)
 if IS_SLAVE_CAR:
     uart = UART(2, baudrate=115200)
 else:
-    uart = UART(12, baudrate=115200)
+    uart = UART(2, baudrate=115200)
 
 # FPS timer
 clock = time.clock()
@@ -141,7 +141,8 @@ COLOR_TRACK_MARGIN = 45
 COLOR_MIN_PIXELS = 100
 COLOR_MIN_AREA = 100
 
-# White bear is detected only by the TFLite model, not by LAB color threshold.
+# True: use TFLite model for white bear. False: detect all targets by LAB color blobs.
+USE_WHITE_BEAR_MODEL = False
 WHITE_BEAR_COLOR_ID = 5
 MODEL_PATH = '/sd/dataset_25000_blur_0.30.tflite'
 MODEL_INPUT_SCALE = 0.75
@@ -240,9 +241,10 @@ crossline_angle_result = None
 yellow_threshold = [(56, 100, -31, 127, 46, 116)]    # Yellow LAB threshold
 YELLOW_ROI_LEFT = (0, 80, 70, 160)       # Left vertical strip, extended to image bottom
 YELLOW_ROI_RIGHT = (250, 80, 70, 160)    # Right vertical strip, extended to image bottom
-YELLOW_DETECT_INTERVAL = 5              # Detect yellow line every N frames
+YELLOW_DETECT_INTERVAL = 3              # Detect yellow line every N frames
 YELLOW_ENTER_PIXELS = 10                # Pixel threshold for first yellow-line hit
 YELLOW_KEEP_PIXELS = 3                  # Lower hold threshold after line is seen
+YELLOW_SCAN_STRIP_H = 12                # Carry mode scans yellow ROI from bottom to top by strips
 # ======================================================================
 # Orange obstacle detection
 # ======================================================================
@@ -266,7 +268,7 @@ yellow_boundary_wy = 0.0    # Yellow boundary Y in world coordinates, cm
 yellow_detected = False     # Whether yellow line is visible
 yellow_tracking = False      # Hysteresis state after first yellow-line hit
 yellow_lost_count = 0       # Consecutive yellow-line lost counter
-YELLOW_LOST_THRESHOLD = 5   # Lost frames required before crossed-line decision
+YELLOW_LOST_THRESHOLD = 2   # Lost detections required before crossed-line decision
 yellow_seen_in_carry = False # Whether yellow line was confirmed in carry mode
 YELLOW_RECENT_DETECTIONS = 5 # Recent yellow-line latch window for carry occlusion
 yellow_recent_count = 0
@@ -519,7 +521,7 @@ def threshold_items_for_color():
     items = []
     for i in range(len(all_color_thresholds)):
         color_id = i + 1
-        if color_id == WHITE_BEAR_COLOR_ID:
+        if USE_WHITE_BEAR_MODEL and color_id == WHITE_BEAR_COLOR_ID:
             continue
         if target_color_id > 0 and color_id != target_color_id:
             continue
@@ -583,6 +585,11 @@ def find_color_target(img, last_box):
 
 def load_white_bear_model():
     global model_tf, model_net, model_ready
+    if not USE_WHITE_BEAR_MODEL:
+        model_tf = None
+        model_net = None
+        model_ready = False
+        return
     try:
         import tf
         gc.collect()
@@ -596,6 +603,8 @@ def load_white_bear_model():
 
 def find_white_bear_model_target(img, last_box):
     global model_status_last_print
+    if not USE_WHITE_BEAR_MODEL:
+        return None
     if not model_ready or model_tf is None or model_net is None:
         now = time.ticks_ms()
         if time.ticks_diff(now, model_status_last_print) >= 1000:
@@ -1123,7 +1132,7 @@ def receive_command_from_host():
             if 1 <= param <= len(all_color_thresholds):
                 target_color_id = param
                 active_color_id = param
-                if param == WHITE_BEAR_COLOR_ID:
+                if USE_WHITE_BEAR_MODEL and param == WHITE_BEAR_COLOR_ID:
                     active_threshold = None
                     red_thresholds = all_color_thresholds
                 else:
@@ -1168,14 +1177,14 @@ def receive_command_from_host():
         return (command, param)
     return (0, 0)
 
-def current_pos_flag():
+def current_pos_flag(frame_count):
     global yellow_lost_count, yellow_seen_in_carry, openart_mode
     if openart_mode == MODE_CARRY:
         if yellow_detected:
             yellow_seen_in_carry = True
             yellow_lost_count = 0
             return POS_NO_BOUNDARY
-        if yellow_seen_in_carry:
+        if yellow_seen_in_carry and (frame_count % YELLOW_DETECT_INTERVAL == 0):
             yellow_lost_count += 1
             if yellow_lost_count >= YELLOW_LOST_THRESHOLD:
                 openart_mode = MODE_WAIT_TURN
@@ -1189,6 +1198,30 @@ def current_pos_flag():
             return POS_RIGHT_SIDE
     return POS_NO_BOUNDARY
 
+def find_yellow_blob_bottom_up(img, roi, pixels_threshold):
+    x, y, w, h = roi
+    y_end = y + h
+    strip_h = YELLOW_SCAN_STRIP_H
+    scan_y = y_end - strip_h
+    while scan_y >= y:
+        current_h = min(strip_h, y_end - scan_y)
+        strip_roi = (x, scan_y, w, current_h)
+        blobs = img.find_blobs(yellow_threshold, roi=strip_roi,
+                               pixels_threshold=pixels_threshold,
+                               area_threshold=20, merge=True)
+        if blobs:
+            return max(blobs, key=lambda b: b.pixels())
+        scan_y -= strip_h
+    if scan_y + strip_h > y:
+        current_h = scan_y + strip_h - y
+        strip_roi = (x, y, w, current_h)
+        blobs = img.find_blobs(yellow_threshold, roi=strip_roi,
+                               pixels_threshold=pixels_threshold,
+                               area_threshold=20, merge=True)
+        if blobs:
+            return max(blobs, key=lambda b: b.pixels())
+    return None
+
 def update_yellow_detection(img, frame_count):
     global yellow_tracking, yellow_detected
     global yellow_recent_count
@@ -1199,12 +1232,18 @@ def update_yellow_detection(img, frame_count):
 
     yellow_pixels_threshold = YELLOW_KEEP_PIXELS if yellow_tracking else YELLOW_ENTER_PIXELS
 
-    yellow_blobs_left = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_LEFT,
-                                       pixels_threshold=yellow_pixels_threshold,
-                                       area_threshold=20, merge=True)
-    yellow_blobs_right = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_RIGHT,
-                                        pixels_threshold=yellow_pixels_threshold,
-                                        area_threshold=20, merge=True)
+    if openart_mode == MODE_CARRY:
+        left_blob = find_yellow_blob_bottom_up(img, YELLOW_ROI_LEFT, yellow_pixels_threshold)
+        right_blob = find_yellow_blob_bottom_up(img, YELLOW_ROI_RIGHT, yellow_pixels_threshold)
+        yellow_blobs_left = [left_blob] if left_blob else None
+        yellow_blobs_right = [right_blob] if right_blob else None
+    else:
+        yellow_blobs_left = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_LEFT,
+                                           pixels_threshold=yellow_pixels_threshold,
+                                           area_threshold=20, merge=True)
+        yellow_blobs_right = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_RIGHT,
+                                            pixels_threshold=yellow_pixels_threshold,
+                                            area_threshold=20, merge=True)
 
     raw_yellow_seen = (yellow_blobs_left and yellow_blobs_right)
 
@@ -1221,8 +1260,9 @@ def update_yellow_detection(img, frame_count):
             yellow_tracking = False
 
     if yellow_detected:
-        left_blob = max(yellow_blobs_left, key=lambda b: b.pixels())
-        right_blob = max(yellow_blobs_right, key=lambda b: b.pixels())
+        if openart_mode != MODE_CARRY:
+            left_blob = max(yellow_blobs_left, key=lambda b: b.pixels())
+            right_blob = max(yellow_blobs_right, key=lambda b: b.pixels())
         yellow_boundary_left_y = left_blob.cy()
         yellow_boundary_right_y = right_blob.cy()
         yellow_boundary_y = (yellow_boundary_left_y + yellow_boundary_right_y) // 2
@@ -1388,7 +1428,7 @@ while True:
     last_box = color_track_box if color_track_active else None
 
     model_found = None
-    if target_color_id == WHITE_BEAR_COLOR_ID:
+    if USE_WHITE_BEAR_MODEL and target_color_id == WHITE_BEAR_COLOR_ID:
         model_found = find_white_bear_model_target(img, last_box)
         if model_found:
             send_color_id, x1, y1, w, h, model_score = model_found
@@ -1407,7 +1447,7 @@ while True:
     else:
         found = find_color_target(img, last_box)
 
-    if found and target_color_id != WHITE_BEAR_COLOR_ID:
+    if found and (not USE_WHITE_BEAR_MODEL or target_color_id != WHITE_BEAR_COLOR_ID):
         send_color_id, blob = found
         x1 = blob.x()
         y1 = blob.y()
@@ -1422,7 +1462,7 @@ while True:
         else:
             found = None
 
-    if not found and target_color_id == 0:
+    if USE_WHITE_BEAR_MODEL and not found and target_color_id == 0:
         model_found = find_white_bear_model_target(img, last_box)
         if model_found:
             send_color_id, x1, y1, w, h, model_score = model_found
@@ -1448,7 +1488,7 @@ while True:
             color_track_color_id = 0
             color_lost_count = 0
 
-    pos_flag = current_pos_flag()
+    pos_flag = current_pos_flag(frame_count)
     angle_flag, angle_cdeg = get_crossline_angle_fields()
 
     if best:
