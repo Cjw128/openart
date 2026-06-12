@@ -25,6 +25,29 @@
 
 ## 更新日志
 
+### 2026-06-13 - v0.6.0 - 调整目标锁定优先级
+
+范围：`main.py`, `minimain.py`
+
+变更：
+
+- Plus 正式入口 `main.py` 和 Mini / 从车入口 `minimain.py` 同步目标锁定策略。
+- 新增 `COLOR_SEARCH_ORDER = [3, 1, 2, 4, 5]`，保持颜色 ID 不变，并让网球 `Color 3` 最先搜索。
+- 网球一旦被检测到，优先锁定网球；如果同画面有多个网球，选择色块框底部距离 `y=240` 最近的那个。
+- 如果没有检测到网球，再搜索其它颜色；其它颜色之间不按颜色顺序提前返回，而是比较色块框底部到 `y=240` 的距离，优先锁定更靠近图像底部的物体。
+- 网球单独降低 `find_blobs()` 门槛：`TENNIS_MIN_PIXELS = 45`，`TENNIS_MIN_AREA = 45`。
+- 其它物体继续使用通用门槛：`COLOR_MIN_PIXELS = 100`，`COLOR_MIN_AREA = 100`。
+- 已有 `last_box` 跟踪时继续使用原跟踪评分，避免锁定后频繁跳目标。
+
+效果：
+
+- 网球绝对优先，解决并排物体中网球没有优先被搬运的问题。
+- 非网球目标按色块框底部到 `y=240` 的距离判断远近，优先搬运更靠近车的物体。
+
+验证：
+
+- `python -c "import pathlib; compile(pathlib.Path('main.py').read_text(encoding='utf-8'), 'main.py', 'exec'); compile(pathlib.Path('minimain.py').read_text(encoding='utf-8'), 'minimain.py', 'exec')"` 已通过。
+
 ### 2026-06-12 - v0.5.0 - 放宽搬运黄线完成判定
 
 范围：`main.py`, `minimain.py`

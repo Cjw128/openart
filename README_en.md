@@ -25,6 +25,29 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 ## Logs
 
+### 2026-06-13 - v0.6.0 - Tune Target Lock Priority
+
+Scope: `main.py`, `minimain.py`
+
+Changed:
+
+- Synced the target-locking policy in the Plus runtime `main.py` and the Mini / slave-car runtime `minimain.py`.
+- Added `COLOR_SEARCH_ORDER = [3, 1, 2, 4, 5]` so the tennis ball `Color 3` is searched first without changing transmitted color IDs.
+- If a tennis ball is detected, it is locked first. If multiple tennis balls are visible, the chosen one is the blob whose bounding-box bottom is closest to `y=240`.
+- If no tennis ball is detected, the other colors are searched and then ranked by bounding-box bottom distance to `y=240`, so the nearest lower-image object is locked first.
+- Lowered the tennis-ball-only `find_blobs()` thresholds: `TENNIS_MIN_PIXELS = 45`, `TENNIS_MIN_AREA = 45`.
+- Kept the general thresholds for other objects: `COLOR_MIN_PIXELS = 100`, `COLOR_MIN_AREA = 100`.
+- Kept the existing `last_box` tracking score after a target is locked, reducing target jumps during tracking.
+
+Effect:
+
+- Tennis balls now have absolute priority when visible.
+- Non-tennis targets are selected by distance from the blob bottom to `y=240`, favoring the object closest to the car.
+
+Verification:
+
+- `python -c "import pathlib; compile(pathlib.Path('main.py').read_text(encoding='utf-8'), 'main.py', 'exec'); compile(pathlib.Path('minimain.py').read_text(encoding='utf-8'), 'minimain.py', 'exec')"` passed.
+
 ### 2026-06-12 - v0.5.0 - Relax Carry-Mode Yellow-Line Completion
 
 Scope: `main.py`, `minimain.py`
