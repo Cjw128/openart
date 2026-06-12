@@ -99,7 +99,7 @@ def pixel_to_world(px, py, H):
 
 
 class YellowCrosslineIPM:
-    def __init__(self, uart_enabled=True, uart_id=12):
+    def __init__(self, uart_enabled=True, uart_id=2):
         self.width = 320
         self.height = 240
         self.center_x = self.width // 2
@@ -449,7 +449,7 @@ class YellowCrosslineIPM:
                 self.last_print_ms = now
 
 
-def create_crossline_ipm(uart_enabled=True, uart_id=12):
+def create_crossline_ipm(uart_enabled=True, uart_id=2):
     return YellowCrosslineIPM(uart_enabled=uart_enabled, uart_id=uart_id)
 
 

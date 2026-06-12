@@ -13,3 +13,6 @@ venv/
 env/
 
 *.log
+
+cmm_cfg.csv
+cmm_load.py
