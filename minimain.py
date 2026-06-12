@@ -235,9 +235,10 @@ crossline_angle_result = None
 yellow_threshold = [(56, 100, -56, -2, 41, 127)]    # 黄色阈值 (LAB)
 YELLOW_ROI_LEFT = (0, 80, 70, 160)       # 左侧垂直条，延伸到图像底部
 YELLOW_ROI_RIGHT = (250, 80, 70, 160)    # 右侧垂直条，延伸到图像底部
-YELLOW_DETECT_INTERVAL = 5              # 每5帧检测一次黄线
+YELLOW_DETECT_INTERVAL = 3              # 每3帧检测一次黄线
 YELLOW_ENTER_PIXELS = 10                # 首次看到黄线需要达到的像素阈值
 YELLOW_KEEP_PIXELS = 3                  # 已看到黄线后的保持阈值，防止边缘闪烁
+YELLOW_SCAN_STRIP_H = 12                # 搬运模式下从屏幕底部往上分条扫描黄线
 
 # 黄线边界状态
 # ======================================================================
@@ -263,7 +264,7 @@ yellow_boundary_wy = 0.0    # 黄线边界的世界坐标 Y (cm)
 yellow_detected = False     # 黄线是否被检测到
 yellow_tracking = False      # 黄线滞回状态：首次看到后使用保持阈值
 yellow_lost_count = 0       # 黄线连续丢失帧数
-YELLOW_LOST_THRESHOLD = 5   # 连续丢失N帧才判定过线
+YELLOW_LOST_THRESHOLD = 2   # 连续丢失N次检测才判定过线
 yellow_seen_in_carry = False # 进入搬运模式后是否已确认看到过黄线（防掉头误触发）
 YELLOW_RECENT_DETECTIONS = 5 # 最近黄线检测锁存窗口，用于搬运瞬间遮挡
 yellow_recent_count = 0
@@ -1121,14 +1122,14 @@ def receive_command_from_host():
         return (command, param)
     return (0, 0)
 
-def current_pos_flag():
+def current_pos_flag(frame_count):
     global yellow_lost_count, yellow_seen_in_carry, openart_mode
     if openart_mode == MODE_CARRY:
         if yellow_detected:
             yellow_seen_in_carry = True
             yellow_lost_count = 0
             return POS_NO_BOUNDARY
-        if yellow_seen_in_carry:
+        if yellow_seen_in_carry and (frame_count % YELLOW_DETECT_INTERVAL == 0):
             yellow_lost_count += 1
             if yellow_lost_count >= YELLOW_LOST_THRESHOLD:
                 openart_mode = MODE_WAIT_TURN
@@ -1142,6 +1143,30 @@ def current_pos_flag():
             return POS_RIGHT_SIDE
     return POS_NO_BOUNDARY
 
+def find_yellow_blob_bottom_up(img, roi, pixels_threshold):
+    x, y, w, h = roi
+    y_end = y + h
+    strip_h = YELLOW_SCAN_STRIP_H
+    scan_y = y_end - strip_h
+    while scan_y >= y:
+        current_h = min(strip_h, y_end - scan_y)
+        strip_roi = (x, scan_y, w, current_h)
+        blobs = img.find_blobs(yellow_threshold, roi=strip_roi,
+                               pixels_threshold=pixels_threshold,
+                               area_threshold=20, merge=True)
+        if blobs:
+            return max(blobs, key=lambda b: b.pixels())
+        scan_y -= strip_h
+    if scan_y + strip_h > y:
+        current_h = scan_y + strip_h - y
+        strip_roi = (x, y, w, current_h)
+        blobs = img.find_blobs(yellow_threshold, roi=strip_roi,
+                               pixels_threshold=pixels_threshold,
+                               area_threshold=20, merge=True)
+        if blobs:
+            return max(blobs, key=lambda b: b.pixels())
+    return None
+
 def update_yellow_detection(img, frame_count):
     global yellow_tracking, yellow_detected
     global yellow_recent_count
@@ -1152,12 +1177,18 @@ def update_yellow_detection(img, frame_count):
 
     yellow_pixels_threshold = YELLOW_KEEP_PIXELS if yellow_tracking else YELLOW_ENTER_PIXELS
 
-    yellow_blobs_left = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_LEFT,
-                                       pixels_threshold=yellow_pixels_threshold,
-                                       area_threshold=20, merge=True)
-    yellow_blobs_right = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_RIGHT,
-                                        pixels_threshold=yellow_pixels_threshold,
-                                        area_threshold=20, merge=True)
+    if openart_mode == MODE_CARRY:
+        left_blob = find_yellow_blob_bottom_up(img, YELLOW_ROI_LEFT, yellow_pixels_threshold)
+        right_blob = find_yellow_blob_bottom_up(img, YELLOW_ROI_RIGHT, yellow_pixels_threshold)
+        yellow_blobs_left = [left_blob] if left_blob else None
+        yellow_blobs_right = [right_blob] if right_blob else None
+    else:
+        yellow_blobs_left = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_LEFT,
+                                           pixels_threshold=yellow_pixels_threshold,
+                                           area_threshold=20, merge=True)
+        yellow_blobs_right = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_RIGHT,
+                                            pixels_threshold=yellow_pixels_threshold,
+                                            area_threshold=20, merge=True)
 
     raw_yellow_seen = (yellow_blobs_left and yellow_blobs_right)
 
@@ -1174,8 +1205,9 @@ def update_yellow_detection(img, frame_count):
             yellow_tracking = False
 
     if yellow_detected:
-        left_blob = max(yellow_blobs_left, key=lambda b: b.pixels())
-        right_blob = max(yellow_blobs_right, key=lambda b: b.pixels())
+        if openart_mode != MODE_CARRY:
+            left_blob = max(yellow_blobs_left, key=lambda b: b.pixels())
+            right_blob = max(yellow_blobs_right, key=lambda b: b.pixels())
         yellow_boundary_left_y = left_blob.cy()
         yellow_boundary_right_y = right_blob.cy()
         yellow_boundary_y = (yellow_boundary_left_y + yellow_boundary_right_y) // 2
@@ -1419,7 +1451,7 @@ while True:
             color_track_color_id = 0
             color_lost_count = 0
 
-    pos_flag = current_pos_flag()
+    pos_flag = current_pos_flag(frame_count)
     angle_flag, angle_cdeg = get_crossline_angle_fields()
 
     if best:
