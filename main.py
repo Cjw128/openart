@@ -135,11 +135,15 @@ all_color_thresholds = [
     (20, 55, 30, -1, 50, 0),       # Color 4: brown teddy bear; tune on field
     (53, 100, -10, 11, -11, 8)    # Color 5: white teddy bear; model-only in runtime
 ]
+COLOR_SEARCH_ORDER = [3, 1, 2, 4, 5]  # Try tennis ball first without changing color IDs.
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
 COLOR_MIN_PIXELS = 100
 COLOR_MIN_AREA = 100
+TENNIS_COLOR_ID = 3
+TENNIS_MIN_PIXELS = 45
+TENNIS_MIN_AREA = 45
 
 # True: use TFLite model for white bear. False: detect all targets by LAB color blobs.
 USE_WHITE_BEAR_MODEL = False
@@ -519,13 +523,14 @@ def make_roi_from_box(box):
 
 def threshold_items_for_color():
     items = []
-    for i in range(len(all_color_thresholds)):
-        color_id = i + 1
+    for color_id in COLOR_SEARCH_ORDER:
+        if color_id < 1 or color_id > len(all_color_thresholds):
+            continue
         if USE_WHITE_BEAR_MODEL and color_id == WHITE_BEAR_COLOR_ID:
             continue
         if target_color_id > 0 and color_id != target_color_id:
             continue
-        items.append((color_id, all_color_thresholds[i]))
+        items.append((color_id, all_color_thresholds[color_id - 1]))
     return items
 
 def valid_color_blob(blob, color_id):
@@ -551,6 +556,15 @@ def valid_color_blob(blob, color_id):
             return False
     return True
 
+def color_blob_thresholds(color_id):
+    if color_id == TENNIS_COLOR_ID:
+        return (TENNIS_MIN_PIXELS, TENNIS_MIN_AREA)
+    return (COLOR_MIN_PIXELS, COLOR_MIN_AREA)
+
+def pick_initial_color_candidate(candidates):
+    # Prefer the object whose bounding-box bottom is closest to y=240.
+    return min(candidates, key=lambda item: 240 - (item[1].y() + item[1].h()))
+
 def find_color_target(img, last_box):
     items = threshold_items_for_color()
     if not items:
@@ -558,10 +572,12 @@ def find_color_target(img, last_box):
     roi = make_roi_from_box(last_box)
     candidates = []
     for color_id, threshold in items:
+        color_candidates = []
+        pixels_threshold, area_threshold = color_blob_thresholds(color_id)
         try:
             blobs = img.find_blobs([threshold], roi=roi,
-                                   pixels_threshold=COLOR_MIN_PIXELS,
-                                   area_threshold=COLOR_MIN_AREA,
+                                   pixels_threshold=pixels_threshold,
+                                   area_threshold=area_threshold,
                                    merge=True)
         except TypeError:
             blobs = None
@@ -572,7 +588,11 @@ def find_color_target(img, last_box):
                 if blob.cy() < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
                     continue
             if valid_color_blob(blob, color_id):
-                candidates.append((color_id, blob))
+                item = (color_id, blob)
+                candidates.append(item)
+                color_candidates.append(item)
+        if color_candidates and not last_box and color_id == TENNIS_COLOR_ID:
+            return pick_initial_color_candidate(color_candidates)
     if not candidates:
         return None
     if last_box:
@@ -581,7 +601,7 @@ def find_color_target(img, last_box):
             b_box = (b.x(), b.y(), b.w(), b.h())
             return b.pixels() - center_dist2(b_box, last_box) // 20
         return max(candidates, key=score_item)
-    return max(candidates, key=lambda item: item[1].pixels())
+    return pick_initial_color_candidate(candidates)
 
 def load_white_bear_model():
     global model_tf, model_net, model_ready
