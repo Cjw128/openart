@@ -25,6 +25,29 @@
 
 ## 更新日志
 
+### 2026-06-12 - v0.5.0 - 放宽搬运黄线完成判定
+
+范围：`main.py`, `minimain.py`
+
+变更：
+
+- Plus 正式入口 `main.py` 放宽搬运模式下的黄线过线完成判定。
+- Mini / 从车入口 `minimain.py` 同步相同的黄线判定策略，避免两套程序行为不一致。
+- 将 `YELLOW_DETECT_INTERVAL` 从 `5` 帧改为 `3` 帧，提高搬运阶段黄线状态刷新速度。
+- 将 `YELLOW_LOST_THRESHOLD` 从 `5` 次检测改为 `2` 次检测，缩短黄线通过后发送 `POS_CROSSED` 的确认窗口。
+- 保留“进入搬运模式后必须先看到黄线，再丢失黄线才判定过线”的防误判机制，避免掉头或未到线时误发搬运完成。
+- 搬运模式黄线扫描继续使用从图像底部向上分条扫描的方式，优先捕捉靠近车身底部的黄线。
+
+效果：
+
+- 原逻辑大约需要 `5 * 5 = 25` 帧确认黄线丢失后才发送搬运完成。
+- 新逻辑大约需要 `3 * 2 = 6` 帧确认，响应更快，但仍有连续丢失确认。
+
+验证：
+
+- `python -c "import pathlib; compile(pathlib.Path('main.py').read_text(encoding='utf-8'), 'main.py', 'exec')"` 已通过。
+- `python -c "import pathlib; compile(pathlib.Path('minimain.py').read_text(encoding='utf-8'), 'minimain.py', 'exec')"` 已通过。
+
 ### 2026-06-10 - v0.4.0 - 回退单文件运行结构并保留黄线角度修复
 
 范围：`main.py`, `minimain.py`, `yellow_crossline_ipm.py`, `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, `openart_calibration.py`, `README.md`, `README_ch.md`, `README_en.md`

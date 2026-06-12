@@ -25,6 +25,29 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 ## Logs
 
+### 2026-06-12 - v0.5.0 - Relax Carry-Mode Yellow-Line Completion
+
+Scope: `main.py`, `minimain.py`
+
+Changed:
+
+- Relaxed the carry-mode yellow-line crossing completion check in the Plus runtime `main.py`.
+- Synced the same yellow-line decision policy to the Mini / slave-car runtime `minimain.py` so both entrypoints behave consistently.
+- Changed `YELLOW_DETECT_INTERVAL` from `5` frames to `3` frames to refresh yellow-line state faster during carry mode.
+- Changed `YELLOW_LOST_THRESHOLD` from `5` detection ticks to `2` detection ticks, reducing the confirmation window before sending `POS_CROSSED`.
+- Kept the false-positive guard that requires the car to see the yellow line in carry mode before a later yellow-line loss can count as crossing.
+- Kept the carry-mode bottom-up strip scan so detection still prioritizes the yellow line closest to the bottom of the image.
+
+Effect:
+
+- The old logic needed about `5 * 5 = 25` frames after yellow-line loss before reporting carry completion.
+- The new logic needs about `3 * 2 = 6` frames, giving a faster response while still requiring consecutive loss confirmation.
+
+Verification:
+
+- `python -c "import pathlib; compile(pathlib.Path('main.py').read_text(encoding='utf-8'), 'main.py', 'exec')"` passed.
+- `python -c "import pathlib; compile(pathlib.Path('minimain.py').read_text(encoding='utf-8'), 'minimain.py', 'exec')"` passed.
+
 ### 2026-06-10 - v0.4.0 - Revert to Single-File Runtime and Keep Yellow Angle Fix
 
 Scope: `main.py`, `minimain.py`, `yellow_crossline_ipm.py`, `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, `openart_calibration.py`, `README.md`, `README_ch.md`, `README_en.md`
