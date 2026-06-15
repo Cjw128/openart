@@ -135,7 +135,7 @@ all_color_thresholds = [
     (20, 55, 30, -1, 50, 0),       # Color 4: brown teddy bear; tune on field
     (53, 100, -10, 11, -11, 8)    # Color 5: white teddy bear; model-only in runtime
 ]
-COLOR_SEARCH_ORDER = [3, 1, 2, 4, 5]  # Try tennis ball first without changing color IDs.
+COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
@@ -245,7 +245,7 @@ crossline_angle_result = None
 yellow_threshold = [(56, 100, -31, 127, 46, 116)]    # Yellow LAB threshold
 YELLOW_ROI_LEFT = (0, 80, 70, 160)       # Left vertical strip, extended to image bottom
 YELLOW_ROI_RIGHT = (250, 80, 70, 160)    # Right vertical strip, extended to image bottom
-YELLOW_DETECT_INTERVAL = 3              # Detect yellow line every N frames
+YELLOW_DETECT_INTERVAL = 2              # Detect yellow line every N frames
 YELLOW_ENTER_PIXELS = 10                # Pixel threshold for first yellow-line hit
 YELLOW_KEEP_PIXELS = 3                  # Lower hold threshold after line is seen
 YELLOW_SCAN_STRIP_H = 12                # Carry mode scans yellow ROI from bottom to top by strips
@@ -272,7 +272,7 @@ yellow_boundary_wy = 0.0    # Yellow boundary Y in world coordinates, cm
 yellow_detected = False     # Whether yellow line is visible
 yellow_tracking = False      # Hysteresis state after first yellow-line hit
 yellow_lost_count = 0       # Consecutive yellow-line lost counter
-YELLOW_LOST_THRESHOLD = 2   # Lost detections required before crossed-line decision
+YELLOW_LOST_THRESHOLD = 3   # Lost detections required before crossed-line decision
 yellow_seen_in_carry = False # Whether yellow line was confirmed in carry mode
 YELLOW_RECENT_DETECTIONS = 5 # Recent yellow-line latch window for carry occlusion
 yellow_recent_count = 0
@@ -292,15 +292,15 @@ POS_CROSSED     = 0x02
 
 # Return-to-depot beacon detection. Uses the same IPM and UART packet as normal targets.
 RETURN_BEACON_ID = 0x06
-BEACON_THRESHOLD = [(79, 95, 5, 65, -54, 73)]
+BEACON_THRESHOLD = [(52, 100, 4, 91, -14, 127)]
 BEACON_DETECT_Y_MIN = 20
 BEACON_DETECT_ROI = (0, BEACON_DETECT_Y_MIN, 320, 240 - BEACON_DETECT_Y_MIN)
-BEACON_MIN_PIXELS = 100
-BEACON_MIN_AREA = 100
+BEACON_MIN_PIXELS = 40
+BEACON_MIN_AREA = 40
 BEACON_MERGE_BLOBS = True
-BEACON_MIN_ASPECT_RATIO = 0.10
-BEACON_MAX_ASPECT_RATIO = 3.50
-BEACON_MIN_DENSITY = 0.20
+BEACON_MIN_ASPECT_RATIO = 0.01
+BEACON_MAX_ASPECT_RATIO = 20.00
+BEACON_MIN_DENSITY = 0.10
 BEACON_TRACK_MAX_LOST = 10
 beacon_last_box = None
 beacon_lost_frames = 0
@@ -591,8 +591,6 @@ def find_color_target(img, last_box):
                 item = (color_id, blob)
                 candidates.append(item)
                 color_candidates.append(item)
-        if color_candidates and not last_box and color_id == TENNIS_COLOR_ID:
-            return pick_initial_color_candidate(color_candidates)
     if not candidates:
         return None
     if last_box:
@@ -1169,12 +1167,8 @@ def receive_command_from_host():
                 track_force_global_next = False
                 track_local_miss_count = 0
         elif command == 0x01:  # Enter carry mode
-            carry_had_seen_yellow = yellow_detected or yellow_recent_count > 0
             openart_mode = MODE_CARRY
             reset_yellow_state()
-            if carry_had_seen_yellow:
-                yellow_seen_in_carry = True
-                yellow_tracking = True
             reset_beacon_state()
         elif command == 0x04:  # SET_CROSSLINE_ANGLE_ENABLE
             crossline_angle_enabled = (param == 1)

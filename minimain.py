@@ -266,10 +266,13 @@ yellow_boundary_left_y = 0  # 左侧黄线中心 Y
 yellow_boundary_right_y = 0 # 右侧黄线中心 Y
 yellow_boundary_wy = 0.0    # 黄线边界的世界坐标 Y (cm)
 yellow_detected = False     # 黄线是否被检测到
+yellow_raw_detected = False # 当前检测周期是否真实看到黄线
 yellow_tracking = False      # 黄线滞回状态：首次看到后使用保持阈值
 yellow_lost_count = 0       # 黄线连续丢失帧数
 YELLOW_LOST_THRESHOLD = 2   # 连续丢失N次检测才判定过线
 yellow_seen_in_carry = False # 进入搬运模式后是否已确认看到过黄线（防掉头误触发）
+YELLOW_CARRY_HOLD_FRAMES = 40 # 搬运模式下首次看到黄线后保持的帧数
+yellow_carry_hold_count = 0
 YELLOW_RECENT_DETECTIONS = 5 # 最近黄线检测锁存窗口，用于搬运瞬间遮挡
 yellow_recent_count = 0
 
@@ -338,14 +341,16 @@ def reset_target_tracking_state():
 
 def reset_yellow_state():
     """清空黄线状态，避免新一轮任务继承上一轮的边界/滞回。"""
-    global yellow_lost_count, yellow_seen_in_carry, yellow_tracking, yellow_detected
-    global yellow_recent_count
+    global yellow_lost_count, yellow_seen_in_carry, yellow_tracking, yellow_detected, yellow_raw_detected
+    global yellow_recent_count, yellow_carry_hold_count
     global yellow_boundary_y, yellow_boundary_left_y, yellow_boundary_right_y, yellow_boundary_wy
 
     yellow_lost_count = 0
     yellow_seen_in_carry = False
+    yellow_carry_hold_count = 0
     yellow_tracking = False
     yellow_detected = False
+    yellow_raw_detected = False
     yellow_recent_count = 0
     yellow_boundary_y = 0
     yellow_boundary_left_y = 0
@@ -1110,12 +1115,8 @@ def receive_command_from_host():
                 track_local_miss_count = 0
                 print(">>> Color lock command: ID={} <<<".format(param))
         elif command == 0x01:  # 进入搬运模式
-            carry_had_seen_yellow = yellow_detected or yellow_recent_count > 0
-            openart_mode = MODE_CARRY
             reset_yellow_state()
-            if carry_had_seen_yellow:
-                yellow_seen_in_carry = True
-                yellow_tracking = True
+            openart_mode = MODE_CARRY
             reset_beacon_state()
             print(">>> Enter carry mode <<<")
         elif command == 0x04:  # SET_CROSSLINE_ANGLE_ENABLE
@@ -1143,10 +1144,17 @@ def receive_command_from_host():
     return (0, 0)
 
 def current_pos_flag(frame_count):
-    global yellow_lost_count, yellow_seen_in_carry, openart_mode
+    global yellow_lost_count, yellow_seen_in_carry, openart_mode, yellow_carry_hold_count
     if openart_mode == MODE_CARRY:
-        if yellow_detected:
+        if yellow_raw_detected:
             yellow_seen_in_carry = True
+            yellow_carry_hold_count = YELLOW_CARRY_HOLD_FRAMES
+            yellow_lost_count = 0
+            return POS_NO_BOUNDARY
+        if not yellow_seen_in_carry:
+            return POS_NO_BOUNDARY
+        if yellow_carry_hold_count > 0:
+            yellow_carry_hold_count -= 1
             yellow_lost_count = 0
             return POS_NO_BOUNDARY
         if yellow_seen_in_carry and (frame_count % YELLOW_DETECT_INTERVAL == 0):
@@ -1188,10 +1196,11 @@ def find_yellow_blob_bottom_up(img, roi, pixels_threshold):
     return None
 
 def update_yellow_detection(img, frame_count):
-    global yellow_tracking, yellow_detected
+    global yellow_tracking, yellow_detected, yellow_raw_detected
     global yellow_recent_count
     global yellow_boundary_y, yellow_boundary_left_y, yellow_boundary_right_y, yellow_boundary_wy
 
+    yellow_raw_detected = False
     if frame_count % YELLOW_DETECT_INTERVAL != 0:
         return
 
@@ -1211,6 +1220,7 @@ def update_yellow_detection(img, frame_count):
                                             area_threshold=20, merge=True)
 
     raw_yellow_seen = (yellow_blobs_left and yellow_blobs_right)
+    yellow_raw_detected = True if raw_yellow_seen else False
 
     # 首次进入用较高阈值，跟踪中用较低保持阈值，减少边缘闪烁造成的丢失。
     if raw_yellow_seen:
