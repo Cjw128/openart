@@ -25,6 +25,31 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 ## Logs
 
+### 2026-06-15 - v0.7.1 - 12 cm Calibration and Freeze Fix
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Updated the Plus runtime `main.py` IPM calibration for the `12 cm` camera-height setup. `CALIB_PIXEL` now uses the field-measured image points, and `CALIB_WORLD` uses the matching world coordinates.
+- Added a shared `snapshot_frame()` entry in `main.py` so capture, lens correction, and software flipping are handled in one place instead of separate direct `sensor.snapshot()` calls in the main loop, brightness calibration, and IPM calibration mode.
+- Changed `main.py` to apply `hmirror` / `vflip` together in software, reducing the risk of display corruption or freezes when the OpenART firmware keeps multiple hardware flip states.
+- Fixed the Plus UART selection in `main.py`: the master car uses `UART(12)`, and the slave car uses `UART(2)`.
+- Re-enabled the white-bear TFLite model path in `main.py`, switched to the current firmware's `model_net.detect()` result interface, and runs `gc.collect()` after releasing the temporary scaled image to reduce memory pressure after model detection.
+- Added optional loading of 5 LAB threshold rows from `/sd/params.txt` in `main.py`; invalid or incomplete files fall back to the built-in defaults.
+- Synced `minimain.py` to the shared `snapshot_frame()` entry and kept only one hardware flip direction by default, reducing frame-buffer pressure during long Mini / slave-car runs.
+
+Effect:
+
+- Plus IPM world coordinates now match the current `12 cm` camera mounting height.
+- The Plus image-capture and flip path is more centralized, reducing freeze risk from inconsistent hardware flip state, temporary model images, and delayed memory collection.
+- Mini / slave-car capture follows the same maintenance pattern while keeping extra software flip disabled by default for long-run stability.
+
+Verification:
+
+- `git diff --check` passed.
+- `python -c "import pathlib; compile(pathlib.Path('main.py').read_text(encoding='utf-8'), 'main.py', 'exec'); compile(pathlib.Path('minimain.py').read_text(encoding='utf-8'), 'minimain.py', 'exec')"` passed.
+
 ### 2026-06-15 - v0.7.0 - School-Competition Finished Version
 
 Scope: `main.py`, `minimain.py`, `return_beacon_ipm_test.py`

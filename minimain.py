@@ -14,6 +14,7 @@ CALIBRATION_MODE = False   # True = 逆透视标定模式, False = 正常识别
 BIRDVIEW_DEBUG = False     # True = IDE显示鸟瞰图(慢), False = 高速检测
 IS_SLAVE_CAR = True       # False=master OpenART(UART12), True=slave OpenART(UART2)
 SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
+SOFTWARE_VFLIP = False     # Short test only; keep False for long runs to avoid frame-buffer pressure.
 
 # ======================================================================
 # 硬件初始化
@@ -22,8 +23,21 @@ SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
 # 摄像头初始化
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
-sensor.set_framesize(sensor.QVGA)      # 320x240
+sensor.set_framesize(sensor.QVGA)
 sensor.set_framerate(60)
+
+# Use only one hardware flip; OpenART firmware may not keep hmirror/vflip together.
+sensor.set_hmirror(True)
+
+sensor.skip_frames(time=500)
+
+def snapshot_frame(apply_lens_corr=False):
+    img = sensor.snapshot()
+    if apply_lens_corr:
+        img = img.lens_corr(2)
+    if SOFTWARE_VFLIP:
+        img = img.replace(vflip=True)
+    return img
 
 # 白平衡配置
 # True = 使用固定增益(比赛用), False = 自动收敛后锁定(调试用)
@@ -58,7 +72,7 @@ def set_exposure(exposure_us):
     sensor.set_auto_exposure(False, exposure_us=exposure_us)
 
 def measure_brightness(roi=None):
-    img = sensor.snapshot()
+    img = snapshot_frame()
     if roi:
         stats = img.get_statistics(roi=roi)
     else:
@@ -1319,7 +1333,7 @@ if CALIBRATION_MODE:
 
     while len(_calib_pts) < 4:
         clock.tick()
-        img = sensor.snapshot()
+        img = snapshot_frame()
 
         for _gx in range(0, 321, 40):
             img.draw_line(_gx, 0, _gx, 240, color=(64, 64, 64))
@@ -1391,7 +1405,7 @@ if CALIBRATION_MODE:
 
     while True:
         clock.tick()
-        img = sensor.snapshot()
+        img = snapshot_frame()
         for _ci in range(4):
             _cp = _calib_pts[_ci]
             img.draw_circle(_cp[0], _cp[1], 6, color=(0, 255, 0), thickness=2)
@@ -1430,7 +1444,7 @@ while True:
     cmd, param = receive_command_from_host()
 
     # 获取图像 + 镜头畸变校正
-    img = sensor.snapshot().lens_corr(2)
+    img = snapshot_frame(apply_lens_corr=True)
     world_x = 0.0
     world_y = 0.0
 

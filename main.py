@@ -10,10 +10,11 @@ from yellow_crossline_ipm import create_crossline_ipm
 # ======================================================================
 # Mode selection
 # ======================================================================
-CALIBRATION_MODE = False   # True = IPM calibration mode, False = normal detection
+CALIBRATION_MODE = False# True = IPM calibration mode, False = normal detection
 BIRDVIEW_DEBUG = False     # True = show bird-view image in IDE, False = fast detection
 IS_SLAVE_CAR = False       # False=master OpenART(UART12), True=slave OpenART(UART2)
 SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
+SOFTWARE_VFLIP = True     # img.replace(vflip=True) is in-place; firmware can only keep one hardware flip at a time.
 
 # ======================================================================
 # Hardware initialization
@@ -24,6 +25,16 @@ sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)      # 320x240
 sensor.set_framerate(60)
+# Both flips done in one software replace() call to avoid IDE tearing from mid-flip USB reads.
+sensor.set_hmirror(False)
+
+def snapshot_frame(apply_lens_corr=False):
+    img = sensor.snapshot()
+    if apply_lens_corr:
+        img = img.lens_corr(2)
+    if SOFTWARE_VFLIP:
+        img = img.replace(hmirror=True, vflip=True)
+    return img
 
 # White balance configuration
 # True = fixed gains for competition, False = auto-converge then lock for tuning
@@ -58,7 +69,7 @@ def set_exposure(exposure_us):
     sensor.set_auto_exposure(False, exposure_us=exposure_us)
 
 def measure_brightness(roi=None):
-    img = sensor.snapshot()
+    img = snapshot_frame()
     if roi:
         stats = img.get_statistics(roi=roi)
     else:
@@ -114,7 +125,7 @@ sensor.set_auto_gain(False, gain_db=0)
 if IS_SLAVE_CAR:
     uart = UART(2, baudrate=115200)
 else:
-    uart = UART(2, baudrate=115200)
+    uart = UART(12, baudrate=115200)
 
 # FPS timer
 clock = time.clock()
@@ -127,14 +138,37 @@ clock = time.clock()
 # A: red-green axis (positive=red, negative=green)
 # B: yellow-blue axis (positive=yellow, negative=blue)
 
-# Supported color thresholds
+# Supported color thresholds (fallback defaults; overridden by /sd/params.txt if present)
 all_color_thresholds = [
     (34, 100, -41, 5, -72, -17),    # Color 1: light-blue bag
-    (10, 80, 22, 122, -17, 93),    # Color 2: red bag
-    (50, 100, -128, -27, 20, 127), # Color 3: tennis ball
-    (20, 55, 30, -1, 50, 0),       # Color 4: brown teddy bear; tune on field
-    (53, 100, -10, 11, -11, 8)    # Color 5: white teddy bear; model-only in runtime
+    (10, 80, 22, 122, -17, 93),     # Color 2: red bag
+    (50, 100, -128, -27, 20, 127),  # Color 3: tennis ball
+    (20, 55, -1, 30, 0, 50),        # Color 4: brown teddy bear; tune on field
+    (53, 100, -10, 11, -11, 8)      # Color 5: white teddy bear; model-only in runtime
 ]
+
+def _load_thresholds(path='/sd/params.txt'):
+    try:
+        result = []
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(',')
+                if len(parts) != 6:
+                    continue
+                result.append(tuple(int(p) for p in parts))
+        if len(result) == 5:
+            return result
+    except Exception:
+        pass
+    return None
+
+_loaded = _load_thresholds()
+if _loaded:
+    all_color_thresholds = _loaded
+
 COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
 
 COLOR_LOST_FRAMES = 5
@@ -146,7 +180,7 @@ TENNIS_MIN_PIXELS = 45
 TENNIS_MIN_AREA = 45
 
 # True: use TFLite model for white bear. False: detect all targets by LAB color blobs.
-USE_WHITE_BEAR_MODEL = False
+USE_WHITE_BEAR_MODEL = True
 WHITE_BEAR_COLOR_ID = 5
 MODEL_PATH = '/sd/dataset_25000_blur_0.30.tflite'
 MODEL_INPUT_SCALE = 0.75
@@ -235,6 +269,7 @@ track_local_miss_count = 0
 target_color_id = 0
 color_track_active = False
 color_track_box = None
+color_track_color_id = 0
 color_lost_count = 0
 _cmd_rx_buf = bytearray()
 crossline_angle_enabled = False
@@ -579,7 +614,7 @@ def find_color_target(img, last_box):
                                    pixels_threshold=pixels_threshold,
                                    area_threshold=area_threshold,
                                    merge=True)
-        except TypeError:
+        except Exception:
             blobs = None
         if not blobs:
             continue
@@ -639,17 +674,17 @@ def find_white_bear_model_target(img, last_box):
     best = None
     best_score = -1.0
     try:
-        for obj in model_tf.detect(model_net, detect_img):
-            x1, y1, x2, y2, label, score = obj
-            label = int(label)
-            score = float(score)
+        for obj in model_net.detect([detect_img], thresholds=[(MODEL_FALLBACK_SCORE_THRESHOLD, 1.0)]):
+            label = obj.label()
+            score = obj.score()
             if label != MODEL_LABEL_BEAR or score < MODEL_FALLBACK_SCORE_THRESHOLD:
                 continue
 
-            rx = int(x1 * img.width())
-            ry = int(y1 * img.height())
-            rw = int((x2 - x1) * img.width())
-            rh = int((y2 - y1) * img.height())
+            rx, ry, rw, rh = obj.rect()
+            # Scale coordinates back to original image space if detect_img was downscaled.
+            if detect_img is not img:
+                rx = int(rx / MODEL_INPUT_SCALE)
+                rw = int(rw / MODEL_INPUT_SCALE)
             if rw <= 0 or rh <= 0:
                 continue
 
@@ -670,6 +705,7 @@ def find_white_bear_model_target(img, last_box):
 
     if detect_img is not img:
         detect_img = None
+        gc.collect()
     return best
 
 def beacon_roi_from_box(box):
@@ -804,16 +840,18 @@ def world_to_pixel(X, Y, H):
 # IPM calibration data; tune for the actual camera mount.
 # ======================================================================
 CALIB_PIXEL = [
-    [85, 240],     # Point 0: near left
-    [267, 240],    # Point 1: near right
-    [125, 129],    # Point 2: far left
-    [219, 129],    # Point 3: far right
+    [90, 240],     # Point 0: near left
+    [236, 240],    # Point 1: near right
+    [121, 149],    # Point 2: far left
+    [210, 149],    # Point 3: far right
 ]
+
+#离地12cm参数
 CALIB_WORLD = [
-    [-7.5, 7.5],   # Point 0: left 7.5 cm, forward 7.5 cm
-    [7.5, 7.5],    # Point 1: right 7.5 cm, forward 7.5 cm
-    [-7.5, 22.5],  # Point 2: left 7.5 cm, forward 22.5 cm
-    [7.5, 22.5],   # Point 3: right 7.5 cm, forward 22.5 cm
+    [-8, 6],   # Point 0: left 7.5 cm, forward 7.5 cm
+    [7, 6],    # Point 1: right 7.5 cm, forward 7.5 cm
+    [-8, 21],  # Point 2: left 7.5 cm, forward 22.5 cm
+    [8, 21],   # Point 3: right 7.5 cm, forward 22.5 cm
 ]
 
 # Compute homography matrix
@@ -1323,7 +1361,7 @@ if CALIBRATION_MODE:
 
     while len(_calib_pts) < 4:
         clock.tick()
-        img = sensor.snapshot()
+        img = snapshot_frame()
 
         for _gx in range(0, 321, 40):
             img.draw_line(_gx, 0, _gx, 240, color=(64, 64, 64))
@@ -1381,7 +1419,7 @@ if CALIBRATION_MODE:
     _H_test = calc_homography(_calib_pts, CALIB_WORLD)
     while True:
         clock.tick()
-        img = sensor.snapshot()
+        img = snapshot_frame()
         for _ci in range(4):
             _cp = _calib_pts[_ci]
             img.draw_circle(_cp[0], _cp[1], 6, color=(0, 255, 0), thickness=2)
@@ -1419,7 +1457,7 @@ while True:
     cmd, param = receive_command_from_host()
 
     # Capture image and apply lens correction
-    img = sensor.snapshot().lens_corr(2)
+    img = snapshot_frame(apply_lens_corr=True)
     world_x = 0.0
     world_y = 0.0
 
@@ -1548,6 +1586,11 @@ while True:
         now = time.ticks_ms()
         if time.ticks_diff(now, last_print_time) >= 500:
             last_print_time = now
+            print('[{}] cid={} src={} px=({},{}) box=({},{},{},{}) w=({:.1f},{:.1f})cm wx={}mm wy={}mm fps={:.1f}'.format(
+                frame_count, send_color_id, source,
+                cx, cy, x1, y1, w, h,
+                world_x, world_y, wx_mm, wy_mm,
+                clock.fps()))
     else:
         lost_frame_count += 1
         stable_detect_count = 0
@@ -1557,6 +1600,8 @@ while True:
         now = time.ticks_ms()
         if time.ticks_diff(now, last_print_time) >= 1000:
             last_print_time = now
+            print('[{}] no target yflag={} pos={} obs={} fps={:.1f}'.format(
+                frame_count, yellow_detected, pos_flag, obstacle_flag, clock.fps()))
     # Yellow detection is updated before pos_flag is calculated.
 
     # Draw dynamic cut line (debug)

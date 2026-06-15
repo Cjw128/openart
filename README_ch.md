@@ -25,6 +25,31 @@
 
 ## 更新日志
 
+### 2026-06-15 - v0.7.1 - 12cm 标定与死机修复
+
+范围：`main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+
+- Plus 正式入口 `main.py` 更新离地 `12cm` 场景下的 IPM 标定点，`CALIB_PIXEL` 调整为现场采集像素点，`CALIB_WORLD` 调整为对应世界坐标。
+- `main.py` 新增统一的 `snapshot_frame()` 入口，把拍照、镜头畸变校正和软件翻转集中到同一处，避免主循环、亮度标定和 IPM 标定模式各自直接调用 `sensor.snapshot()`。
+- `main.py` 使用软件方式一次完成 `hmirror` / `vflip` 后处理，规避 OpenART 固件同时维护多个硬件翻转状态时可能出现的画面异常和死机风险。
+- `main.py` 修复主车串口选择，主车继续使用 `UART(12)`，从车使用 `UART(2)`。
+- `main.py` 恢复白熊 TFLite 模型检测路径，并改用当前固件可用的 `model_net.detect()` 结果接口，同时在临时缩放图像释放后执行 `gc.collect()`，降低模型检测后的内存压力。
+- `main.py` 支持从 `/sd/params.txt` 读取 5 组 LAB 阈值；读取失败或格式不完整时继续使用内置默认阈值。
+- `minimain.py` 同步统一 `snapshot_frame()` 入口，并只保留一个硬件翻转方向，减少 Mini / 从车长时间运行时的帧缓冲压力。
+
+效果：
+
+- Plus 逆透视坐标适配当前离地 `12cm` 的相机安装高度。
+- 主车运行时的拍照和翻转路径更集中，降低因硬件翻转状态、模型检测临时图像和内存回收不一致导致的卡死概率。
+- Mini / 从车的图像采集路径与 Plus 保持同一维护方式，但默认不启用额外软件翻转，优先保证长时间运行稳定性。
+
+验证：
+
+- `git diff --check` 已通过。
+- `python -c "import pathlib; compile(pathlib.Path('main.py').read_text(encoding='utf-8'), 'main.py', 'exec'); compile(pathlib.Path('minimain.py').read_text(encoding='utf-8'), 'minimain.py', 'exec')"` 已通过。
+
 ### 2026-06-15 - v0.7.0 - 校赛完赛版本
 
 范围：`main.py`, `minimain.py`, `return_beacon_ipm_test.py`
