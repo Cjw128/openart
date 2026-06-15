@@ -25,6 +25,31 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 ## Logs
 
+### 2026-06-15 - v0.7.0 - School-Competition Finished Version
+
+Scope: `main.py`, `minimain.py`, `return_beacon_ipm_test.py`
+
+Changed:
+
+- Saved the current OpenART vision program as the school-competition finished version, commit `d7f56c3`.
+- Restored the Plus runtime `main.py` color search order to `COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]`, removing the special tennis-ball-first priority.
+- Changed Plus yellow-line detection to run every `2` frames and set the carry-mode yellow-line loss threshold to `3` detection ticks, balancing response time and stability.
+- Relaxed the Plus return-beacon LAB threshold, minimum pixels/area, aspect-ratio range, and density filter to improve field detection.
+- Added `yellow_raw_detected` to the Mini / slave-car runtime `minimain.py` so carry completion is driven by a real detection cycle instead of only the hysteresis state.
+- Added `YELLOW_CARRY_HOLD_FRAMES = 40` to Mini / slave-car carry mode. After the yellow line is truly seen, the runtime keeps a short safety window before counting yellow-line loss.
+- Reset yellow-line state before switching into `MODE_CARRY`, avoiding stale latch state from the previous task.
+- Synced `return_beacon_ipm_test.py` with the Plus return-beacon threshold and filtering parameters so the beacon can be verified independently on field.
+
+Effect:
+
+- This version records the actual school-competition finish parameters, prioritizing stable completion and field detection.
+- Return-beacon filtering is wider, and the test script matches the official Plus runtime.
+- Mini / slave-car carry completion depends more directly on fresh yellow-line detection, reducing false triggers from mode-entry timing or stale state.
+
+Verification:
+
+- `git diff --check` passed.
+
 ### 2026-06-13 - v0.6.0 - Tune Target Lock Priority
 
 Scope: `main.py`, `minimain.py`
