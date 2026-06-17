@@ -25,13 +25,48 @@
 
 ## 更新日志
 
-### 2026-06-15 - v0.7.1 - 12cm 标定与死机修复
+### 2026-06-18 - v0.7.3-dev - Plus 脱机死机诊断
+
+范围：`main.py`, `yellow_crossline_ipm.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+- `main.py` 新增轻量看门狗和 SD 检查点日志，诊断信息追加写入 `/sd/watchdog.log`。
+- 移除 Plus 主循环运行时 `print()`，避免脱机运行时 USB/stdout 无读取导致阻塞。
+- 新增 `RUNTIME_LENS_CORR = False`，关闭 `main.py` 正常运行路径每帧 `lens_corr(2)`，用于隔离帧缓冲和堆内存压力。
+- 关闭 `yellow_crossline_ipm.py` 独立运行循环中的 `lens_corr(2)`，使其图像路径与未畸变校正的标定视图一致。
+- 删除临时 Plus 翻转测试脚本。
+
+效果：
+- 当前是测试/诊断状态，不作为最终稳定性结论。
+- 脱机死机或看门狗复位后，可以读取日志最后检查点定位卡住阶段。
+- 运行时图像坐标现在与当前标定模式一致，标定模式不执行镜头畸变校正。
+
+验证：
+- `python -c "import pathlib; compile(pathlib.Path('main.py').read_text(encoding='utf-8'), 'main.py', 'exec')"` 已通过。
+- `python -c "import pathlib; compile(pathlib.Path('yellow_crossline_ipm.py').read_text(encoding='utf-8'), 'yellow_crossline_ipm.py', 'exec')"` 已通过。
+
+### 2026-06-16 - v0.7.2 - 22cm 标定说明
+
+范围：`minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+- 修正 `main.py` 的逆透视标定注释：Plus 相机当前同样是离地 `22cm`，不是 `12cm`。
+- 更新 `minimain.py` 的逆透视标定注释，标明当前 Mini 相机为离地 `22cm` 的现场标定参数。
+- 补充说明如果再次调整任一相机高度或俯仰角，需要重新运行标定模式更新 `CALIB_PIXEL`。
+
+效果：
+- Plus 与 Mini 的标定说明现在都记录为当前离地 `22cm` 情况。
+
+验证：
+- `python -c "import pathlib; compile(pathlib.Path('minimain.py').read_text(encoding='utf-8'), 'minimain.py', 'exec')"` 已通过。
+
+### 2026-06-15 - v0.7.1 - 22cm 标定与死机修复
 
 范围：`main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
 
 变更：
 
-- Plus 正式入口 `main.py` 更新离地 `12cm` 场景下的 IPM 标定点，`CALIB_PIXEL` 调整为现场采集像素点，`CALIB_WORLD` 调整为对应世界坐标。
+- Plus 正式入口 `main.py` 更新离地 `22cm` 场景下的 IPM 标定点，`CALIB_PIXEL` 调整为现场采集像素点，`CALIB_WORLD` 调整为对应世界坐标。
 - `main.py` 新增统一的 `snapshot_frame()` 入口，把拍照、镜头畸变校正和软件翻转集中到同一处，避免主循环、亮度标定和 IPM 标定模式各自直接调用 `sensor.snapshot()`。
 - `main.py` 使用软件方式一次完成 `hmirror` / `vflip` 后处理，规避 OpenART 固件同时维护多个硬件翻转状态时可能出现的画面异常和死机风险。
 - `main.py` 修复主车串口选择，主车继续使用 `UART(12)`，从车使用 `UART(2)`。
@@ -41,7 +76,7 @@
 
 效果：
 
-- Plus 逆透视坐标适配当前离地 `12cm` 的相机安装高度。
+- Plus 逆透视坐标适配当前离地 `22cm` 的相机安装高度。
 - 主车运行时的拍照和翻转路径更集中，降低因硬件翻转状态、模型检测临时图像和内存回收不一致导致的卡死概率。
 - Mini / 从车的图像采集路径与 Plus 保持同一维护方式，但默认不启用额外软件翻转，优先保证长时间运行稳定性。
 

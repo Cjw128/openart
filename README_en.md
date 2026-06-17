@@ -25,13 +25,54 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 ## Logs
 
-### 2026-06-15 - v0.7.1 - 12 cm Calibration and Freeze Fix
+### 2026-06-18 - v0.7.3-dev - Plus Offline Freeze Diagnostics
+
+Scope: `main.py`, `yellow_crossline_ipm.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Added lightweight watchdog and SD checkpoint logging to `main.py`; diagnostic checkpoints append to `/sd/watchdog.log`.
+- Removed runtime `print()` calls from the Plus main loop so offline runs do not block on unread USB/stdout output.
+- Added `RUNTIME_LENS_CORR = False` and disabled per-frame runtime `lens_corr(2)` in `main.py` to isolate frame-buffer and heap pressure.
+- Disabled `lens_corr(2)` in the standalone `yellow_crossline_ipm.py` loop so its image path matches the uncorrected calibration view.
+- Removed the temporary Plus flip test script from the workspace.
+
+Effect:
+
+- This is a test/diagnostic state, not a final stability claim.
+- Logs can be inspected after an offline freeze or watchdog reset to locate the last completed stage.
+- Runtime image coordinates now match the current calibration-mode image path, which does not apply lens correction.
+
+Verification:
+
+- `python -c "import pathlib; compile(pathlib.Path('main.py').read_text(encoding='utf-8'), 'main.py', 'exec')"` passed.
+- `python -c "import pathlib; compile(pathlib.Path('yellow_crossline_ipm.py').read_text(encoding='utf-8'), 'yellow_crossline_ipm.py', 'exec')"` passed.
+
+### 2026-06-16 - v0.7.2 - 22 cm Calibration Notes
+
+Scope: `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Corrected the `main.py` IPM calibration comment: the Plus camera setup is also `22 cm` above ground, not `12 cm`.
+- Updated the `minimain.py` IPM calibration comment to mark the current Mini camera setup as `22 cm` above ground.
+- Clarified that IPM points should be recalibrated if either camera height or pitch changes again.
+
+Effect:
+
+- Plus and Mini calibration notes now both document the current `22 cm` setup.
+
+Verification:
+
+- `python -c "import pathlib; compile(pathlib.Path('minimain.py').read_text(encoding='utf-8'), 'minimain.py', 'exec')"` passed.
+
+### 2026-06-15 - v0.7.1 - 22 cm Calibration and Freeze Fix
 
 Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
 
 Changed:
 
-- Updated the Plus runtime `main.py` IPM calibration for the `12 cm` camera-height setup. `CALIB_PIXEL` now uses the field-measured image points, and `CALIB_WORLD` uses the matching world coordinates.
+- Updated the Plus runtime `main.py` IPM calibration for the `22 cm` camera-height setup. `CALIB_PIXEL` now uses the field-measured image points, and `CALIB_WORLD` uses the matching world coordinates.
 - Added a shared `snapshot_frame()` entry in `main.py` so capture, lens correction, and software flipping are handled in one place instead of separate direct `sensor.snapshot()` calls in the main loop, brightness calibration, and IPM calibration mode.
 - Changed `main.py` to apply `hmirror` / `vflip` together in software, reducing the risk of display corruption or freezes when the OpenART firmware keeps multiple hardware flip states.
 - Fixed the Plus UART selection in `main.py`: the master car uses `UART(12)`, and the slave car uses `UART(2)`.
@@ -41,7 +82,7 @@ Changed:
 
 Effect:
 
-- Plus IPM world coordinates now match the current `12 cm` camera mounting height.
+- Plus IPM world coordinates now match the current `22 cm` camera mounting height.
 - The Plus image-capture and flip path is more centralized, reducing freeze risk from inconsistent hardware flip state, temporary model images, and delayed memory collection.
 - Mini / slave-car capture follows the same maintenance pattern while keeping extra software flip disabled by default for long-run stability.
 

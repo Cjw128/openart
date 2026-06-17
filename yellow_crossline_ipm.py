@@ -429,7 +429,7 @@ class YellowCrosslineIPM:
         while True:
             self.clock.tick()
             self.frame_id += 1
-            img = sensor.snapshot().lens_corr(2)
+            img = sensor.snapshot()
             result = self.process_frame(img)
             self.send_result(result)
 

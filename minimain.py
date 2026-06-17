@@ -14,7 +14,7 @@ CALIBRATION_MODE = False   # True = 逆透视标定模式, False = 正常识别
 BIRDVIEW_DEBUG = False     # True = IDE显示鸟瞰图(慢), False = 高速检测
 IS_SLAVE_CAR = True       # False=master OpenART(UART12), True=slave OpenART(UART2)
 SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
-SOFTWARE_VFLIP = False     # Short test only; keep False for long runs to avoid frame-buffer pressure.
+SOFTWARE_HMIRROR = True    # Hardware keeps vflip; software only adds hmirror to avoid full replace tearing.
 
 # ======================================================================
 # 硬件初始化
@@ -26,8 +26,9 @@ sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
 sensor.set_framerate(60)
 
-# Use only one hardware flip; OpenART firmware may not keep hmirror/vflip together.
-sensor.set_hmirror(True)
+# Mini firmware may only keep one hardware flip; keep vertical in hardware and add hmirror in snapshot_frame().
+sensor.set_hmirror(False)
+sensor.set_vflip(True)
 
 sensor.skip_frames(time=500)
 
@@ -35,8 +36,8 @@ def snapshot_frame(apply_lens_corr=False):
     img = sensor.snapshot()
     if apply_lens_corr:
         img = img.lens_corr(2)
-    if SOFTWARE_VFLIP:
-        img = img.replace(vflip=True)
+    if SOFTWARE_HMIRROR:
+        img = img.replace(hmirror=True)
     return img
 
 # 白平衡配置
@@ -745,19 +746,20 @@ def world_to_pixel(X, Y, H):
     return (int(u), int(v))
 
 # ======================================================================
-# 逆透视标定数据，需要根据实际摄像头位置标定
+# 逆透视标定数据，当前为 Mini 相机离地 22cm 的现场标定参数。
+# 如重新调整 Mini 相机高度或俯仰角，需要重新运行标定模式更新 CALIB_PIXEL。
 # ======================================================================
 CALIB_PIXEL = [
-    [85, 240],     # 点0: 近处左侧
-    [267, 240],    # 点1: 近处右侧
-    [125, 129],    # 点2: 远处左侧
-    [219, 129],    # 点3: 远处右侧
+    [90, 240],     # 点0: 近处左侧
+    [228, 240],    # 点1: 近处右侧
+    [115, 131],    # 点2: 远处左侧
+    [202, 131],    # 点3: 远处右侧
 ]
 CALIB_WORLD = [
-    [-7.5, 7.5],   # 点0: 左7.5cm, 前方7.5cm
-    [7.5, 7.5],    # 点1: 右7.5cm, 前方7.5cm
-    [-7.5, 22.5],  # 点2: 左7.5cm, 前方22.5cm
-    [7.5, 22.5],   # 点3: 右7.5cm, 前方22.5cm
+    [-7.5, 7],   # 点0: 左7.5cm, 前方7.5cm
+    [7.5, 7],    # 点1: 右7.5cm, 前方7.5cm
+    [-7.5, 22],  # 点2: 左7.5cm, 前方22.5cm
+    [7.5, 22],   # 点3: 右7.5cm, 前方22.5cm
 ]
 
 # 计算单应性矩阵

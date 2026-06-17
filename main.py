@@ -5,6 +5,10 @@
 
 import sensor, image, time, math, gc
 from machine import UART
+try:
+    from machine import WDT
+except Exception:
+    WDT = None
 from yellow_crossline_ipm import create_crossline_ipm
 
 # ======================================================================
@@ -14,7 +18,55 @@ CALIBRATION_MODE = False# True = IPM calibration mode, False = normal detection
 BIRDVIEW_DEBUG = False     # True = show bird-view image in IDE, False = fast detection
 IS_SLAVE_CAR = False       # False=master OpenART(UART12), True=slave OpenART(UART2)
 SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
-SOFTWARE_VFLIP = True     # img.replace(vflip=True) is in-place; firmware can only keep one hardware flip at a time.
+SOFTWARE_HMIRROR = True   # Hardware keeps vflip; software only adds hmirror to avoid full-frame flip tearing.
+RUNTIME_LENS_CORR = False  # Test switch: disable per-frame lens_corr to isolate frame-buffer pressure.
+ENABLE_WATCHDOG = True
+WATCHDOG_TIMEOUT_MS = 8000
+ENABLE_SD_LOG = True
+LOG_PATH = '/sd/watchdog.log'
+LOG_INTERVAL_MS = 1000
+LOG_FIRST_FRAMES = 10
+
+wdt = None
+last_log_ms = 0
+
+def log_checkpoint(stage, frame=-1, force=False):
+    global last_log_ms
+    if not ENABLE_SD_LOG:
+        return
+    now = time.ticks_ms()
+    if not force and time.ticks_diff(now, last_log_ms) < LOG_INTERVAL_MS:
+        return
+    last_log_ms = now
+    try:
+        free = gc.mem_free() if hasattr(gc, 'mem_free') else -1
+    except Exception:
+        free = -1
+    try:
+        with open(LOG_PATH, 'a') as f:
+            f.write('{} ms frame={} stage={} free={}\n'.format(now, frame, stage, free))
+    except Exception:
+        pass
+
+def init_watchdog():
+    global wdt
+    if not ENABLE_WATCHDOG or WDT is None:
+        return
+    try:
+        wdt = WDT(timeout=WATCHDOG_TIMEOUT_MS)
+    except Exception:
+        wdt = None
+
+def feed_watchdog():
+    if wdt is None:
+        return
+    try:
+        wdt.feed()
+    except Exception:
+        pass
+
+log_checkpoint('boot', force=True)
+init_watchdog()
 
 # ======================================================================
 # Hardware initialization
@@ -25,15 +77,16 @@ sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)      # 320x240
 sensor.set_framerate(60)
-# Both flips done in one software replace() call to avoid IDE tearing from mid-flip USB reads.
+# Firmware may only keep one hardware flip; keep vertical in hardware and add hmirror in snapshot_frame().
 sensor.set_hmirror(False)
+sensor.set_vflip(True)
 
 def snapshot_frame(apply_lens_corr=False):
     img = sensor.snapshot()
     if apply_lens_corr:
         img = img.lens_corr(2)
-    if SOFTWARE_VFLIP:
-        img = img.replace(hmirror=True, vflip=True)
+    if SOFTWARE_HMIRROR:
+        img = img.replace(hmirror=True)
     return img
 
 # White balance configuration
@@ -642,17 +695,21 @@ def load_white_bear_model():
         model_tf = None
         model_net = None
         model_ready = False
+        log_checkpoint('model_disabled', force=True)
         return
+    log_checkpoint('model_load_start', force=True)
     try:
         import tf
         gc.collect()
         model_tf = tf
         model_net = tf.load(MODEL_PATH)
         model_ready = True
+        log_checkpoint('model_load_done', force=True)
     except Exception as e:
         model_tf = None
         model_net = None
         model_ready = False
+        log_checkpoint('model_load_fail', force=True)
 
 def find_white_bear_model_target(img, last_box):
     global model_status_last_print
@@ -837,7 +894,8 @@ def world_to_pixel(X, Y, H):
     return (int(u), int(v))
 
 # ======================================================================
-# IPM calibration data; tune for the actual camera mount.
+# IPM calibration data; current Plus camera setup is calibrated at 22 cm above ground.
+# Re-run calibration mode if the camera height or pitch changes.
 # ======================================================================
 CALIB_PIXEL = [
     [90, 240],     # Point 0: near left
@@ -846,7 +904,7 @@ CALIB_PIXEL = [
     [210, 149],    # Point 3: far right
 ]
 
-#离地12cm参数
+# Ground-clearance 22 cm calibration parameters
 CALIB_WORLD = [
     [-8, 6],   # Point 0: left 7.5 cm, forward 7.5 cm
     [7, 6],    # Point 1: right 7.5 cm, forward 7.5 cm
@@ -1452,26 +1510,43 @@ while True:
     # FPS accounting
     clock.tick()
     frame_count += 1
+    log_force = frame_count <= LOG_FIRST_FRAMES
+    log_checkpoint('loop_start', frame_count, force=log_force)
 
     # Receive host command
+    log_checkpoint('before_uart_read', frame_count, force=log_force)
     cmd, param = receive_command_from_host()
+    log_checkpoint('after_uart_read', frame_count, force=log_force)
 
     # Capture image and apply lens correction
-    img = snapshot_frame(apply_lens_corr=True)
+    log_checkpoint('before_snapshot', frame_count, force=log_force)
+    img = snapshot_frame(apply_lens_corr=RUNTIME_LENS_CORR)
+    log_checkpoint('after_snapshot', frame_count, force=log_force)
     world_x = 0.0
     world_y = 0.0
 
     if openart_mode == MODE_RETURN:
+        log_checkpoint('before_return_frame', frame_count, force=log_force)
         process_return_beacon_frame(img)
+        log_checkpoint('after_return_frame', frame_count, force=log_force)
+        feed_watchdog()
         continue
 
     if crossline_angle_enabled:
+        log_checkpoint('before_crossline', frame_count, force=log_force)
         crossline_angle_result = crossline_ipm.process_frame(img)
+        log_checkpoint('after_crossline', frame_count, force=log_force)
 
     # ===== Dynamic cut update =====
+    log_checkpoint('before_dynamic_cut', frame_count, force=log_force)
     update_dynamic_cut(img, frame_count)
+    log_checkpoint('after_dynamic_cut', frame_count, force=log_force)
+    log_checkpoint('before_obstacle', frame_count, force=log_force)
     obstacle_flag, obstacle_blobs = detect_obstacle(img)
+    log_checkpoint('after_obstacle', frame_count, force=log_force)
+    log_checkpoint('before_yellow', frame_count, force=log_force)
     update_yellow_detection(img, frame_count)
+    log_checkpoint('after_yellow', frame_count, force=log_force)
 
     # ===== Color blob detection / tracking =====
     best = None
@@ -1481,7 +1556,9 @@ while True:
 
     model_found = None
     if USE_WHITE_BEAR_MODEL and target_color_id == WHITE_BEAR_COLOR_ID:
+        log_checkpoint('before_model_target', frame_count, force=log_force)
         model_found = find_white_bear_model_target(img, last_box)
+        log_checkpoint('after_model_target', frame_count, force=log_force)
         if model_found:
             send_color_id, x1, y1, w, h, model_score = model_found
             if not box_hits_obstacle((x1, y1, w, h), obstacle_blobs):
@@ -1497,7 +1574,9 @@ while True:
         else:
             found = None
     else:
+        log_checkpoint('before_color_target', frame_count, force=log_force)
         found = find_color_target(img, last_box)
+        log_checkpoint('after_color_target', frame_count, force=log_force)
 
     if found and (not USE_WHITE_BEAR_MODEL or target_color_id != WHITE_BEAR_COLOR_ID):
         send_color_id, blob = found
@@ -1515,7 +1594,9 @@ while True:
             found = None
 
     if USE_WHITE_BEAR_MODEL and not found and target_color_id == 0:
+        log_checkpoint('before_model_search', frame_count, force=log_force)
         model_found = find_white_bear_model_target(img, last_box)
+        log_checkpoint('after_model_search', frame_count, force=log_force)
         if model_found:
             send_color_id, x1, y1, w, h, model_score = model_found
             if not box_hits_obstacle((x1, y1, w, h), obstacle_blobs):
@@ -1563,8 +1644,10 @@ while True:
         wx_mm = int(world_x * 10)
         wy_mm = int(world_y * 10)
         distance = calculate_distance(w, send_color_id)
+        log_checkpoint('before_uart_write_target', frame_count, force=log_force)
         send_world_data(send_color_id, wx_mm, wy_mm, w, yellow_detected, pos_flag, obstacle_flag,
                         angle_flag, angle_cdeg)
+        log_checkpoint('after_uart_write_target', frame_count, force=log_force)
 
         color = (255, 0, 0)
         if send_color_id == 1:
@@ -1583,25 +1666,14 @@ while True:
         img.draw_string(x1, max(0, y1 - 15), text, color=color, scale=1)
         detect_count += 1
 
-        now = time.ticks_ms()
-        if time.ticks_diff(now, last_print_time) >= 500:
-            last_print_time = now
-            print('[{}] cid={} src={} px=({},{}) box=({},{},{},{}) w=({:.1f},{:.1f})cm wx={}mm wy={}mm fps={:.1f}'.format(
-                frame_count, send_color_id, source,
-                cx, cy, x1, y1, w, h,
-                world_x, world_y, wx_mm, wy_mm,
-                clock.fps()))
     else:
         lost_frame_count += 1
         stable_detect_count = 0
         if lost_frame_count > MAX_LOST_FRAMES and (target_color_id > 0 or active_threshold is not None or color_track_active):
             reset_target_tracking_state()
+        log_checkpoint('before_uart_write_none', frame_count, force=log_force)
         send_world_no_target(yellow_detected, pos_flag, obstacle_flag, angle_flag, angle_cdeg)
-        now = time.ticks_ms()
-        if time.ticks_diff(now, last_print_time) >= 1000:
-            last_print_time = now
-            print('[{}] no target yflag={} pos={} obs={} fps={:.1f}'.format(
-                frame_count, yellow_detected, pos_flag, obstacle_flag, clock.fps()))
+        log_checkpoint('after_uart_write_none', frame_count, force=log_force)
     # Yellow detection is updated before pos_flag is calculated.
 
     # Draw dynamic cut line (debug)
@@ -1637,3 +1709,6 @@ while True:
                         color=(0,255,255), scale=1)
         img.draw_string(85, 20, "FPS:{:.1f}".format(clock.fps()),
                         color=(255,255,0), scale=1)
+
+    log_checkpoint('loop_end', frame_count, force=log_force)
+    feed_watchdog()
