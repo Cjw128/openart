@@ -1,5 +1,5 @@
 # ======================================================================
-# OpenART Mini 前置摄像头 - 多颜色目标识别程序
+# OpenART Plus front camera - multi-color target detection
 # ======================================================================
 
 
@@ -12,7 +12,7 @@ from yellow_crossline_ipm import create_crossline_ipm
 # ======================================================================
 CALIBRATION_MODE = False   # True = 逆透视标定模式, False = 正常识别
 BIRDVIEW_DEBUG = False     # True = IDE显示鸟瞰图(慢), False = 高速检测
-IS_SLAVE_CAR = True       # False=master OpenART(UART12), True=slave OpenART(UART2)
+IS_SLAVE_CAR = True       # Software role: slave logic receives target color ID from host.
 SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
 SOFTWARE_HMIRROR = True    # Hardware keeps vflip; software only adds hmirror to avoid full replace tearing.
 
@@ -26,7 +26,7 @@ sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
 sensor.set_framerate(60)
 
-# Mini firmware may only keep one hardware flip; keep vertical in hardware and add hmirror in snapshot_frame().
+# Firmware may only keep one hardware flip; keep vertical in hardware and add hmirror in snapshot_frame().
 sensor.set_hmirror(False)
 sensor.set_vflip(True)
 
@@ -132,11 +132,8 @@ def calibrate_brightness_startup(target=TARGET_BRIGHTNESS, samples=5, roi=None, 
 sensor.set_auto_exposure(False, exposure_us=1200)
 sensor.set_auto_gain(False, gain_db=0)
 
-# 串口初始化，Mini 从车使用 UART2，主车使用 UART12
-if IS_SLAVE_CAR:
-    uart = UART(2, baudrate=115200)
-else:
-    uart = UART(12, baudrate=115200)
+# UART initialization: OpenART Plus exposes UART12 for both master and slave roles.
+uart = UART(12, baudrate=115200)
 
 # 帧率计时器
 clock = time.clock()
@@ -151,7 +148,7 @@ clock = time.clock()
 
 # 所有支持的颜色阈值
 all_color_thresholds = [
-    (23, 96, -49, 4, -53, -30),    # 颜色1: 淡蓝色沙包
+    (22, 94, -54, 5, -53, -24),    # 颜色1: 淡蓝色沙包
     (10, 80, 22, 122, -17, 93),    # 颜色2: 红色沙包
     (50, 100, -128, -27, 20, 127), # 颜色3: 网球(浅绿/荧光黄绿)
     (20, 55, 30, -1, 50, 0),       # 颜色4: 棕色泰迪熊 ← 需实际标定!
@@ -166,6 +163,7 @@ COLOR_MIN_AREA = 100
 TENNIS_COLOR_ID = 3
 TENNIS_MIN_PIXELS = 45
 TENNIS_MIN_AREA = 45
+# Runtime target detection uses LAB color blobs only.
 
 # 蓝色背景布阈值 (示例，需实测)
 # 重点看 B 通道，蓝色通常在 -20 以下
@@ -195,7 +193,7 @@ DETECT_ROI = (0, DETECT_Y_MIN, 320, 240 - DETECT_Y_MIN)
 # Dynamic cut line (based on blue-ground strips on left/right)
 # ======================================================================
 ENABLE_DYNAMIC_CUT = True
-BLUE_GROUND_THRESHOLD = [(32, 57, -52, 76, -108, -28)]
+BLUE_GROUND_THRESHOLD = [(34, 51, -54, 78, -104, -12)]
 CUT_LEFT_X = 10
 CUT_RIGHT_X = 310
 CUT_STRIP_HALF_W = 2
@@ -1283,11 +1281,11 @@ detect_count = 0
 last_print_time = time.ticks_ms()
 
 print("=" * 50)
-print("OpenART Mini 多颜色目标识别程序")
+print("OpenART Plus multi-color target detection")
 print("=" * 50)
 print("分辨率: 320x240 (QVGA)")
 print("帧率: 60 FPS")
-print("串口: UART{}, 115200bps".format(2 if IS_SLAVE_CAR else 12))
+print("串口: UART12, 115200bps")
 print("颜色模式: 初始多颜色检测 -> 锁定单颜色跟踪")
 print("支持颜色: {} 种".format(len(all_color_thresholds)))
 print("颜色阈值:", all_color_thresholds)

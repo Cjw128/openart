@@ -25,6 +25,76 @@
 
 ## 更新日志
 
+### 2026-07-05 - v0.7.7-dev - Plus 从车 UART12 与两阶段黄线过线
+
+范围：`main.py`, `minimain.py`, `yellow_crossline_ipm.py`, `README_ch.md`, `README_en.md`, `README.md`
+
+变更：
+- `minimain.py` 按 OpenART Plus 硬件更新：保留从车软件角色和颜色 ID 接收逻辑，但串口固定初始化为 `UART12`。
+- `main.py` 黄线检测改为扫描 `y=100`、`y=140` 附近两块横向 ROI，取黄色 blob 中心点拟合贯穿屏幕的黄线。
+- 搬运模式黄线过线改为两阶段：先等待拟合黄线到达左下角或右下角，只作为过线判定解锁；之后黄线连续消失达到阈值时才发送搬运完成/`POS_CROSSED`。
+- `yellow_crossline_ipm.py` 默认串口、标定点和镜像采集路径同步到 OpenART Plus。
+
+验证：
+- `python -m py_compile .\main.py .\minimain.py .\yellow_crossline_ipm.py` 已通过。
+
+### 2026-07-05 - v0.7.6-dev - 全程色块检测运行路径
+范围：`main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- 删除 `main.py` 中 Plus 运行时白熊相关的模型配置、加载路径、推理辅助函数和主循环模型分支。
+- 5 号白熊目标改为与其它目标一致，走 LAB `find_blobs()` 色块检测和跟踪路径。
+- 确认 `minimain.py` 没有目标推理路径，并标注运行时目标检测只使用 LAB 色块。
+
+效果：
+- Plus / Mini 正式运行入口不再导入 `tf`、加载 `.tflite`、创建推理用临时缩放图像，也不在帧循环中调用推理。
+- 降低 RAM 压力和帧循环阻塞风险；所有目标统一使用色块检测。
+
+验证：
+- `rg -n "tf|tflite|model|MODEL|USE_WHITE|WHITE_BEAR|find_white|load_white|model_net|model_tf|\.detect\(" main.py minimain.py` 无匹配。
+- `python -m py_compile main.py minimain.py` 已通过。
+- `git diff --check -- main.py minimain.py` 已通过。
+
+### 2026-06-21 - v0.7.5-dev - 移除 SD 日志，消除脱机死机隐患
+
+范围：`main.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- 删除 `ENABLE_SD_LOG`、`LOG_PATH`、`LOG_INTERVAL_MS`、`LOG_FIRST_FRAMES` 常量及 `last_log_ms` 变量。
+- 删除 `log_checkpoint()` 函数。
+- 删除启动时、`load_white_bear_model()` 内、主循环内全部 `log_checkpoint` 调用（约 25 处）。
+- 保留看门狗逻辑（`ENABLE_WATCHDOG`、`WATCHDOG_TIMEOUT_MS`、`init_watchdog()`、`feed_watchdog()`）不变。
+
+效果：
+- 消除前 10 帧强制写 SD（约 15 次/帧）导致单帧耗时超 8 s 触发 WDT 复位的风险。
+- 消除正常运行时每秒一次 SD 写入可能卡住帧循环的隐患。
+- 主循环无 SD I/O，帧时间更稳定。
+
+维护约束：
+- 脱机部署不要重新开启 SD 日志；如需现场诊断，上板连 IDE 用 `print()` 或单独的诊断脚本，不要在主循环里加文件写入。
+- 若将来需要持久化日志，必须在 `log_checkpoint` 内加 `feed_watchdog()`，并把强制写入帧数（`LOG_FIRST_FRAMES`）降到 3 帧以内。
+
+验证：
+- `python -m py_compile main.py` 已通过。
+
+### 2026-06-20 - v0.7.4-dev - OpenART TypeError 兼容性记录
+
+范围：`main.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- 记录 OpenART/MicroPython 上两类现场 `TypeError` 的原因和处理方法。
+- `TypeError: function takes 0 positional arguments but 1 were given`：现场固件里部分内建名或被覆盖的函数不一定等同于桌面 Python。不要在运行主流程里为了规范化真假值额外写 `bool(x)`；直接使用列表/blob 对象本身做条件判断，例如 `raw_yellow_seen = yellow_blob` 或 `raw_yellow_seen = yellow_blobs_left and yellow_blobs_right`。
+- `TypeError: function takes 2 positional arguments but 1 were given`：在 OpenART/MicroPython 上新增一层辅助函数调用时，报错位置可能不够直观，尤其是状态机切换、全局变量和命令处理混在一起时。处理方法是先减少调用链，把关键状态赋值放回命令处理原位置，再逐步验证。
+- 桌面端 `python -m py_compile` 只能证明语法合法，不能证明 OpenART 固件运行时 API 和内建函数行为一致；涉及 `bool()`、`max(..., key=...)`、新增函数封装、摄像头/图像 API 时必须上板验证。
+
+维护约束：
+- 主循环和命令处理里的条件判断优先使用 MicroPython 兼容写法，避免不必要的类型转换包装。
+- 现场报 `TypeError` 时先检查最近新增的函数调用、内建名调用和带 `key=` 的高阶调用，再看算法逻辑。
+- 修复这类问题时优先做小改动，保留原状态机路径，避免把运行时兼容问题和业务逻辑调整混在一起。
+
+验证：
+- `python -m py_compile .\main.py` 已通过。
+
 ### 2026-06-18 - v0.7.3-dev - Plus 脱机死机诊断
 
 范围：`main.py`, `yellow_crossline_ipm.py`, `README.md`, `README_ch.md`, `README_en.md`

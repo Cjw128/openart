@@ -7,8 +7,8 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 | File | Device | Role |
 | --- | --- | --- |
 | `main.py` | OpenART Plus | Plus single-file official offline runtime |
-| `minimain.py` | OpenART Mini | Mini / slave-car single-file official offline runtime |
-| `yellow_crossline_ipm.py` | OpenART Plus / Mini / test | Yellow crossline angle and IPM helper imported by `main.py` / `minimain.py` |
+| `minimain.py` | OpenART Plus | Plus slave-role single-file official offline runtime |
+| `yellow_crossline_ipm.py` | OpenART Plus / test | Yellow crossline angle and IPM helper |
 | `openart_test_3class.py` | test | Three-class vision test |
 | `return_beacon_ipm_test.py` | test | Return beacon IPM test |
 | `test_model.py` | test | Model test script |
@@ -16,14 +16,71 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 ## Structure Notes
 
-- Current competition/offline deployment uses the single-file layout. `main.py` and `minimain.py` each contain the full runtime logic for Plus and Mini / slave-car.
+- Current competition/offline deployment uses the single-file layout. `main.py` and `minimain.py` both run on OpenART Plus; `main.py` is the master-role active-search script, and `minimain.py` is the slave-role color-ID-controlled script.
 - The multi-file runtime modules have been removed. The deployment no longer uses `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, or `openart_calibration.py`.
 - `yellow_crossline_ipm.py` is the only retained runtime helper module. Copy it together with `main.py` / `minimain.py` when deploying.
-- White-bear detection, color target detection, yellow-line state, return beacon, UART protocol, IPM, and the main loop live inside the corresponding single-file runtime.
+- White-bear target handling now uses LAB color blobs like the other targets. Color target detection, yellow-line state, return beacon, UART protocol, IPM, and the main loop live inside the corresponding single-file runtime.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
 - Keep all structure notes and iteration records in `README_ch.md` / `README_en.md`, and update both languages together.
 
 ## Logs
+
+### 2026-07-05 - v0.7.7-dev - Plus slave UART12 and two-stage yellow crossing
+
+Scope: `main.py`, `minimain.py`, `yellow_crossline_ipm.py`, `README_ch.md`, `README_en.md`, `README.md`
+
+Changed:
+
+- Updated `minimain.py` for OpenART Plus hardware: the script keeps slave-role color-ID control but always initializes `UART12`.
+- Updated `main.py` yellow-line detection to scan two horizontal ROIs around `y=100` and `y=140`, fit a full-screen yellow line, and use the fitted line during carry mode.
+- Split carry-mode yellow crossing into two stages: first arm the crossing only after the fitted yellow line reaches the left or right bottom corner, then report carry completion only after the yellow line disappears for the configured lost-frame threshold.
+- Updated `yellow_crossline_ipm.py` defaults to Plus UART12, Plus calibration, and the same mirror capture path.
+
+Verification:
+
+- `python -m py_compile .\main.py .\minimain.py .\yellow_crossline_ipm.py` passed.
+
+### 2026-07-05 - v0.7.6-dev - Color-blob-only runtime
+
+Scope: `main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Removed the Plus runtime white-bear model configuration, load path, inference helper, and main-loop model branches from `main.py`.
+- Color 5 now follows the same LAB `find_blobs()` detection and tracking path as the other targets.
+- Confirmed `minimain.py` has no target inference path and marked its runtime target detection as LAB color-blob-only.
+
+Effect:
+
+- The official Plus / Mini runtime no longer imports `tf`, loads `.tflite`, creates temporary scaled images for inference, or calls inference in the frame loop.
+- This reduces RAM pressure and frame-loop blocking risk; all targets now use color-block detection.
+
+Verification:
+
+- `rg -n "tf|tflite|model|MODEL|USE_WHITE|WHITE_BEAR|find_white|load_white|model_net|model_tf|\.detect\(" main.py minimain.py` returned no matches.
+- `python -m py_compile main.py minimain.py` passed.
+- `git diff --check -- main.py minimain.py` passed.
+
+### 2026-06-20 - v0.7.4-dev - OpenART TypeError Compatibility Notes
+
+Scope: `main.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Documented two field `TypeError` cases seen on OpenART/MicroPython and their fixes.
+- `TypeError: function takes 0 positional arguments but 1 were given`: some built-ins or shadowed names on the field firmware may not behave like desktop Python. Do not add `bool(x)` in the runtime path just to normalize truth values. Use the list/blob object directly in conditions, for example `raw_yellow_seen = yellow_blob` or `raw_yellow_seen = yellow_blobs_left and yellow_blobs_right`.
+- `TypeError: function takes 2 positional arguments but 1 were given`: after adding helper-function wrappers on OpenART/MicroPython, the reported call site may be indirect, especially around state-machine transitions, globals, and command handling. The fix is to shorten the call chain first, put the key state assignments back at the command-handling site, and then validate incrementally.
+- Desktop `python -m py_compile` only proves syntax validity. It does not prove OpenART firmware runtime API or built-in behavior matches desktop Python. Board testing is required for changes involving `bool()`, `max(..., key=...)`, new helper wrappers, or camera/image APIs.
+
+Maintenance rules:
+
+- In the main loop and command handling, prefer MicroPython-compatible condition checks and avoid unnecessary type-conversion wrappers.
+- When a field `TypeError` appears, first inspect recently added function calls, built-in calls, and higher-order calls using `key=`, then inspect the algorithm logic.
+- Fix these runtime compatibility issues with small changes that preserve the existing state-machine path, so compatibility fixes are not mixed with behavior changes.
+
+Verification:
+
+- `python -m py_compile .\main.py` passed.
 
 ### 2026-06-18 - v0.7.3-dev - Plus Offline Freeze Diagnostics
 

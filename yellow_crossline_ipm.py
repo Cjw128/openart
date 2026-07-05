@@ -4,6 +4,9 @@ import math
 from machine import UART
 
 
+SOFTWARE_HMIRROR = True
+
+
 # ======================================================================
 # OpenART Plus - horizontal yellow line angle correction with IPM
 #
@@ -99,26 +102,26 @@ def pixel_to_world(px, py, H):
 
 
 class YellowCrosslineIPM:
-    def __init__(self, uart_enabled=True, uart_id=2):
+    def __init__(self, uart_enabled=True, uart_id=12):
         self.width = 320
         self.height = 240
         self.center_x = self.width // 2
 
         # 黄色阈值需要按赛场光照重新标定。
-        self.yellow_threshold = [(66, 95, 5, -27, 40, 95)]
+        self.yellow_threshold = [(52, 100, -46, 64, 13, 121)]
 
         # 从 main.py 复制来的逆透视标定点。
         self.calib_pixel = [
-            [85, 240],
-            [267, 240],
-            [125, 129],
-            [219, 129],
+            [90, 240],
+            [236, 240],
+            [121, 149],
+            [210, 149],
         ]
         self.calib_world = [
-            [-7.5, 7.5],
-            [7.5, 7.5],
-            [-7.5, 22.5],
-            [7.5, 22.5],
+            [-8, 6],
+            [7, 6],
+            [-8, 21],
+            [8, 21],
         ]
         self.H_pix2world = calc_homography(self.calib_pixel, self.calib_world)
 
@@ -153,12 +156,22 @@ class YellowCrosslineIPM:
         sensor.set_pixformat(sensor.RGB565)
         sensor.set_framesize(sensor.QVGA)
         sensor.set_framerate(60)
+        # Keep vertical flip in hardware and add horizontal mirror in snapshot_frame(),
+        # matching main.py's capture path.
+        sensor.set_hmirror(False)
+        sensor.set_vflip(True)
 
         sensor.set_auto_whitebal(False, rgb_gain_db=(101.00, 64.00, 97.00))
         sensor.skip_frames(time=500)
         sensor.set_auto_exposure(False, exposure_us=1200)
         sensor.set_auto_gain(False, gain_db=0)
         sensor.skip_frames(time=300)
+
+    def snapshot_frame(self):
+        img = sensor.snapshot()
+        if SOFTWARE_HMIRROR:
+            img = img.replace(hmirror=True)
+        return img
 
     def set_threshold(self, threshold):
         if isinstance(threshold, tuple):
@@ -429,7 +442,7 @@ class YellowCrosslineIPM:
         while True:
             self.clock.tick()
             self.frame_id += 1
-            img = sensor.snapshot()
+            img = self.snapshot_frame()
             result = self.process_frame(img)
             self.send_result(result)
 
@@ -449,7 +462,7 @@ class YellowCrosslineIPM:
                 self.last_print_ms = now
 
 
-def create_crossline_ipm(uart_enabled=True, uart_id=2):
+def create_crossline_ipm(uart_enabled=True, uart_id=12):
     return YellowCrosslineIPM(uart_enabled=uart_enabled, uart_id=uart_id)
 
 
