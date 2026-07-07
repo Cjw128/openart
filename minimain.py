@@ -148,13 +148,36 @@ clock = time.clock()
 
 # 所有支持的颜色阈值
 all_color_thresholds = [
-    (22, 94, -54, 5, -53, -24),    # 颜色1: 淡蓝色沙包
+    (34, 100, -41, 5, -72, -17),    # 颜色1: 淡蓝色沙包
     (10, 80, 22, 122, -17, 93),    # 颜色2: 红色沙包
     (50, 100, -128, -27, 20, 127), # 颜色3: 网球(浅绿/荧光黄绿)
-    (20, 55, 30, -1, 50, 0),       # 颜色4: 棕色泰迪熊 ← 需实际标定!
+    (21, 52, -77, 25, 1, 99),      # 颜色4: 棕色泰迪熊 ← 需实际标定!
     (53, 100, -10, 11, -11, 8)    # 颜色5: 白色泰迪熊 ← 需实际标定!
 ]
-COLOR_SEARCH_ORDER = [3, 1, 2, 4, 5]  # 优先找网球，不改变颜色ID。
+
+def _load_thresholds(path='/sd/params.txt'):
+    try:
+        result = []
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(',')
+                if len(parts) != 6:
+                    continue
+                result.append(tuple(int(p) for p in parts))
+        if len(result) == 5:
+            return result
+    except Exception:
+        pass
+    return None
+
+_loaded = _load_thresholds()
+if _loaded:
+    all_color_thresholds = _loaded
+
+COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
@@ -163,6 +186,7 @@ COLOR_MIN_AREA = 100
 TENNIS_COLOR_ID = 3
 TENNIS_MIN_PIXELS = 45
 TENNIS_MIN_AREA = 45
+BEAR_MIN_BOX_AREA = 480
 # Runtime target detection uses LAB color blobs only.
 
 # 蓝色背景布阈值 (示例，需实测)
@@ -219,6 +243,7 @@ TRACK_MIN_ROI_W = 16
 TRACK_MIN_ROI_H = 16
 TRACK_MAX_JUMP_PX = 90
 TRACK_AREA_CHANGE_MAX_PERCENT = 60
+TRACK_MIN_IOU = 0.05
 
 # 长宽比过滤 (防止误判)
 ENABLE_ASPECT_RATIO_FILTER = True   # 是否启用长宽比过滤
@@ -240,8 +265,10 @@ last_tracked_pixels = -1
 track_force_global_next = False
 track_local_miss_count = 0
 target_color_id = 0
+host_color_id_received = False
 color_track_active = False
 color_track_box = None
+color_track_color_id = 0
 color_lost_count = 0
 _cmd_rx_buf = bytearray()
 crossline_angle_enabled = False
@@ -332,7 +359,7 @@ def reset_target_tracking_state():
     global lost_frame_count, stable_detect_count
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
     global last_target_cx, last_target_cy
-    global target_color_id
+    global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
 
     active_threshold = None
@@ -347,6 +374,7 @@ def reset_target_tracking_state():
     last_target_cx = -1
     last_target_cy = -1
     target_color_id = 0
+    host_color_id_received = False
     color_track_active = False
     color_track_box = None
     color_track_color_id = 0
@@ -525,6 +553,13 @@ def center_dist2(a, b):
     dy = acy - bcy
     return dx * dx + dy * dy
 
+def box_area_change_percent(a, b):
+    area_a = a[2] * a[3]
+    area_b = b[2] * b[3]
+    if area_a <= 0 or area_b <= 0:
+        return 1000
+    return abs(area_a - area_b) * 100 // area_b
+
 def make_roi_from_box(box):
     if not box:
         return dynamic_detect_roi
@@ -559,12 +594,14 @@ def valid_color_blob(blob, color_id):
     elif color_id == 4 or color_id == 5:
         if aspect < 0.30 or aspect > 2.50:
             return False
+        if w * h <= BEAR_MIN_BOX_AREA:
+            return False
         if blob.pixels() < 120:
             return False
     else:
         if aspect < 0.60 or aspect > 1.80:
             return False
-        if blob.density() < 0.60:
+        if blob.density() < 0.50:
             return False
     return True
 
@@ -584,6 +621,8 @@ def find_color_target(img, last_box):
     roi = make_roi_from_box(last_box)
     candidates = []
     for color_id, threshold in items:
+        if last_box and color_track_color_id > 0 and color_id != color_track_color_id:
+            continue
         color_candidates = []
         pixels_threshold, area_threshold = color_blob_thresholds(color_id)
         try:
@@ -591,7 +630,7 @@ def find_color_target(img, last_box):
                                    pixels_threshold=pixels_threshold,
                                    area_threshold=area_threshold,
                                    merge=True)
-        except TypeError:
+        except Exception:
             blobs = None
         if not blobs:
             continue
@@ -603,16 +642,29 @@ def find_color_target(img, last_box):
                 item = (color_id, blob)
                 candidates.append(item)
                 color_candidates.append(item)
-        if color_candidates and not last_box and color_id == TENNIS_COLOR_ID:
-            return pick_initial_color_candidate(color_candidates)
     if not candidates:
         return None
     if last_box:
-        def score_item(item):
+        tracked_candidates = []
+        max_jump2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
+        for item in candidates:
             b = item[1]
             b_box = (b.x(), b.y(), b.w(), b.h())
-            return b.pixels() - center_dist2(b_box, last_box) // 20
-        return max(candidates, key=score_item)
+            dist2 = center_dist2(b_box, last_box)
+            iou = box_iou(b_box, last_box)
+            area_change = box_area_change_percent(b_box, last_box)
+            if area_change > TRACK_AREA_CHANGE_MAX_PERCENT:
+                continue
+            if dist2 <= max_jump2 or iou >= TRACK_MIN_IOU:
+                tracked_candidates.append((item, dist2, iou))
+        if not tracked_candidates:
+            return None
+
+        def score_tracked(candidate):
+            item, dist2, iou = candidate
+            b = item[1]
+            return int(iou * 100000) - dist2 + b.pixels() // 8
+        return max(tracked_candidates, key=score_tracked)[0]
     return pick_initial_color_candidate(candidates)
 
 def beacon_roi_from_box(box):
@@ -1065,7 +1117,7 @@ def receive_command_from_host():
     global active_threshold, active_color_id, red_thresholds
     global lost_frame_count, stable_detect_count, openart_mode
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
-    global target_color_id
+    global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
     global _cmd_rx_buf, crossline_angle_enabled, crossline_angle_result
     global yellow_seen_in_carry, yellow_tracking, yellow_detected, yellow_recent_count
@@ -1114,6 +1166,7 @@ def receive_command_from_host():
         if command == 0x03:  # SET_TARGET_COLOR
             if 1 <= param <= len(all_color_thresholds):
                 target_color_id = param
+                host_color_id_received = True
                 active_color_id = param
                 active_threshold = [all_color_thresholds[param - 1]]
                 red_thresholds = active_threshold
@@ -1503,7 +1556,7 @@ while True:
         stable_detect_count += 1
         send_color_id, x1, y1, w, h = best
 
-        if target_color_id == 0 and send_color_id > 0 and stable_detect_count >= STABLE_FRAMES_REQUIRED and not SLAVE_MODE:
+        if target_color_id == 0 and send_color_id > 0 and stable_detect_count >= STABLE_FRAMES_REQUIRED and (not SLAVE_MODE or not host_color_id_received):
             target_color_id = send_color_id
             active_color_id = send_color_id
             active_threshold = [all_color_thresholds[send_color_id - 1]]

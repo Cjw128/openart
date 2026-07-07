@@ -168,10 +168,10 @@ clock = time.clock()
 
 # Supported color thresholds (fallback defaults; overridden by /sd/params.txt if present)
 all_color_thresholds = [
-    (34, 100, -41, 5, -72, -17),    # Color 1: light-blue bag
+    (34, 100, -41, 4, -72, -22),    # Color 1: light-blue bag
     (10, 80, 22, 122, -17, 93),     # Color 2: red bag
     (50, 100, -128, -27, 20, 127),  # Color 3: tennis ball
-    (21, 52, -77, 25, 1, 99),        # Color 4: brown teddy bear; tune on field
+    (21, 52, -77, 25, 6, 99),        # Color 4: brown teddy bear; tune on field
     (53, 100, -10, 11, -11, 8)      # Color 5: white teddy bear
 ]
 
@@ -206,6 +206,7 @@ COLOR_MIN_AREA = 100
 TENNIS_COLOR_ID = 3
 TENNIS_MIN_PIXELS = 45
 TENNIS_MIN_AREA = 45
+BEAR_MIN_BOX_AREA = 480
 
 # Blue floor threshold, example values that must be tuned on field.
 # Focus on the B channel; blue is usually below -20.
@@ -235,9 +236,18 @@ DETECT_ROI = (0, DETECT_Y_MIN, 320, 240 - DETECT_Y_MIN)
 # Dynamic cut line (based on blue-ground strips on left/right)
 # ======================================================================
 ENABLE_DYNAMIC_CUT = True
-BLUE_GROUND_THRESHOLD = [(56, 96, -83, 70, 21, 99)]
-CUT_LEFT_X = 10
-CUT_RIGHT_X = 310
+# 深蓝赛道地面 LAB 阈值（B 通道必须为负=偏蓝）。上场后用 IDE 阈值编辑器实测微调：
+# 重点看 B_max（约 -15 ~ -25）和 L 范围（深蓝偏暗，L 上限别太高）。
+BLUE_GROUND_THRESHOLD = [(0, 55, -30, 45, -90, -7)]
+CUT_BLOB_MIN_H = 12          # 条带内蓝色块最小高度，滤掉零星蓝色噪点/浅蓝沙包边缘
+CUT_BLOB_BOTTOM_MARGIN = 25  # 蓝色块底部须延伸到条带底部附近，才认为是连续的赛道地面
+CUT_GAP_BRIDGE = 10          # 向上桥接的最大间隙(px)：黄线横穿会把蓝地面切成上下两段，跨过它继续延伸
+CUT_LEFT_X = 0
+CUT_RIGHT_X = 320
+# 多条竖直采样带横跨画面：正对直角弯时赛道尖角在画面中间、比左右两侧更远，
+# 只采左右两条再连斜线会割掉尖角；改为取所有带的最高点做一条水平裁切线（保守）。
+CUT_STRIP_XS = (10, 85, 160, 235, 310)
+CUT_MIN_VALID_STRIPS = 2   # 至少几条带看到蓝地面才认为裁切线有效
 CUT_STRIP_HALF_W = 2
 CUT_SCAN_Y_MIN = 0
 CUT_SCAN_Y_MAX = 140
@@ -261,6 +271,7 @@ TRACK_MIN_ROI_W = 16
 TRACK_MIN_ROI_H = 16
 TRACK_MAX_JUMP_PX = 90
 TRACK_AREA_CHANGE_MAX_PERCENT = 60
+TRACK_MIN_IOU = 0.05
 
 # Aspect-ratio filter to reduce false positives
 ENABLE_ASPECT_RATIO_FILTER = True   # Enable aspect-ratio filtering
@@ -443,19 +454,38 @@ def clamp_int(v, lo, hi):
     return v
 
 def cut_line_y_at_x(x):
-    dx = CUT_RIGHT_X - CUT_LEFT_X
-    if dx == 0:
-        return dynamic_cut_left_y
-    return int(dynamic_cut_left_y + (dynamic_cut_right_y - dynamic_cut_left_y) * (x - CUT_LEFT_X) / dx)
+    # 水平裁切线：全画面统一取所有采样带中蓝地面的最高点（最保守）。
+    return dynamic_cut_left_y
 
 def pick_top_y_from_strip(blobs):
+    # 在竖条带内找"从底部向上连续延伸的深蓝地面"的最高点。
+    # 1) 种子段：色块够高且底部贴近扫描区下沿，避免场外零星蓝色把裁切线误抬高；
+    # 2) 桥接：黄线横穿条带会把蓝地面切成上下两段，允许跨过 <=CUT_GAP_BRIDGE 的
+    #    间隙继续向上延伸，使裁切线走到赛道真正的远边缘而不是吸附在黄线上。
     if not blobs:
         return None
-    top_y = 240
+    top_y = None
     for b in blobs:
-        by = b.y()
-        if by < top_y:
-            top_y = by
+        if b.h() < CUT_BLOB_MIN_H:
+            continue
+        if b.y() + b.h() < CUT_SCAN_Y_MAX - CUT_BLOB_BOTTOM_MARGIN:
+            continue
+        if top_y is None or b.y() < top_y:
+            top_y = b.y()
+    if top_y is None:
+        return None
+    # 只桥接一次（黄线只横穿一次），且上方接续段本身也要够高；
+    # 否则零星蓝色噪点会被迭代桥接一级级把裁切线爬高。
+    bridged_top = None
+    for b in blobs:
+        if b.h() < CUT_BLOB_MIN_H:
+            continue
+        by2 = b.y() + b.h()
+        if by2 <= top_y and top_y - by2 <= CUT_GAP_BRIDGE and b.y() < top_y:
+            if bridged_top is None or b.y() < bridged_top:
+                bridged_top = b.y()
+    if bridged_top is not None:
+        top_y = bridged_top
     return top_y
 
 def update_dynamic_cut(img, frame_count):
@@ -466,30 +496,30 @@ def update_dynamic_cut(img, frame_count):
         return
 
     strip_h = CUT_SCAN_Y_MAX - CUT_SCAN_Y_MIN
-    left_roi = (CUT_LEFT_X - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN, CUT_STRIP_HALF_W * 2 + 1, strip_h)
-    right_roi = (CUT_RIGHT_X - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN, CUT_STRIP_HALF_W * 2 + 1, strip_h)
+    top_y_min = None
+    valid_strips = 0
+    for sx in CUT_STRIP_XS:
+        roi = (sx - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN, CUT_STRIP_HALF_W * 2 + 1, strip_h)
+        blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=roi,
+                               pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
+        ty = pick_top_y_from_strip(blobs)
+        if ty is not None:
+            valid_strips += 1
+            if top_y_min is None or ty < top_y_min:
+                top_y_min = ty
 
-    left_blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=left_roi,
-                                pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
-    right_blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=right_roi,
-                                 pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
-
-    left_y_new = pick_top_y_from_strip(left_blobs)
-    right_y_new = pick_top_y_from_strip(right_blobs)
-
-    if left_y_new is not None and right_y_new is not None:
+    if valid_strips >= CUT_MIN_VALID_STRIPS:
         dynamic_cut_miss_count = 0
         if not dynamic_cut_valid:
-            dynamic_cut_left_y = left_y_new
-            dynamic_cut_right_y = right_y_new
+            dynamic_cut_left_y = top_y_min
             dynamic_cut_valid = True
         else:
+            # 双向对称 EMA：单帧噪声不会瞬间把线顶高（棘轮效应），转弯时也能平滑跟随
             a = CUT_EMA_ALPHA
-            dynamic_cut_left_y = int(a * left_y_new + (1.0 - a) * dynamic_cut_left_y)
-            dynamic_cut_right_y = int(a * right_y_new + (1.0 - a) * dynamic_cut_right_y)
+            dynamic_cut_left_y = int(a * top_y_min + (1.0 - a) * dynamic_cut_left_y)
 
         dynamic_cut_left_y = clamp_int(dynamic_cut_left_y, DETECT_Y_MIN, CUT_SCAN_Y_MAX)
-        dynamic_cut_right_y = clamp_int(dynamic_cut_right_y, DETECT_Y_MIN, CUT_SCAN_Y_MAX)
+        dynamic_cut_right_y = dynamic_cut_left_y
     else:
         dynamic_cut_miss_count += 1
         if dynamic_cut_miss_count > CUT_MAX_MISS:
@@ -581,6 +611,13 @@ def center_dist2(a, b):
     dy = acy - bcy
     return dx * dx + dy * dy
 
+def box_area_change_percent(a, b):
+    area_a = a[2] * a[3]
+    area_b = b[2] * b[3]
+    if area_a <= 0 or area_b <= 0:
+        return 1000
+    return abs(area_a - area_b) * 100 // area_b
+
 def make_roi_from_box(box):
     if not box:
         return dynamic_detect_roi
@@ -615,6 +652,8 @@ def valid_color_blob(blob, color_id):
     elif color_id == 4 or color_id == 5:
         if aspect < 0.30 or aspect > 2.50:
             return False
+        if w * h <= BEAR_MIN_BOX_AREA:
+            return False
         if blob.pixels() < 120:
             return False
     else:
@@ -640,6 +679,8 @@ def find_color_target(img, last_box):
     roi = make_roi_from_box(last_box)
     candidates = []
     for color_id, threshold in items:
+        if last_box and color_track_color_id > 0 and color_id != color_track_color_id:
+            continue
         color_candidates = []
         pixels_threshold, area_threshold = color_blob_thresholds(color_id)
         try:
@@ -662,11 +703,26 @@ def find_color_target(img, last_box):
     if not candidates:
         return None
     if last_box:
-        def score_item(item):
+        tracked_candidates = []
+        max_jump2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
+        for item in candidates:
             b = item[1]
             b_box = (b.x(), b.y(), b.w(), b.h())
-            return b.pixels() - center_dist2(b_box, last_box) // 20
-        return max(candidates, key=score_item)
+            dist2 = center_dist2(b_box, last_box)
+            iou = box_iou(b_box, last_box)
+            area_change = box_area_change_percent(b_box, last_box)
+            if area_change > TRACK_AREA_CHANGE_MAX_PERCENT:
+                continue
+            if dist2 <= max_jump2 or iou >= TRACK_MIN_IOU:
+                tracked_candidates.append((item, dist2, iou))
+        if not tracked_candidates:
+            return None
+
+        def score_tracked(candidate):
+            item, dist2, iou = candidate
+            b = item[1]
+            return int(iou * 100000) - dist2 + b.pixels() // 8
+        return max(tracked_candidates, key=score_tracked)[0]
     return pick_initial_color_candidate(candidates)
 
 def beacon_roi_from_box(box):
