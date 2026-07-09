@@ -315,6 +315,7 @@ last_tracked_pixels = -1
 track_force_global_next = False
 track_local_miss_count = 0
 target_color_id = 0
+host_color_id_received = False
 color_track_active = False
 color_track_box = None
 color_track_color_id = 0
@@ -427,7 +428,7 @@ def reset_target_tracking_state():
     global lost_frame_count, stable_detect_count
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
     global last_target_cx, last_target_cy
-    global target_color_id
+    global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
 
     active_threshold = None
@@ -442,6 +443,7 @@ def reset_target_tracking_state():
     last_target_cx = -1
     last_target_cy = -1
     target_color_id = 0
+    host_color_id_received = False
     color_track_active = False
     color_track_box = None
     color_track_color_id = 0
@@ -1298,7 +1300,7 @@ def receive_command_from_host():
     global active_threshold, active_color_id, red_thresholds
     global lost_frame_count, stable_detect_count, openart_mode, carry_start_frame
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
-    global target_color_id
+    global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
     global _cmd_rx_buf, crossline_angle_enabled, crossline_angle_result, front_scan_requested
     global yellow_seen_in_carry, yellow_tracking, yellow_detected, yellow_recent_count
@@ -1347,6 +1349,7 @@ def receive_command_from_host():
         if command == 0x03:  # SET_TARGET_COLOR
             if 1 <= param <= len(all_color_thresholds):
                 target_color_id = param
+                host_color_id_received = True
                 active_color_id = param
                 active_threshold = [all_color_thresholds[param - 1]]
                 red_thresholds = active_threshold
@@ -1699,11 +1702,7 @@ while True:
         stable_detect_count += 1
         send_color_id, x1, y1, w, h = best
 
-        if target_color_id == 0 and send_color_id > 0 and stable_detect_count >= STABLE_FRAMES_REQUIRED and not SLAVE_MODE:
-            target_color_id = send_color_id
-            active_color_id = send_color_id
-            active_threshold = [all_color_thresholds[send_color_id - 1]]
-            red_thresholds = active_threshold
+        # Local detection is only a candidate report; final color lock comes from host 0x03.
 
         cx = x1 + w // 2
         cy = y1 + h // 2
@@ -1738,7 +1737,19 @@ while True:
         lost_frame_count += 1
         stable_detect_count = 0
         if lost_frame_count > MAX_LOST_FRAMES and (target_color_id > 0 or active_threshold is not None or color_track_active):
-            reset_target_tracking_state()
+            if host_color_id_received:
+                color_track_active = False
+                color_track_box = None
+                color_track_color_id = 0
+                color_lost_count = 0
+                local_track_rect = None
+                last_tracked_pixels = -1
+                track_force_global_next = False
+                track_local_miss_count = 0
+                lost_frame_count = 0
+                stable_detect_count = 0
+            else:
+                reset_target_tracking_state()
         send_world_no_target(yellow_detected, pos_flag, obstacle_flag, angle_flag, angle_cdeg)
     # Yellow detection is updated before pos_flag is calculated.
 

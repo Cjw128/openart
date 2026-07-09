@@ -24,6 +24,25 @@
 
 ## 更新日志
 
+### 2026-07-10 - v0.9.0 - 双车互通稳定版
+
+范围：`main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+- `main.py` 新增 `host_color_id_received` 状态，与 `minimain.py` 保持一致，用于区分主控下发的最终颜色 ID 和本地搜索到的候选颜色。
+- `main.py` 和 `minimain.py` 不再在本地稳定识别后自行写入 `target_color_id`；未收到主控 `0x03` 时持续全颜色搜索，并照常向主控回传候选颜色 ID 和坐标。
+- 收到主控 `0x03 SET_TARGET_COLOR` 后，两份脚本立即切换到对应单一 LAB 阈值搜索，并清空当前跟踪框，下一帧按主控颜色重新捕获目标。
+- 主控锁色后如果短暂丢失目标，只清空本地跟踪框和 ROI 状态，不清除主控颜色 ID，避免退回全颜色搜索；收到重置/回库等命令时仍清除锁色状态。
+- 更新根目录 `README.md` 简单入口，标明稳定版本、主从车正式脚本和中英文详细日志位置。
+
+效果：
+- 两辆车的 OpenART 地位相等：谁先发现候选颜色就先上报，由 RT1021 主控链路仲裁并同步最终颜色，再分别通过 `0x03` 下发给两侧 OpenART，实现两车跟踪同一颜色目标。
+- 本版本将此前的颜色检测、SD 阈值、搬运前扫描、黄线过线、障碍状态、回库信标与本次双车锁色闭环整理为可部署的稳定版本。
+
+验证：
+- `python -m py_compile main.py minimain.py main_autocalib_test.py calib_ide_autocalib_competition.py calib_ide_tune.py front_obstacle_scan_test.py cmm_load.py` 已通过。
+- `git diff --check` 已通过。
+
 ### 2026-07-09 - v0.8.0-dev - 搬运前其它色块 ID 扫描
 
 范围：`main.py`, `minimain.py`, `main_autocalib_test.py`, `calib_ide_autocalib_competition.py`, `calib_ide_tune.py`, `front_obstacle_scan_test.py`, `.gitignore`, `README_ch.md`, `README_en.md`

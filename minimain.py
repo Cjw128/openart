@@ -1687,11 +1687,7 @@ while True:
         stable_detect_count += 1
         send_color_id, x1, y1, w, h = best
 
-        if target_color_id == 0 and send_color_id > 0 and stable_detect_count >= STABLE_FRAMES_REQUIRED and (not SLAVE_MODE or not host_color_id_received):
-            target_color_id = send_color_id
-            active_color_id = send_color_id
-            active_threshold = [all_color_thresholds[send_color_id - 1]]
-            red_thresholds = active_threshold
+        # Local detection is only a candidate report; final color lock comes from host 0x03.
 
         cx = x1 + w // 2
         cy = y1 + h // 2
@@ -1732,7 +1728,19 @@ while True:
         lost_frame_count += 1
         stable_detect_count = 0
         if lost_frame_count > MAX_LOST_FRAMES and (target_color_id > 0 or active_threshold is not None or color_track_active):
-            reset_target_tracking_state()
+            if host_color_id_received:
+                color_track_active = False
+                color_track_box = None
+                color_track_color_id = 0
+                color_lost_count = 0
+                local_track_rect = None
+                last_tracked_pixels = -1
+                track_force_global_next = False
+                track_local_miss_count = 0
+                lost_frame_count = 0
+                stable_detect_count = 0
+            else:
+                reset_target_tracking_state()
         send_world_no_target(yellow_detected, pos_flag, obstacle_flag, angle_flag, angle_cdeg)
         now = time.ticks_ms()
         if DEBUG_PRINT and time.ticks_diff(now, last_print_time) >= 1000:

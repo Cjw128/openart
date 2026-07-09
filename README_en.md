@@ -24,6 +24,25 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 ## Logs
 
+### 2026-07-10 - v0.9.0 - Stable dual-car communication release
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Added `host_color_id_received` to `main.py`, matching `minimain.py`, so host-issued final color IDs are separated from locally detected candidate colors.
+- `main.py` and `minimain.py` no longer write `target_color_id` after local stable detection. Before host command `0x03` arrives, both scripts keep searching all colors and keep reporting candidate color IDs and coordinates to the host.
+- After host command `0x03 SET_TARGET_COLOR` arrives, both scripts immediately switch to the corresponding single LAB threshold and clear the current tracking box so the next frame reacquires by the host-selected color.
+- After host color lock, temporary target loss clears only local tracking box and ROI state, not the host color ID, preventing fallback to all-color search. Reset/return commands still clear the lock state.
+- Updated the concise root `README.md` entrypoint with the stable version, official master/slave scripts, and links to the detailed Chinese and English logs.
+
+Effect:
+- Both cars' OpenART modules now have equal discovery roles: either side may report the first candidate color, the RT1021 host link arbitrates and synchronizes the final color, and each host sends it to its OpenART module with `0x03` so both cars track the same color target.
+- This release consolidates color detection, SD thresholds, pre-carry scanning, yellow-line crossing, obstacle state, return-beacon handling, and the new dual-car color-lock loop into a deployable stable version.
+
+Verification:
+- `python -m py_compile main.py minimain.py main_autocalib_test.py calib_ide_autocalib_competition.py calib_ide_tune.py front_obstacle_scan_test.py cmm_load.py` passed.
+- `git diff --check` passed.
+
 ### 2026-07-09 - v0.8.0-dev - Pre-carry other-color ID scan
 
 Scope: `main.py`, `minimain.py`, `main_autocalib_test.py`, `calib_ide_autocalib_competition.py`, `calib_ide_tune.py`, `front_obstacle_scan_test.py`, `.gitignore`, `README_ch.md`, `README_en.md`
