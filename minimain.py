@@ -611,8 +611,19 @@ def color_blob_thresholds(color_id):
     return (COLOR_MIN_PIXELS, COLOR_MIN_AREA)
 
 def pick_initial_color_candidate(candidates):
+    # 同一颜色有多个合格色块时，先获取最左边的色块；不同颜色之间仍沿用原来的比较方式。
+    color_representatives = []
+    for color_id in COLOR_SEARCH_ORDER:
+        same_color = [item for item in candidates if item[0] == color_id]
+        if not same_color:
+            continue
+        color_representatives.append(
+            min(same_color, key=lambda item: (item[1].cx(), item[1].x(), -item[1].pixels()))
+        )
+    if not color_representatives:
+        return None
     # 优先选择色块框底部距离 y=240 最近的目标。
-    return min(candidates, key=lambda item: 240 - (item[1].y() + item[1].h()))
+    return min(color_representatives, key=lambda item: 240 - (item[1].y() + item[1].h()))
 
 def find_color_target(img, last_box):
     items = threshold_items_for_color()

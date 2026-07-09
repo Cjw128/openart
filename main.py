@@ -669,8 +669,20 @@ def color_blob_thresholds(color_id):
     return (COLOR_MIN_PIXELS, COLOR_MIN_AREA)
 
 def pick_initial_color_candidate(candidates):
+    # For the same color, acquire the leftmost valid blob first. Keep the
+    # existing cross-color priority by comparing one representative per color.
+    color_representatives = []
+    for color_id in COLOR_SEARCH_ORDER:
+        same_color = [item for item in candidates if item[0] == color_id]
+        if not same_color:
+            continue
+        color_representatives.append(
+            min(same_color, key=lambda item: (item[1].cx(), item[1].x(), -item[1].pixels()))
+        )
+    if not color_representatives:
+        return None
     # Prefer the object whose bounding-box bottom is closest to y=240.
-    return min(candidates, key=lambda item: 240 - (item[1].y() + item[1].h()))
+    return min(color_representatives, key=lambda item: 240 - (item[1].y() + item[1].h()))
 
 def find_color_target(img, last_box):
     items = threshold_items_for_color()

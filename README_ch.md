@@ -25,6 +25,23 @@
 
 ## 更新日志
 
+### 2026-07-09 - v0.7.8-dev - 同色目标按最左优先获取
+
+范围：`main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+- 同步更新两个正式运行入口的初始颜色目标选择逻辑。
+- 同一颜色 ID 下存在多个合格色块时，先选择最左侧色块作为该颜色的代表目标。
+- 不同颜色之间仍然只比较每种颜色的一个代表目标，并保留原来的色块框底部距离 `y=240` 最近优先规则。
+- 重写根目录 `README.md`，整理为项目入口、运行脚本、测试工具和部署注意事项。
+
+效果：
+- 同色重复目标会按从左到右的顺序优先获取，同时不改变原有跨颜色目标比较方式。
+
+验证：
+- `python -m py_compile main.py minimain.py yellow_crossline_ipm.py` 已通过。
+- `git diff --check` 已通过。
+
 ### 2026-07-05 - v0.7.7-dev - Plus 从车 UART12 与两阶段黄线过线
 
 范围：`main.py`, `minimain.py`, `yellow_crossline_ipm.py`, `README_ch.md`, `README_en.md`, `README.md`

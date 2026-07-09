@@ -25,6 +25,26 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 ## Logs
 
+### 2026-07-09 - v0.7.8-dev - Same-color leftmost target acquisition
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Updated initial color-target selection in both runtime entrypoints.
+- When several valid blobs have the same color ID, the runtime first chooses the leftmost blob as that color's representative.
+- Cross-color selection still compares one representative per color and keeps the existing nearest-bottom target rule.
+- Rewrote the root `README.md` as a concise project entrypoint with runtime, tool, and deployment notes.
+
+Effect:
+
+- Repeated targets with the same color are acquired from left to right, while existing cross-color priority behavior is preserved.
+
+Verification:
+
+- `python -m py_compile main.py minimain.py yellow_crossline_ipm.py` passed.
+- `git diff --check` passed.
+
 ### 2026-07-05 - v0.7.7-dev - Plus slave UART12 and two-stage yellow crossing
 
 Scope: `main.py`, `minimain.py`, `yellow_crossline_ipm.py`, `README_ch.md`, `README_en.md`, `README.md`

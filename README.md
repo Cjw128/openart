@@ -1,6 +1,6 @@
-# OpenART Vision Logs
+# OpenART Smart Car Vision
 
-- 中文: [README_ch.md](README_ch.md)
-- English: [README_en.md](README_en.md)
+OpenART smart car vision scripts for the current single-file OpenART Plus deployment.
 
-Latest note: both runtime scripts now target OpenART Plus hardware. `main.py` uses two-stage fitted yellow-line crossing, and `minimain.py` keeps the slave role while using UART12. See v0.7.7 in the Chinese and English logs.
+- Chinese change log: [README_ch.md](README_ch.md)
+- English change log: [README_en.md](README_en.md)
