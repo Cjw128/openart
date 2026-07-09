@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `main.py` | OpenART Plus | Plus 单文件正式脱机主程序 |
 | `minimain.py` | OpenART Mini | Mini / 从车单文件正式脱机主程序 |
-| `yellow_crossline_ipm.py` | OpenART Plus / Mini / 测试 | 黄线横线角度与逆透视工具，被 `main.py` / `minimain.py` 导入 |
+| `yellow_crossline_ipm.py` | OpenART Plus / 测试 | 黄线横线角度与逆透视工具，保留作独立调试工具 |
 | `openart_test_3class.py` | 测试 | 三分类视觉测试 |
 | `return_beacon_ipm_test.py` | 测试 | 回库信标逆透视测试 |
 | `test_model.py` | 测试 | 模型测试脚本 |
@@ -18,12 +18,31 @@
 
 - 当前比赛/脱机部署使用单文件结构，`main.py` 和 `minimain.py` 分别维护 Plus 与 Mini / 从车的完整主逻辑。
 - 多文件运行模块已移除，不再使用 `openart_app.py`、`openart_config.py`、`openart_detectors.py`、`openart_trackers.py`、`openart_uart.py`、`openart_math.py`、`openart_camera.py`、`openart_calibration.py`。
-- `yellow_crossline_ipm.py` 是当前唯一保留的运行辅助模块；部署正式程序时需要和 `main.py` / `minimain.py` 一起复制。
+- `yellow_crossline_ipm.py` 保留作独立调试工具；当前 `minimain.py` 已不再导入黄线角度矫正模块。
 - 白熊检测、颜色目标检测、黄线状态、回库信标、UART 协议、IPM 和主循环都在对应的单文件主程序内。
 - 多文件版本曾导致 TFLite 检测卡死，原因和维护约束见 v0.4.0 日志；不要把 v0.3.0 的模块化结构重新作为比赛部署结构。
 - 以后所有结构说明和迭代记录都写入 `README_ch.md` / `README_en.md`，并保持中英文同步更新。
 
 ## 更新日志
+
+### 2026-07-09 - v0.7.9-dev - SD 参数读取与从车角度矫正移除
+
+范围：`main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- `main.py` 和 `minimain.py` 启动时优先读取 `/sd/color_thr.txt`，支持自动标定脚本输出的 `exposure_us=`、`ground=` / `ground2=` 和 `slot,L0,L1,A0,A1,B0,B1` 格式。
+- 只有读满 5 个颜色槽位时才覆盖内置阈值；文件缺失、格式不完整或解析失败时继续使用写死默认阈值。
+- 读取成功或回退默认阈值时打印 `[color_thr]` 启动信息，便于现场判断当前阈值来源。
+- `minimain.py` 移除 `yellow_crossline_ipm.py` 导入、黄线角度矫正实例和每帧角度处理；保留 16 字节回传协议中的角度字段，但从车固定发送 0。
+- `minimain.py` 将 `0x04` 命令保留为预留忽略，避免主控误发时破坏命令解析。
+
+效果：
+- 比赛前可用 IDE 标定脚本生成 `/sd/color_thr.txt`，正式运行脚本上电后自动使用该阈值文件。
+- 从车运行入口减少一个调试模块依赖，部署更轻量。
+
+验证：
+- `python -m py_compile main.py minimain.py` 已通过。
+- `git diff --check -- main.py minimain.py` 已通过。
 
 ### 2026-07-09 - v0.7.8-dev - 同色目标按最左优先获取
 

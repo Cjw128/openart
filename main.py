@@ -166,7 +166,7 @@ clock = time.clock()
 # A: red-green axis (positive=red, negative=green)
 # B: yellow-blue axis (positive=yellow, negative=blue)
 
-# Supported color thresholds (fallback defaults; overridden by /sd/params.txt if present)
+# Supported color thresholds (fallback defaults; overridden by /sd/color_thr.txt if present)
 all_color_thresholds = [
     (34, 100, -41, 4, -72, -22),    # Color 1: light-blue bag
     (10, 80, 22, 122, -17, 93),     # Color 2: red bag
@@ -175,27 +175,49 @@ all_color_thresholds = [
     (53, 100, -10, 11, -11, 8)      # Color 5: white teddy bear
 ]
 
-def _load_thresholds(path='/sd/params.txt'):
+def _load_calibrated_params(path='/sd/color_thr.txt'):
     try:
-        result = []
+        rows = {}
+        exposure = None
         with open(path, 'r') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                parts = line.split(',')
-                if len(parts) != 6:
+                if line.startswith('exposure_us='):
+                    try:
+                        exposure = int(line.split('=', 1)[1])
+                    except Exception:
+                        exposure = None
                     continue
-                result.append(tuple(int(p) for p in parts))
-        if len(result) == 5:
-            return result
+                if line.startswith('ground=') or line.startswith('ground2='):
+                    continue
+                parts = line.split(',')
+                if len(parts) == 7:
+                    slot = int(parts[0])
+                    values = tuple(int(p) for p in parts[1:])
+                elif len(parts) == 6:
+                    slot = len(rows) + 1
+                    values = tuple(int(p) for p in parts)
+                else:
+                    continue
+                if 1 <= slot <= 5 and len(values) == 6:
+                    rows[slot] = values
+        if len(rows) == 5:
+            return [rows[i] for i in range(1, 6)], exposure, 'loaded'
+        return None, None, 'incomplete'
     except Exception:
         pass
-    return None
+    return None, None, 'missing_or_invalid'
 
-_loaded = _load_thresholds()
+_loaded, _loaded_exposure, _threshold_source = _load_calibrated_params()
 if _loaded:
     all_color_thresholds = _loaded
+    if _loaded_exposure is not None:
+        sensor.set_auto_exposure(False, exposure_us=_loaded_exposure)
+    print('[color_thr] loaded /sd/color_thr.txt exposure={}'.format(_loaded_exposure))
+else:
+    print('[color_thr] using built-in thresholds ({})'.format(_threshold_source))
 
 COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
 

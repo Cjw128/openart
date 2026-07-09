@@ -8,7 +8,7 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 | --- | --- | --- |
 | `main.py` | OpenART Plus | Plus single-file official offline runtime |
 | `minimain.py` | OpenART Plus | Plus slave-role single-file official offline runtime |
-| `yellow_crossline_ipm.py` | OpenART Plus / test | Yellow crossline angle and IPM helper |
+| `yellow_crossline_ipm.py` | OpenART Plus / test | Yellow crossline angle and IPM standalone debug helper |
 | `openart_test_3class.py` | test | Three-class vision test |
 | `return_beacon_ipm_test.py` | test | Return beacon IPM test |
 | `test_model.py` | test | Model test script |
@@ -18,12 +18,34 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 
 - Current competition/offline deployment uses the single-file layout. `main.py` and `minimain.py` both run on OpenART Plus; `main.py` is the master-role active-search script, and `minimain.py` is the slave-role color-ID-controlled script.
 - The multi-file runtime modules have been removed. The deployment no longer uses `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, or `openart_calibration.py`.
-- `yellow_crossline_ipm.py` is the only retained runtime helper module. Copy it together with `main.py` / `minimain.py` when deploying.
+- `yellow_crossline_ipm.py` is retained as a standalone debug helper. The current `minimain.py` no longer imports the yellow-angle correction module.
 - White-bear target handling now uses LAB color blobs like the other targets. Color target detection, yellow-line state, return beacon, UART protocol, IPM, and the main loop live inside the corresponding single-file runtime.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
 - Keep all structure notes and iteration records in `README_ch.md` / `README_en.md`, and update both languages together.
 
 ## Logs
+
+### 2026-07-09 - v0.7.9-dev - SD threshold loading and slave angle removal
+
+Scope: `main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- `main.py` and `minimain.py` now try to load `/sd/color_thr.txt` at startup. The parser accepts the auto-calibration script format with `exposure_us=`, `ground=` / `ground2=`, and `slot,L0,L1,A0,A1,B0,B1` rows.
+- Built-in thresholds are overridden only when all 5 color slots are present; missing, incomplete, or invalid files fall back to the compiled defaults.
+- Startup `[color_thr]` prints report whether the runtime loaded the SD threshold file or is using built-in thresholds.
+- Removed the `yellow_crossline_ipm.py` import, yellow-angle correction instance, and per-frame angle processing from `minimain.py`. The 16-byte return packet keeps the angle fields, but the slave runtime sends them as zero.
+- `minimain.py` keeps command `0x04` reserved and ignored so accidental host commands do not break command parsing.
+
+Effect:
+
+- Field calibration can generate `/sd/color_thr.txt` from the IDE script, and the runtime scripts automatically use it on the next boot.
+- The slave runtime has one fewer debug-module dependency and a lighter deployment surface.
+
+Verification:
+
+- `python -m py_compile main.py minimain.py` passed.
+- `git diff --check -- main.py minimain.py` passed.
 
 ### 2026-07-09 - v0.7.8-dev - Same-color leftmost target acquisition
 

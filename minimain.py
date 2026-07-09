@@ -5,7 +5,6 @@
 
 import sensor, image, time, math
 from machine import UART
-from yellow_crossline_ipm import create_crossline_ipm
 
 # ======================================================================
 # 模式选择
@@ -146,7 +145,7 @@ clock = time.clock()
 # A: 红绿轴 (正值=红色, 负值=绿色)
 # B: 黄蓝轴 (正值=黄色, 负值=蓝色)
 
-# 所有支持的颜色阈值
+# 所有支持的颜色阈值；如果 /sd/color_thr.txt 完整有效，会在启动时覆盖这些默认值。
 all_color_thresholds = [
     (34, 100, -41, 5, -72, -17),    # 颜色1: 淡蓝色沙包
     (10, 80, 22, 122, -17, 93),    # 颜色2: 红色沙包
@@ -155,27 +154,49 @@ all_color_thresholds = [
     (53, 100, -10, 11, -11, 8)    # 颜色5: 白色泰迪熊 ← 需实际标定!
 ]
 
-def _load_thresholds(path='/sd/params.txt'):
+def _load_calibrated_params(path='/sd/color_thr.txt'):
     try:
-        result = []
+        rows = {}
+        exposure = None
         with open(path, 'r') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                parts = line.split(',')
-                if len(parts) != 6:
+                if line.startswith('exposure_us='):
+                    try:
+                        exposure = int(line.split('=', 1)[1])
+                    except Exception:
+                        exposure = None
                     continue
-                result.append(tuple(int(p) for p in parts))
-        if len(result) == 5:
-            return result
+                if line.startswith('ground=') or line.startswith('ground2='):
+                    continue
+                parts = line.split(',')
+                if len(parts) == 7:
+                    slot = int(parts[0])
+                    values = tuple(int(p) for p in parts[1:])
+                elif len(parts) == 6:
+                    slot = len(rows) + 1
+                    values = tuple(int(p) for p in parts)
+                else:
+                    continue
+                if 1 <= slot <= 5 and len(values) == 6:
+                    rows[slot] = values
+        if len(rows) == 5:
+            return [rows[i] for i in range(1, 6)], exposure, 'loaded'
+        return None, None, 'incomplete'
     except Exception:
         pass
-    return None
+    return None, None, 'missing_or_invalid'
 
-_loaded = _load_thresholds()
+_loaded, _loaded_exposure, _threshold_source = _load_calibrated_params()
 if _loaded:
     all_color_thresholds = _loaded
+    if _loaded_exposure is not None:
+        sensor.set_auto_exposure(False, exposure_us=_loaded_exposure)
+    print('[color_thr] loaded /sd/color_thr.txt exposure={}'.format(_loaded_exposure))
+else:
+    print('[color_thr] using built-in thresholds ({})'.format(_threshold_source))
 
 COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
 
@@ -271,8 +292,6 @@ color_track_box = None
 color_track_color_id = 0
 color_lost_count = 0
 _cmd_rx_buf = bytearray()
-crossline_angle_enabled = False
-crossline_angle_result = None
 # ======================================================================
 # 黄线检测参数
 # ======================================================================
@@ -832,10 +851,6 @@ if H_pix2world:
 else:
     print("[ERROR] 前视逆透视矩阵计算失败!")
 
-crossline_ipm = create_crossline_ipm(uart_enabled=False)
-crossline_ipm.set_debug_draw(False)
-crossline_ipm.H_pix2world = H_pix2world
-crossline_ipm.yellow_threshold = yellow_threshold
 
 # ======================================================================
 # 鸟瞰图配置 (调试用, BIRDVIEW_DEBUG=True时生效)
@@ -1130,7 +1145,7 @@ def receive_command_from_host():
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
-    global _cmd_rx_buf, crossline_angle_enabled, crossline_angle_result
+    global _cmd_rx_buf
     global yellow_seen_in_carry, yellow_tracking, yellow_detected, yellow_recent_count
 
     if uart.any():
@@ -1197,26 +1212,19 @@ def receive_command_from_host():
             openart_mode = MODE_CARRY
             reset_beacon_state()
             print(">>> Enter carry mode <<<")
-        elif command == 0x04:  # SET_CROSSLINE_ANGLE_ENABLE
-            crossline_angle_enabled = (param == 1)
-            if not crossline_angle_enabled:
-                crossline_angle_result = None
-            print(">>> Crossline angle {} <<<".format("ON" if crossline_angle_enabled else "OFF"))
+        elif command == 0x04:  # Crossline angle correction removed on slave runtime.
+            pass
         elif command == 0x05:  # ENTER_RETURN_MODE
             openart_mode = MODE_RETURN
             reset_target_tracking_state()
             reset_yellow_state()
             reset_beacon_state()
-            crossline_angle_enabled = False
-            crossline_angle_result = None
             print(">>> Enter return mode <<<")
         elif command == 0x00 or command == 0x02:  # 回到寻找模式/右转完成/重置
             openart_mode = MODE_SEARCH
             reset_target_tracking_state()
             reset_yellow_state()
             reset_beacon_state()
-            crossline_angle_enabled = False
-            crossline_angle_result = None
             print(">>> Reset to search mode <<<")
         return (command, param)
     return (0, 0)
@@ -1329,13 +1337,7 @@ def update_yellow_detection(img, frame_count):
         yellow_boundary_wy = 0.0
 
 def get_crossline_angle_fields():
-    if not crossline_angle_enabled or crossline_angle_result is None:
-        return (0x00, 0)
-
-    flag = 0x01
-    if crossline_angle_result["valid"]:
-        flag |= 0x02
-    return (flag, crossline_angle_result["angle_cdeg"])
+    return (0x00, 0)
 
 # ======================================================================
 # 主循环
@@ -1366,8 +1368,8 @@ print("  检测间隔   : 每{}帧".format(YELLOW_DETECT_INTERVAL))
 print("  进入像素   : {}".format(YELLOW_ENTER_PIXELS))
 print("  保持像素   : {}".format(YELLOW_KEEP_PIXELS))
 print("  丢失阈值   : 连续{}帧判定过线".format(YELLOW_LOST_THRESHOLD))
-print("主机命令: 0x00=重置/寻找, 0x01=搬运, 0x02=右转完成, 0x03=锁色, 0x04=黄线角度开关(param 1/0), 0x05=回库")
-print("回传协议: 16字节, [12]=角度标志, [13-14]=黄线偏移角度*100(int16 LE), [15]=checksum")
+print("主机命令: 0x00=重置/寻找, 0x01=搬运, 0x02=右转完成, 0x03=锁色, 0x04=预留忽略, 0x05=回库")
+print("回传协议: 16字节, [12-14]=预留角度字段(从车固定为0), [15]=checksum")
 print("=" * 50)
 print("开始识别...")
 print()
@@ -1516,8 +1518,6 @@ while True:
         process_return_beacon_frame(img)
         continue
 
-    if crossline_angle_enabled:
-        crossline_angle_result = crossline_ipm.process_frame(img)
 
     # ===== Dynamic cut update =====
     update_dynamic_cut(img, frame_count)
