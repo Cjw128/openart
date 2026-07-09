@@ -7,23 +7,42 @@
 | 文件 | 设备 | 用途 |
 | --- | --- | --- |
 | `main.py` | OpenART Plus | Plus 单文件正式脱机主程序 |
-| `minimain.py` | OpenART Mini | Mini / 从车单文件正式脱机主程序 |
-| `yellow_crossline_ipm.py` | OpenART Plus / 测试 | 黄线横线角度与逆透视工具，保留作独立调试工具 |
-| `openart_test_3class.py` | 测试 | 三分类视觉测试 |
-| `return_beacon_ipm_test.py` | 测试 | 回库信标逆透视测试 |
-| `test_model.py` | 测试 | 模型测试脚本 |
-| `main.py.bak_20260331` | 备份 | 本地历史单文件备份，不作为正式入口 |
+| `minimain.py` | OpenART Plus / 从车 | 从车单文件正式脱机主程序 |
+| `main_autocalib_test.py` | OpenART Plus / 测试 | 带主控命令的现场自动标定测试主程序 |
+| `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
+| `calib_ide_tune.py` | OpenART Plus / IDE | 自动标定参数调试脚本 |
+| `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
 
 ## 结构说明
 
-- 当前比赛/脱机部署使用单文件结构，`main.py` 和 `minimain.py` 分别维护 Plus 与 Mini / 从车的完整主逻辑。
+- 当前比赛/脱机部署使用单文件结构，`main.py` 和 `minimain.py` 分别维护主车与从车的完整主逻辑。
 - 多文件运行模块已移除，不再使用 `openart_app.py`、`openart_config.py`、`openart_detectors.py`、`openart_trackers.py`、`openart_uart.py`、`openart_math.py`、`openart_camera.py`、`openart_calibration.py`。
-- `yellow_crossline_ipm.py` 保留作独立调试工具；当前 `minimain.py` 已不再导入黄线角度矫正模块。
 - 白熊检测、颜色目标检测、黄线状态、回库信标、UART 协议、IPM 和主循环都在对应的单文件主程序内。
+- 标定、阈值调参和搬运前色块扫描验证保留为独立 IDE / 测试脚本，不作为正式脱机入口。
 - 多文件版本曾导致 TFLite 检测卡死，原因和维护约束见 v0.4.0 日志；不要把 v0.3.0 的模块化结构重新作为比赛部署结构。
 - 以后所有结构说明和迭代记录都写入 `README_ch.md` / `README_en.md`，并保持中英文同步更新。
 
 ## 更新日志
+
+### 2026-07-09 - v0.8.0-dev - 搬运前其它色块 ID 扫描
+
+范围：`main.py`, `minimain.py`, `main_autocalib_test.py`, `calib_ide_autocalib_competition.py`, `calib_ide_tune.py`, `front_obstacle_scan_test.py`, `.gitignore`, `README_ch.md`, `README_en.md`
+
+变更：
+- `main.py` 和 `minimain.py` 新增主控命令 `0x06`，用于在进入搬运前请求 OpenART 对当前画面做全颜色阈值扫描。
+- 扫描使用全部 5 个 LAB 阈值，不受当前锁色目标限制，并复用现有色块形状过滤、动态裁切线过滤和 `pixels > 400` 面积过滤。
+- 扫描结果会排除当前已对准/跟踪的目标框；如果画面里还有其它同色目标，仍会把该颜色 ID 计入结果。
+- 新增 `0xC7` 回传帧：`AA 55 C7 current_id mask count checksum`，其中 `mask` 的 bit0-bit4 对应颜色 1-5，`count` 为检测到的其它颜色 ID 种类数；结果需连续 10 帧稳定后才发送。
+- 正常寻找、锁定、搬运、回库和黄线逻辑不变；只有收到 `0x06` 后才启动搬运前扫描流程。
+- 新增现场自动标定、IDE 调参和前方色块扫描预览脚本，用于生成 `/sd/color_thr.txt`、复核阈值和离线观察 `0x06` 扫描候选。
+- 清理旧的独立模型、三分类、回库信标和黄线 IPM 测试脚本；`.gitignore` 新增 `*.tflite`，避免模型文件误提交。
+
+效果：
+- 主控可在发送 `0x01` 进入搬运前先发送 `0x06`，根据其它色块 ID 自行判断前方是否存在需要处理的障碍或目标。
+
+验证：
+- `python -m py_compile main.py minimain.py main_autocalib_test.py calib_ide_autocalib_competition.py calib_ide_tune.py front_obstacle_scan_test.py` 已通过。
+- `git diff --check` 已通过。
 
 ### 2026-07-09 - v0.7.9-dev - SD 参数读取与从车角度矫正移除
 

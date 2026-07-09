@@ -16,3 +16,5 @@ env/
 
 cmm_cfg.csv
 cmm_load.py
+
+*.tflite

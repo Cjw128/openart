@@ -7,23 +7,45 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 | File | Device | Role |
 | --- | --- | --- |
 | `main.py` | OpenART Plus | Plus single-file official offline runtime |
-| `minimain.py` | OpenART Plus | Plus slave-role single-file official offline runtime |
-| `yellow_crossline_ipm.py` | OpenART Plus / test | Yellow crossline angle and IPM standalone debug helper |
-| `openart_test_3class.py` | test | Three-class vision test |
-| `return_beacon_ipm_test.py` | test | Return beacon IPM test |
-| `test_model.py` | test | Model test script |
-| `main.py.bak_20260331` | backup | Local historical single-file backup, not an official entrypoint |
+| `minimain.py` | OpenART Plus / slave | Slave-role single-file official offline runtime |
+| `main_autocalib_test.py` | OpenART Plus / test | Field auto-calibration test runtime with host commands |
+| `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
+| `calib_ide_tune.py` | OpenART Plus / IDE | Auto-calibration parameter tuning script |
+| `front_obstacle_scan_test.py` | OpenART Plus / IDE | Pre-carry front color-blob scan preview script |
 
 ## Structure Notes
 
-- Current competition/offline deployment uses the single-file layout. `main.py` and `minimain.py` both run on OpenART Plus; `main.py` is the master-role active-search script, and `minimain.py` is the slave-role color-ID-controlled script.
+- Current competition/offline deployment uses the single-file layout. `main.py` and `minimain.py` keep the complete master-role and slave-role logic.
 - The multi-file runtime modules have been removed. The deployment no longer uses `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, or `openart_calibration.py`.
-- `yellow_crossline_ipm.py` is retained as a standalone debug helper. The current `minimain.py` no longer imports the yellow-angle correction module.
 - White-bear target handling now uses LAB color blobs like the other targets. Color target detection, yellow-line state, return beacon, UART protocol, IPM, and the main loop live inside the corresponding single-file runtime.
+- Calibration, threshold tuning, and pre-carry color-scan checks remain standalone IDE / test scripts, not official offline entrypoints.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
 - Keep all structure notes and iteration records in `README_ch.md` / `README_en.md`, and update both languages together.
 
 ## Logs
+
+### 2026-07-09 - v0.8.0-dev - Pre-carry other-color ID scan
+
+Scope: `main.py`, `minimain.py`, `main_autocalib_test.py`, `calib_ide_autocalib_competition.py`, `calib_ide_tune.py`, `front_obstacle_scan_test.py`, `.gitignore`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Added host command `0x06` to both `main.py` and `minimain.py` so the host can request an all-color threshold scan before entering carry mode.
+- The scan uses all 5 LAB thresholds, ignores the current target-color lock, and reuses the existing color-blob shape filters, dynamic cut-line filter, and `pixels > 400` area filter.
+- The result excludes the currently aligned/tracked target box. If another target with the same color is also visible, that color ID is still included in the result.
+- Added return packet `0xC7`: `AA 55 C7 current_id mask count checksum`. `mask` bit0-bit4 map to color IDs 1-5, and `count` is the number of other color IDs detected; the result is sent only after it remains stable for 10 consecutive frames.
+- Normal search, lock, carry, return, and yellow-line behavior is unchanged; the extra scan flow starts only after command `0x06` is received.
+- Added field auto-calibration, IDE tuning, and front color-scan preview scripts for generating `/sd/color_thr.txt`, checking thresholds, and observing `0x06` scan candidates offline.
+- Removed the old standalone model, three-class, return-beacon, and yellow-IPM test scripts; `.gitignore` now excludes `*.tflite` so model files are not committed by accident.
+
+Effect:
+
+- The host can send `0x06` before `0x01` carry mode and make its own obstacle/target decision from the returned other-color IDs.
+
+Verification:
+
+- `python -m py_compile main.py minimain.py main_autocalib_test.py calib_ide_autocalib_competition.py calib_ide_tune.py front_obstacle_scan_test.py` passed.
+- `git diff --check` passed.
 
 ### 2026-07-09 - v0.7.9-dev - SD threshold loading and slave angle removal
 

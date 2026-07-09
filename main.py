@@ -320,6 +320,19 @@ color_track_box = None
 color_track_color_id = 0
 color_lost_count = 0
 _cmd_rx_buf = bytearray()
+front_scan_requested = False
+FRONT_SCAN_PACKET_ID = 0xC7
+FRONT_SCAN_EXCLUDE_IOU = 0.20
+FRONT_SCAN_EXCLUDE_CENTER_PX = 35
+FRONT_SCAN_Y_MAX = 150
+FRONT_SCAN_MIN_PIXELS = 150
+FRONT_SCAN_STABLE_FRAMES = 10
+FRONT_SCAN_MAX_FRAMES = 30
+front_scan_last_current_id = 0
+front_scan_last_mask = -1
+front_scan_last_count = 0
+front_scan_stable_count = 0
+front_scan_total_count = 0
 crossline_angle_enabled = False
 crossline_angle_result = None
 # ======================================================================
@@ -681,7 +694,7 @@ def valid_color_blob(blob, color_id):
     else:
         if aspect < 0.60 or aspect > 1.80:
             return False
-        if blob.density() < 0.50:
+        if blob.density() < 0.40:
             return False
     return True
 
@@ -758,6 +771,106 @@ def find_color_target(img, last_box):
             return int(iou * 100000) - dist2 + b.pixels() // 8
         return max(tracked_candidates, key=score_tracked)[0]
     return pick_initial_color_candidate(candidates)
+
+def front_scan_current_target():
+    if color_track_active and color_track_box:
+        return color_track_box, color_track_color_id
+    return None, target_color_id
+
+def front_scan_blob_is_current(blob, current_box):
+    if not current_box:
+        return False
+    b_box = (blob.x(), blob.y(), blob.w(), blob.h())
+    if box_iou(b_box, current_box) >= FRONT_SCAN_EXCLUDE_IOU:
+        return True
+    return center_dist2(b_box, current_box) <= FRONT_SCAN_EXCLUDE_CENTER_PX * FRONT_SCAN_EXCLUDE_CENTER_PX
+
+def front_scan_roi():
+    x, y, w, h = dynamic_detect_roi
+    y2 = min(y + h, FRONT_SCAN_Y_MAX)
+    if y2 <= y:
+        return None
+    return (x, y, w, y2 - y)
+
+def scan_front_other_color_ids(img):
+    current_box, current_id = front_scan_current_target()
+    mask = 0
+    count = 0
+    roi = front_scan_roi()
+    if roi is None:
+        return current_id, mask, count
+    for color_id in COLOR_SEARCH_ORDER:
+        if color_id < 1 or color_id > len(all_color_thresholds):
+            continue
+        threshold = all_color_thresholds[color_id - 1]
+        pixels_threshold, area_threshold = color_blob_thresholds(color_id)
+        try:
+            blobs = img.find_blobs([threshold], roi=roi,
+                                   pixels_threshold=pixels_threshold,
+                                   area_threshold=area_threshold,
+                                   merge=True)
+        except Exception:
+            blobs = None
+        if not blobs:
+            continue
+        for blob in blobs:
+            if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
+                if blob.cy() < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
+                    continue
+            if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
+                continue
+            if not valid_color_blob(blob, color_id):
+                continue
+            if front_scan_blob_is_current(blob, current_box):
+                continue
+            mask |= 1 << (color_id - 1)
+            count += 1
+            break
+    return current_id, mask, count
+
+def send_front_scan_result(current_id, mask, count):
+    data = bytearray(7)
+    data[0] = 0xAA
+    data[1] = 0x55
+    data[2] = FRONT_SCAN_PACKET_ID
+    data[3] = current_id & 0xFF
+    data[4] = mask & 0xFF
+    data[5] = count & 0xFF
+    data[6] = sum(data[2:6]) & 0xFF
+    uart.write(data)
+
+def reset_front_scan_state():
+    global front_scan_last_current_id, front_scan_last_mask
+    global front_scan_last_count, front_scan_stable_count, front_scan_total_count
+    front_scan_last_current_id = 0
+    front_scan_last_mask = -1
+    front_scan_last_count = 0
+    front_scan_stable_count = 0
+    front_scan_total_count = 0
+
+def process_front_scan_request(img):
+    global front_scan_requested
+    global front_scan_last_current_id, front_scan_last_mask
+    global front_scan_last_count, front_scan_stable_count, front_scan_total_count
+    if not front_scan_requested:
+        return False
+    front_scan_total_count += 1
+    current_id, mask, count = scan_front_other_color_ids(img)
+    if (current_id == front_scan_last_current_id and
+            mask == front_scan_last_mask and
+            count == front_scan_last_count):
+        front_scan_stable_count += 1
+    else:
+        front_scan_last_current_id = current_id
+        front_scan_last_mask = mask
+        front_scan_last_count = count
+        front_scan_stable_count = 1
+    if (front_scan_stable_count >= FRONT_SCAN_STABLE_FRAMES or
+            front_scan_total_count >= FRONT_SCAN_MAX_FRAMES):
+        send_front_scan_result(current_id, mask, count)
+        front_scan_requested = False
+        reset_front_scan_state()
+    return True
 
 def beacon_roi_from_box(box):
     if (not ENABLE_LOCAL_TRACK_ROI) or box is None:
@@ -1187,7 +1300,7 @@ def receive_command_from_host():
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
     global target_color_id
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
-    global _cmd_rx_buf, crossline_angle_enabled, crossline_angle_result
+    global _cmd_rx_buf, crossline_angle_enabled, crossline_angle_result, front_scan_requested
     global yellow_seen_in_carry, yellow_tracking, yellow_detected, yellow_recent_count
 
     if uart.any():
@@ -1263,6 +1376,9 @@ def receive_command_from_host():
             reset_beacon_state()
             crossline_angle_enabled = False
             crossline_angle_result = None
+        elif command == 0x06:  # Pre-carry front scan for other color IDs
+            reset_front_scan_state()
+            front_scan_requested = True
         elif command == 0x00 or command == 0x02:  # Reset to search mode or turn completed
             openart_mode = MODE_SEARCH
             reset_target_tracking_state()
@@ -1532,6 +1648,11 @@ while True:
 
     # ===== Dynamic cut update =====
     update_dynamic_cut(img, frame_count)
+    if process_front_scan_request(img):
+        if frame_count % 10 == 0:
+            gc.collect()
+        feed_watchdog()
+        continue
     obstacle_flag, obstacle_blobs = detect_obstacle(img)
     update_yellow_detection(img, frame_count)
 

@@ -14,6 +14,8 @@ BIRDVIEW_DEBUG = False     # True = IDE显示鸟瞰图(慢), False = 高速检�
 IS_SLAVE_CAR = True       # Software role: slave logic receives target color ID from host.
 SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
 SOFTWARE_HMIRROR = True    # Hardware keeps vflip; software only adds hmirror to avoid full replace tearing.
+RUNTIME_LENS_CORR = False  # Match main.py runtime image path; calibration mode still calls snapshot_frame() directly.
+DEBUG_PRINT = False        # Offline stdout can block if unread; keep periodic runtime prints disabled.
 
 # ======================================================================
 # 硬件初始化
@@ -292,6 +294,19 @@ color_track_box = None
 color_track_color_id = 0
 color_lost_count = 0
 _cmd_rx_buf = bytearray()
+front_scan_requested = False
+FRONT_SCAN_PACKET_ID = 0xC7
+FRONT_SCAN_EXCLUDE_IOU = 0.20
+FRONT_SCAN_EXCLUDE_CENTER_PX = 35
+FRONT_SCAN_Y_MAX = 150
+FRONT_SCAN_MIN_PIXELS = 150
+FRONT_SCAN_STABLE_FRAMES = 10
+FRONT_SCAN_MAX_FRAMES = 30
+front_scan_last_current_id = 0
+front_scan_last_mask = -1
+front_scan_last_count = 0
+front_scan_stable_count = 0
+front_scan_total_count = 0
 # ======================================================================
 # 黄线检测参数
 # ======================================================================
@@ -620,7 +635,7 @@ def valid_color_blob(blob, color_id):
     else:
         if aspect < 0.60 or aspect > 1.80:
             return False
-        if blob.density() < 0.50:
+        if blob.density() < 0.40:
             return False
     return True
 
@@ -697,6 +712,106 @@ def find_color_target(img, last_box):
         return max(tracked_candidates, key=score_tracked)[0]
     return pick_initial_color_candidate(candidates)
 
+
+def front_scan_current_target():
+    if color_track_active and color_track_box:
+        return color_track_box, color_track_color_id
+    return None, target_color_id
+
+def front_scan_blob_is_current(blob, current_box):
+    if not current_box:
+        return False
+    b_box = (blob.x(), blob.y(), blob.w(), blob.h())
+    if box_iou(b_box, current_box) >= FRONT_SCAN_EXCLUDE_IOU:
+        return True
+    return center_dist2(b_box, current_box) <= FRONT_SCAN_EXCLUDE_CENTER_PX * FRONT_SCAN_EXCLUDE_CENTER_PX
+
+def front_scan_roi():
+    x, y, w, h = dynamic_detect_roi
+    y2 = min(y + h, FRONT_SCAN_Y_MAX)
+    if y2 <= y:
+        return None
+    return (x, y, w, y2 - y)
+
+def scan_front_other_color_ids(img):
+    current_box, current_id = front_scan_current_target()
+    mask = 0
+    count = 0
+    roi = front_scan_roi()
+    if roi is None:
+        return current_id, mask, count
+    for color_id in COLOR_SEARCH_ORDER:
+        if color_id < 1 or color_id > len(all_color_thresholds):
+            continue
+        threshold = all_color_thresholds[color_id - 1]
+        pixels_threshold, area_threshold = color_blob_thresholds(color_id)
+        try:
+            blobs = img.find_blobs([threshold], roi=roi,
+                                   pixels_threshold=pixels_threshold,
+                                   area_threshold=area_threshold,
+                                   merge=True)
+        except Exception:
+            blobs = None
+        if not blobs:
+            continue
+        for blob in blobs:
+            if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
+                if blob.cy() < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
+                    continue
+            if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
+                continue
+            if not valid_color_blob(blob, color_id):
+                continue
+            if front_scan_blob_is_current(blob, current_box):
+                continue
+            mask |= 1 << (color_id - 1)
+            count += 1
+            break
+    return current_id, mask, count
+
+def send_front_scan_result(current_id, mask, count):
+    data = bytearray(7)
+    data[0] = 0xAA
+    data[1] = 0x55
+    data[2] = FRONT_SCAN_PACKET_ID
+    data[3] = current_id & 0xFF
+    data[4] = mask & 0xFF
+    data[5] = count & 0xFF
+    data[6] = sum(data[2:6]) & 0xFF
+    uart.write(data)
+
+def reset_front_scan_state():
+    global front_scan_last_current_id, front_scan_last_mask
+    global front_scan_last_count, front_scan_stable_count, front_scan_total_count
+    front_scan_last_current_id = 0
+    front_scan_last_mask = -1
+    front_scan_last_count = 0
+    front_scan_stable_count = 0
+    front_scan_total_count = 0
+
+def process_front_scan_request(img):
+    global front_scan_requested
+    global front_scan_last_current_id, front_scan_last_mask
+    global front_scan_last_count, front_scan_stable_count, front_scan_total_count
+    if not front_scan_requested:
+        return False
+    front_scan_total_count += 1
+    current_id, mask, count = scan_front_other_color_ids(img)
+    if (current_id == front_scan_last_current_id and
+            mask == front_scan_last_mask and
+            count == front_scan_last_count):
+        front_scan_stable_count += 1
+    else:
+        front_scan_last_current_id = current_id
+        front_scan_last_mask = mask
+        front_scan_last_count = count
+        front_scan_stable_count = 1
+    if (front_scan_stable_count >= FRONT_SCAN_STABLE_FRAMES or
+            front_scan_total_count >= FRONT_SCAN_MAX_FRAMES):
+        send_front_scan_result(current_id, mask, count)
+        front_scan_requested = False
+        reset_front_scan_state()
+    return True
 def beacon_roi_from_box(box):
     if (not ENABLE_LOCAL_TRACK_ROI) or box is None:
         return BEACON_DETECT_ROI
@@ -1005,7 +1120,7 @@ def send_target_data(color_id, cx, cy, w, h, distance):
     # 调试：打印发送的数据包（每秒一次）
     global last_print_time
     now = time.ticks_ms()
-    if time.ticks_diff(now, last_print_time) >= 1000:
+    if DEBUG_PRINT and time.ticks_diff(now, last_print_time) >= 1000:
         print("TX: [", end="")
         for i, b in enumerate(data):
             if i > 0:
@@ -1122,7 +1237,7 @@ def process_return_beacon_frame(img):
                         color=(0, 255, 255), scale=1)
 
         now = time.ticks_ms()
-        if time.ticks_diff(now, last_print_time) >= 300:
+        if DEBUG_PRINT and time.ticks_diff(now, last_print_time) >= 300:
             print('[{}] return beacon w=({:.1f},{:.1f})cm box=({},{},{},{}) obs={} fps={:.1f}'.format(
                 frame_count, world_x, world_y, x, y, w, h, obstacle_flag, clock.fps()))
             last_print_time = now
@@ -1133,7 +1248,7 @@ def process_return_beacon_frame(img):
         send_world_no_target(False, POS_NO_BOUNDARY, obstacle_flag, angle_flag, angle_cdeg)
 
         now = time.ticks_ms()
-        if time.ticks_diff(now, last_print_time) >= 500:
+        if DEBUG_PRINT and time.ticks_diff(now, last_print_time) >= 500:
             print('[{}] return beacon none obs={} fps={:.1f}'.format(
                 frame_count, obstacle_flag, clock.fps()))
             last_print_time = now
@@ -1145,7 +1260,7 @@ def receive_command_from_host():
     global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
-    global _cmd_rx_buf
+    global _cmd_rx_buf, front_scan_requested
     global yellow_seen_in_carry, yellow_tracking, yellow_detected, yellow_recent_count
 
     if uart.any():
@@ -1220,6 +1335,9 @@ def receive_command_from_host():
             reset_yellow_state()
             reset_beacon_state()
             print(">>> Enter return mode <<<")
+        elif command == 0x06:  # 搬运前扫描其它颜色ID
+            reset_front_scan_state()
+            front_scan_requested = True
         elif command == 0x00 or command == 0x02:  # 回到寻找模式/右转完成/重置
             openart_mode = MODE_SEARCH
             reset_target_tracking_state()
@@ -1368,7 +1486,7 @@ print("  检测间隔   : 每{}帧".format(YELLOW_DETECT_INTERVAL))
 print("  进入像素   : {}".format(YELLOW_ENTER_PIXELS))
 print("  保持像素   : {}".format(YELLOW_KEEP_PIXELS))
 print("  丢失阈值   : 连续{}帧判定过线".format(YELLOW_LOST_THRESHOLD))
-print("主机命令: 0x00=重置/寻找, 0x01=搬运, 0x02=右转完成, 0x03=锁色, 0x04=预留忽略, 0x05=回库")
+print("主机命令: 0x00=重置/寻找, 0x01=搬运, 0x02=右转完成, 0x03=锁色, 0x04=预留忽略, 0x05=回库, 0x06=搬运前扫描")
 print("回传协议: 16字节, [12-14]=预留角度字段(从车固定为0), [15]=checksum")
 print("=" * 50)
 print("开始识别...")
@@ -1510,7 +1628,7 @@ while True:
     cmd, param = receive_command_from_host()
 
     # 获取图像 + 镜头畸变校正
-    img = snapshot_frame(apply_lens_corr=True)
+    img = snapshot_frame(apply_lens_corr=RUNTIME_LENS_CORR)
     world_x = 0.0
     world_y = 0.0
 
@@ -1521,6 +1639,8 @@ while True:
 
     # ===== Dynamic cut update =====
     update_dynamic_cut(img, frame_count)
+    if process_front_scan_request(img):
+        continue
     obstacle_flag, obstacle_blobs = detect_obstacle(img)
     update_yellow_detection(img, frame_count)
 
@@ -1603,7 +1723,7 @@ while True:
         detect_count += 1
 
         now = time.ticks_ms()
-        if time.ticks_diff(now, last_print_time) >= 500:
+        if DEBUG_PRINT and time.ticks_diff(now, last_print_time) >= 500:
             print('[{}] src={} cid={} w=({:.1f},{:.1f})cm dist={}mm box=({},{},{},{}) yflag={} pos={} obs={} fps={:.1f}'.format(
                 frame_count, source, send_color_id, world_x, world_y, distance,
                 x1, y1, x2, y2, yellow_detected, pos_flag, obstacle_flag, clock.fps()))
@@ -1615,7 +1735,7 @@ while True:
             reset_target_tracking_state()
         send_world_no_target(yellow_detected, pos_flag, obstacle_flag, angle_flag, angle_cdeg)
         now = time.ticks_ms()
-        if time.ticks_diff(now, last_print_time) >= 1000:
+        if DEBUG_PRINT and time.ticks_diff(now, last_print_time) >= 1000:
             print('[{}] src=none cid=0 yflag={} pos={} obs={} fps={:.1f}'.format(
                 frame_count, yellow_detected, pos_flag, obstacle_flag, clock.fps()))
             last_print_time = now
