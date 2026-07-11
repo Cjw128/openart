@@ -1,6 +1,6 @@
 # OpenART 视觉更新日志
 
-本仓库用于记录 OpenART 智能车视觉脚本的迭代，包括 OpenART Plus 与 OpenART Mini。
+本仓库用于记录双 OpenART Plus 智能车视觉脚本的迭代；当前主车与从车硬件均为 OpenART Plus。
 
 ## 当前文件
 
@@ -23,6 +23,116 @@
 - 以后所有结构说明和迭代记录都写入 `README_ch.md` / `README_en.md`，并保持中英文同步更新。
 
 ## 更新日志
+
+> **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。`IS_SLAVE_CAR` 仅表示主从软件角色，不再用于选择 UART2。**
+
+### 2026-07-11 - v0.9.7-dev - 主车黄线阈值与文档同步
+
+范围：`main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+- 将主车黄线 LAB 阈值从 `(48, 94, -27, 51, 12, 127)` 调整为 `(51, 91, -32, 36, 1, 118)`。
+- 从车继续保留独立的黄线阈值和现有 IPM 数值；标定注释改为当前 OpenART Plus 硬件表述，并明确旧 Mini 安装参数不能直接沿用，必须在当前实机重新标定。
+- 根 README 同时标明最近稳定版与当前开发版；补充 v0.9.5/v0.9.6 的基线差异说明，并补齐英文 v0.7.5-dev 历史记录。
+
+验证：
+- 仓库内全部 Python 文件语法检查已通过。
+- `git diff --check` 已通过。
+
+### 2026-07-11 - v0.9.6-dev - ID1/ID2 独立最小像素阈值
+
+范围：`main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- 主车和从车新增 `COLOR_ID12_MIN_PIXELS = 100`，明确让 ID1、ID2 使用 `100` 像素；相对 v0.9.5-dev 中间版本由 `150` 降为 `100`，相对稳定版 v0.9.0 的净值保持 `100` 不变。
+- 默认 `COLOR_MIN_PIXELS = 150` 现在用于熊类 ID4、ID5；相对 v0.9.0，其 `find_blobs()` 初筛净值由 `100` 提高到 `150`，原有二次过滤保持不变。网球 ID3 继续使用 `45` 像素。
+- `0x06` 搬运前扫描的 `FRONT_SCAN_MIN_PIXELS = 150` 保持不变。
+
+验证：
+- `python -m py_compile main.py minimain.py` 已通过。
+- `git diff --check -- main.py minimain.py README_ch.md README_en.md` 已通过。
+
+### 2026-07-11 - v0.9.5-dev - 双车目标 ROI 调整至蓝地边界上方 10 px
+
+范围：`main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- 将主车和从车动态目标检测 ROI 上界统一改为蓝地边界上方 `10 px`。
+- `main.py` 与 `minimain.py` 的 `CUT_ROI_Y_OFFSET` 均调整为 `-10`；计算仍使用 `蓝线位置 + CUT_ROI_Y_OFFSET`。
+- 相对 v0.9.4-dev 的边界下方 `3 px`，本次向上移动 `13 px`；相对稳定版 v0.9.0 的边界上方 `6 px`，净变化为向上 `4 px`。
+
+验证：
+- `python -m py_compile main.py minimain.py` 已通过。
+- `git diff --check -- main.py minimain.py README_ch.md README_en.md` 已通过。
+
+### 2026-07-11 - v0.9.4-dev - 从车回退至 v0.9.1 旧结构
+
+范围：`minimain.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- 撤销 v0.9.2 中将 `minimain.py` 按 `main.py` 重建的重构，恢复 v0.9.0/v0.9.1 系列经过从车现场验证的旧文件结构、旧命令处理和旧黄线状态机。
+- 恢复从车左右垂直黄线 ROI、底部向上扫描、`yellow_raw_detected`、`YELLOW_CARRY_HOLD_FRAMES = 40` 和原有搬运过线判定流程。
+- 移除重构带入从车的 WDT、主车底角黄线拟合状态、主车水平黄线双 ROI 及对应辅助函数。
+- 保留 v0.9.1 的性能优化：删除橘色障碍逐帧扫描和目标重叠排除，`obstacle_flag` 固定为 `0`，动态目标 ROI 使用蓝地边界下方 `3 px`，普通颜色最小像素为 `150`。
+- 保留当前双 OpenART Plus 硬件规则，从车继续固定使用 `UART12`、115200 bps。
+- 本次只回退 `minimain.py`；`main.py` 不随从车一起回退。
+
+验证：
+- `python -m py_compile minimain.py` 已通过。
+- `minimain.py` 相对 v0.9.0 基线仅保留 v0.9.1 性能修改和 UART12/3 px 当前参数。
+- `git diff --check -- minimain.py README_ch.md README_en.md` 已通过。
+
+### 2026-07-10 - v0.9.3-dev - 双车 Plus UART12 规则固化
+
+范围：`main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+- 明确当前主车和从车硬件均为 OpenART Plus，两份正式程序都无条件初始化 `UART(12, baudrate=115200)`。
+- 删除 `main.py` 中从车角色切换到 UART2 的旧硬件分支，并删除 `minimain.py` 中无意义的相同分支。
+- `IS_SLAVE_CAR` 只保留为软件业务角色开关，用于候选颜色和主机 `0x03` 锁色流程，不再影响串口编号。
+- 在根 README 和中英文详细 README 顶部写明双车统一使用 UART12，避免后续维护再次恢复 UART2。
+
+验证：
+- `python -m py_compile main.py minimain.py` 已通过。
+- `rg -n "UART\\(2" main.py minimain.py` 无匹配。
+
+### 2026-07-10 - v0.9.2-dev - 从车运行主线同步与防卡死清理
+
+范围：`minimain.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- 以当前 `main.py` 稳定实现为基线重建 `minimain.py`，主从车现在共享相同的命令解析、目标搜索、局部跟踪、动态裁切、黄线状态机、回库识别和主循环结构。
+- 删除从车旧版左右黄线 ROI、扫描条、旧搬运保持计数、旧原始黄线状态及其分叉逻辑。
+- 删除从车启动横幅、命令处理和运行期调试打印，避免脱机 stdout 无读取时阻塞。
+- 为从车同步 `8 s` 看门狗、主循环各提前返回路径喂狗和每 `10` 帧一次的 `gc.collect()`，降低永久卡死和长期堆碎片风险。
+- 同步主车当前多条蓝地采样动态裁切、底角黄线过线确认和已淘汰橘色障碍逻辑删除结果。
+- 保留从车独立的角色选择、曝光、颜色阈值、蓝地阈值、黄线阈值、回库信标阈值及 IPM 标定参数。
+
+验证：
+- `python -m py_compile main.py minimain.py` 已通过。
+- 常量差异检查确认主从文件仅保留上述设备参数差异。
+- `git diff --check -- main.py minimain.py README_ch.md README_en.md` 已通过。
+
+### 2026-07-10 - v0.9.1-dev - 帧率与搬运过线优化
+
+范围：`main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+变更：
+- 删除两份正式程序中的橘色 LAB 阈值、通道位置判断、橘色障碍检测函数和目标框重叠排除逻辑。
+- 搜索、搬运和回库路径不再逐帧扫描 `320×160` 的橘色障碍 ROI；检测到的正常颜色目标也不再因与橘色区域重叠而被丢弃。
+- 保留 16 字节回传协议中的 `obstacle_flag` 字段以兼容现有 RT1021 解包，字段固定回传 `0`。
+- `0x06` 搬运前其它颜色 ID 扫描保持不变，它与已删除的橘色障碍检测相互独立。
+- 深蓝场地动态上界识别完成后，将真正的目标检测 ROI 上界设为该边界向下 `3 px`；全局搜索、局部跟踪和 `0x06` 扫描统一使用收紧后的 ROI。
+- 动态裁切调试线改为绘制实际生效的水平 ROI 上界，便于现场确认裁切范围。
+- 主车黄线到达左下角或右下角前仍每 2 帧检测一次；到达底角并锁存后切换为逐帧检测，连续 3 个实际帧未检测到黄线即判定过线。
+
+效果：
+- 普通目标检测和回库模式每帧减少一次大区域 `find_blobs()`，目标搜索 ROI 也进一步缩小，降低视觉处理开销并改善实际帧率。
+- 主车到达黄线底角后的过线响应由约 6 个主循环帧缩短为 3 个主循环帧，同时仍保留底角到达前置条件。
+
+验证：
+- `python -m py_compile main.py minimain.py` 已通过。
+- `git diff --check` 已通过。
 
 ### 2026-07-10 - v0.9.0 - 双车互通稳定版
 

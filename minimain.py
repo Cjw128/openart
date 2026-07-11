@@ -133,7 +133,7 @@ def calibrate_brightness_startup(target=TARGET_BRIGHTNESS, samples=5, roi=None, 
 sensor.set_auto_exposure(False, exposure_us=1200)
 sensor.set_auto_gain(False, gain_db=0)
 
-# UART initialization: OpenART Plus exposes UART12 for both master and slave roles.
+# Both master and slave cameras are OpenART Plus boards and use UART12.
 uart = UART(12, baudrate=115200)
 
 # 帧率计时器
@@ -204,8 +204,9 @@ COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
-COLOR_MIN_PIXELS = 100
+COLOR_MIN_PIXELS = 150
 COLOR_MIN_AREA = 100
+COLOR_ID12_MIN_PIXELS = 100
 TENNIS_COLOR_ID = 3
 TENNIS_MIN_PIXELS = 45
 TENNIS_MIN_AREA = 45
@@ -249,7 +250,7 @@ CUT_SCAN_Y_MAX = 140
 CUT_UPDATE_INTERVAL = 2
 CUT_MIN_PIXELS = 8
 CUT_MIN_AREA = 8
-CUT_Y_MARGIN = 6
+CUT_ROI_Y_OFFSET = -10      # Target ROI starts 10 px above the detected blue-ground boundary.
 CUT_EMA_ALPHA = 0.35
 CUT_MAX_MISS = 10
 CUT_BLOB_DELTA = 2
@@ -319,22 +320,6 @@ YELLOW_KEEP_PIXELS = 3                  # 已看到黄线后的保持阈值，�
 YELLOW_SCAN_STRIP_H = 12                # 搬运模式下从屏幕底部往上分条扫描黄线
 
 # 黄线边界状态
-# ======================================================================
-# Orange obstacle detection
-# ======================================================================
-obstacle_threshold = [(56, 96, 16, 127, 9, 127)]
-OBSTACLE_ROI = (0, 80, 320, 160)
-OBSTACLE_PATH_X_MIN = 110
-OBSTACLE_PATH_X_MAX = 210
-OBSTACLE_MIN_PIXELS = 80
-OBSTACLE_MIN_AREA = 80
-
-OBSTACLE_NONE = 0x00
-OBSTACLE_MOVE_RIGHT = 0x01
-OBSTACLE_MOVE_LEFT = 0x02
-OBSTACLE_BLOCKED = 0x03
-OBSTACLE_TARGET_OVERLAP_PIXELS = 200
-
 yellow_boundary_y = 0       # 黄线边界的图像坐标 Y (像素)
 yellow_boundary_left_y = 0  # 左侧黄线中心 Y
 yellow_boundary_right_y = 0 # 右侧黄线中心 Y
@@ -504,7 +489,7 @@ def update_dynamic_cut(img, frame_count):
             dynamic_cut_right_y = DETECT_Y_MIN
 
     if dynamic_cut_valid:
-        y_base = min(dynamic_cut_left_y, dynamic_cut_right_y) - CUT_Y_MARGIN
+        y_base = min(dynamic_cut_left_y, dynamic_cut_right_y) + CUT_ROI_Y_OFFSET
         y_base = clamp_int(y_base, DETECT_Y_MIN, 239)
     else:
         y_base = DETECT_Y_MIN
@@ -555,7 +540,7 @@ def build_local_track_roi(base_roi):
 
     y_floor = base_roi[1]
     if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-        y_floor = max(y_floor, min(dynamic_cut_left_y, dynamic_cut_right_y) - CUT_Y_MARGIN)
+        y_floor = max(y_floor, dynamic_detect_roi[1])
 
     return clamp_roi_to_frame(x, y, w, h, y_floor)
 
@@ -598,8 +583,9 @@ def make_roi_from_box(box):
     if not box:
         return dynamic_detect_roi
     x, y, w, h = box
+    y_floor = dynamic_detect_roi[1] if ENABLE_DYNAMIC_CUT and dynamic_cut_valid else DETECT_Y_MIN
     x0 = clamp_int(x - COLOR_TRACK_MARGIN, 0, 319)
-    y0 = clamp_int(y - COLOR_TRACK_MARGIN, DETECT_Y_MIN, 239)
+    y0 = clamp_int(y - COLOR_TRACK_MARGIN, y_floor, 239)
     x1 = clamp_int(x + w + COLOR_TRACK_MARGIN, x0 + 1, 320)
     y1 = clamp_int(y + h + COLOR_TRACK_MARGIN, y0 + 1, 240)
     return (x0, y0, x1 - x0, y1 - y0)
@@ -642,6 +628,8 @@ def valid_color_blob(blob, color_id):
 def color_blob_thresholds(color_id):
     if color_id == TENNIS_COLOR_ID:
         return (TENNIS_MIN_PIXELS, TENNIS_MIN_AREA)
+    if color_id == 1 or color_id == 2:
+        return (COLOR_ID12_MIN_PIXELS, COLOR_MIN_AREA)
     return (COLOR_MIN_PIXELS, COLOR_MIN_AREA)
 
 def pick_initial_color_candidate(candidates):
@@ -941,8 +929,8 @@ def world_to_pixel(X, Y, H):
     return (int(u), int(v))
 
 # ======================================================================
-# 逆透视标定数据，当前为 Mini 相机离地 22cm 的现场标定参数。
-# 如重新调整 Mini 相机高度或俯仰角，需要重新运行标定模式更新 CALIB_PIXEL。
+# 逆透视标定数据，当前沿用从车离地 22cm 的现场标定参数。
+# 从车现为 OpenART Plus；若参数来自旧 Mini 安装或高度/俯仰角有变化，必须重新标定。
 # ======================================================================
 CALIB_PIXEL = [
     [90, 240],     # 点0: 近处左侧
@@ -1010,55 +998,7 @@ def calculate_distance(pixel_width, color_id=1):
         return -1
     return int(distance)
 
-def detect_obstacle(img):
-    blobs = img.find_blobs(obstacle_threshold, roi=OBSTACLE_ROI,
-                           pixels_threshold=OBSTACLE_MIN_PIXELS,
-                           area_threshold=OBSTACLE_MIN_AREA,
-                           merge=True)
-    if not blobs:
-        return (OBSTACLE_NONE, None)
 
-    in_path = []
-    for blob in blobs:
-        left = blob.x()
-        right = blob.x() + blob.w()
-        img.draw_rectangle(blob.rect(), color=(255, 128, 0), thickness=2)
-        if not (right < OBSTACLE_PATH_X_MIN or left > OBSTACLE_PATH_X_MAX):
-            in_path.append(blob)
-
-    if not in_path:
-        return (OBSTACLE_NONE, blobs)
-
-    if len(in_path) > 1:
-        return (OBSTACLE_BLOCKED, blobs)
-
-    blob = in_path[0]
-    left = blob.x()
-    right = blob.x() + blob.w()
-    overlap_left = max(left, OBSTACLE_PATH_X_MIN)
-    overlap_right = min(right, OBSTACLE_PATH_X_MAX)
-    overlap_center = (overlap_left + overlap_right) // 2
-
-    if overlap_center < 160:
-        return (OBSTACLE_MOVE_RIGHT, blobs)
-    return (OBSTACLE_MOVE_LEFT, blobs)
-
-def box_hits_obstacle(box, obstacle_blobs):
-    if not obstacle_blobs:
-        return False
-    x, y, w, h = box
-    x2 = x + w
-    y2 = y + h
-    for blob in obstacle_blobs:
-        bx = blob.x()
-        by = blob.y()
-        bx2 = bx + blob.w()
-        by2 = by + blob.h()
-        inter_w = min(x2, bx2) - max(x, bx)
-        inter_h = min(y2, by2) - max(y, by)
-        if inter_w > 0 and inter_h > 0 and inter_w * inter_h >= OBSTACLE_TARGET_OVERLAP_PIXELS:
-            return True
-    return False
 
 # ======================================================================
 # 串口通信协议
@@ -1205,7 +1145,7 @@ def send_world_no_target(yellow_flag=False, pos_flag=0x00, obstacle_flag=0x00,
 def process_return_beacon_frame(img):
     global beacon_last_box, beacon_lost_frames, last_print_time
 
-    obstacle_flag, obstacle_blobs = detect_obstacle(img)
+    obstacle_flag = 0
     angle_flag, angle_cdeg = get_crossline_angle_fields()
 
     if H_pix2world is None:
@@ -1641,7 +1581,7 @@ while True:
     update_dynamic_cut(img, frame_count)
     if process_front_scan_request(img):
         continue
-    obstacle_flag, obstacle_blobs = detect_obstacle(img)
+    obstacle_flag = 0
     update_yellow_detection(img, frame_count)
 
     # ===== Color blob detection / tracking =====
@@ -1657,14 +1597,11 @@ while True:
         y1 = blob.y()
         w = blob.w()
         h = blob.h()
-        if not box_hits_obstacle((x1, y1, w, h), obstacle_blobs):
-            best = (send_color_id, x1, y1, w, h)
-            color_track_active = True
-            color_track_box = (x1, y1, w, h)
-            color_track_color_id = send_color_id
-            color_lost_count = 0
-        else:
-            found = None
+        best = (send_color_id, x1, y1, w, h)
+        color_track_active = True
+        color_track_box = (x1, y1, w, h)
+        color_track_color_id = send_color_id
+        color_lost_count = 0
 
     if not found and color_track_active and color_track_box:
         color_lost_count += 1
@@ -1751,7 +1688,7 @@ while True:
 
     # Draw dynamic cut line (debug)
     if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-        img.draw_line(CUT_LEFT_X, dynamic_cut_left_y, CUT_RIGHT_X, dynamic_cut_right_y,
+        img.draw_line(0, dynamic_detect_roi[1], 319, dynamic_detect_roi[1],
                       color=(0, 180, 255), thickness=2)
 
     # 绘制黄色边界位置线（横线）

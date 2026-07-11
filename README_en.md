@@ -1,6 +1,6 @@
 # OpenART Vision Change Log
 
-This repository tracks OpenART smart car vision scripts for OpenART Plus and OpenART Mini.
+This repository tracks a dual-OpenART-Plus smart-car vision system; both current camera boards are OpenART Plus.
 
 ## Current Files
 
@@ -23,6 +23,116 @@ This repository tracks OpenART smart car vision scripts for OpenART Plus and Ope
 - Keep all structure notes and iteration records in `README_ch.md` / `README_en.md`, and update both languages together.
 
 ## Logs
+
+> **Current dual-car hardware rule: both the master and slave cameras are OpenART Plus boards. `main.py` and `minimain.py` both use `UART12` at 115200 bps. `IS_SLAVE_CAR` selects only the software role and never selects UART2.**
+
+### 2026-07-11 - v0.9.7-dev - Master yellow-line threshold and documentation sync
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Adjusted the master yellow-line LAB threshold from `(48, 94, -27, 51, 12, 127)` to `(51, 91, -32, 36, 1, 118)`.
+- The slave retains its independent yellow-line threshold and current IPM values. Its calibration comments now refer to the current OpenART Plus hardware and state that parameters from an old Mini installation cannot be reused without recalibration on the current board.
+- The root README now identifies both the latest stable and current development versions. The v0.9.5/v0.9.6 baseline differences are explicit, and the missing English v0.7.5-dev history has been restored.
+
+Verification:
+- Syntax checks passed for every Python file in the repository.
+- `git diff --check` passed.
+
+### 2026-07-11 - v0.9.6-dev - Separate ID1/ID2 minimum-pixel threshold
+
+Scope: `main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Added `COLOR_ID12_MIN_PIXELS = 100` to both runtimes so IDs 1 and 2 explicitly use `100` pixels. This lowers them from `150` in the intermediate v0.9.5-dev state while keeping their net value unchanged from stable v0.9.0.
+- The default `COLOR_MIN_PIXELS = 150` now applies to bear IDs 4 and 5. Relative to v0.9.0, their initial `find_blobs()` threshold increases from `100` to `150` while the existing secondary filters remain unchanged. Tennis-ball ID3 remains at `45` pixels.
+- The `0x06` pre-carry scan keeps `FRONT_SCAN_MIN_PIXELS = 150` unchanged.
+
+Verification:
+- `python -m py_compile main.py minimain.py` passed.
+- `git diff --check -- main.py minimain.py README_ch.md README_en.md` passed.
+
+### 2026-07-11 - v0.9.5-dev - Dual-car target ROI set 10 px above the blue-ground boundary
+
+Scope: `main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Moved both master and slave target-detection ROI tops to `10 px` above the blue-ground boundary.
+- Set `CUT_ROI_Y_OFFSET` to `-10` in both `main.py` and `minimain.py`; the calculation remains `blue boundary + CUT_ROI_Y_OFFSET`.
+- Relative to v0.9.4-dev's `3 px` below the boundary, this moves the ROI upward by `13 px`. Relative to stable v0.9.0's `6 px` above the boundary, the net movement is `4 px` upward.
+
+Verification:
+- `python -m py_compile main.py minimain.py` passed.
+- `git diff --check -- main.py minimain.py README_ch.md README_en.md` passed.
+
+### 2026-07-11 - v0.9.4-dev - Slave rollback to the v0.9.1 legacy structure
+
+Scope: `minimain.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Reverted the v0.9.2 rebuild of `minimain.py` from `main.py`, restoring the field-tested v0.9.0/v0.9.1 slave file structure, command handling, and yellow-line state machine.
+- Restored the slave left/right vertical yellow ROIs, bottom-up scan, `yellow_raw_detected`, `YELLOW_CARRY_HOLD_FRAMES = 40`, and the original carry-crossing flow.
+- Removed the watchdog, master bottom-corner fitted-line state, master horizontal yellow ROIs, and related helpers introduced by the rebuild.
+- Preserved the v0.9.1 performance changes: no per-frame orange-obstacle scan or target-overlap rejection, `obstacle_flag` remains `0`, the target ROI starts `3 px` below the blue-ground boundary, and the normal-color minimum is `150` pixels.
+- Preserved the current dual-OpenART-Plus hardware rule; the slave still uses `UART12` at 115200 bps.
+- Only `minimain.py` was rolled back; `main.py` was not rolled back with the slave.
+
+Verification:
+- `python -m py_compile minimain.py` passed.
+- Compared with the v0.9.0 baseline, `minimain.py` now contains only the v0.9.1 performance changes and the current UART12/3 px parameters.
+- `git diff --check -- minimain.py README_ch.md README_en.md` passed.
+
+### 2026-07-10 - v0.9.3-dev - Dual Plus UART12 rule
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Documented that both current camera boards are OpenART Plus and both official runtimes unconditionally initialize `UART(12, baudrate=115200)`.
+- Removed the obsolete slave-role UART2 branch from `main.py` and the redundant identical branch from `minimain.py`.
+- Kept `IS_SLAVE_CAR` only as a software-role switch for candidate reporting and host `0x03` color locking; it no longer affects the UART number.
+- Added the UART12 hardware rule to the root README and both detailed READMEs to prevent UART2 from being restored during later maintenance.
+
+Verification:
+- `python -m py_compile main.py minimain.py` passed.
+- `rg -n "UART\\(2" main.py minimain.py` returned no matches.
+
+### 2026-07-10 - v0.9.2-dev - Slave runtime alignment and freeze-risk cleanup
+
+Scope: `minimain.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Rebuilt `minimain.py` from the current stable `main.py` baseline so both cars now share command parsing, target search, local tracking, dynamic cropping, yellow-line state handling, return-beacon detection, and main-loop structure.
+- Removed the slave's obsolete left/right yellow ROIs, scan strips, old carry-hold counters, raw yellow state, and the associated divergent logic.
+- Removed slave startup banners, command-handler prints, and runtime debug prints to avoid offline blocking when stdout is not consumed.
+- Added the same `8 s` watchdog, watchdog feeds on every early main-loop exit, and `gc.collect()` every `10` frames to reduce permanent hangs and long-run heap fragmentation.
+- Synchronized the current multi-strip blue-ground crop, bottom-corner crossing confirmation, and removal of the retired orange-obstacle path.
+- Preserved slave-specific role selection, exposure, color thresholds, blue-ground threshold, yellow threshold, return-beacon thresholds, and IPM calibration values.
+
+Verification:
+- `python -m py_compile main.py minimain.py` passed.
+- Constant-difference checking confirmed that only the documented device-specific parameters remain different.
+- `git diff --check -- main.py minimain.py README_ch.md README_en.md` passed.
+
+### 2026-07-10 - v0.9.1-dev - Frame-rate and carry-crossing optimization
+
+Scope: `main.py`, `minimain.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Removed the orange LAB threshold, lane-position decision, orange-obstacle detector, and target/obstacle overlap rejection from both official runtimes.
+- Search, carry, and return paths no longer scan the `320x160` orange-obstacle ROI every frame. Valid color targets are no longer discarded because they overlap an orange region.
+- Kept the `obstacle_flag` byte in the 16-byte return packet for RT1021 parser compatibility; it is now always transmitted as `0`.
+- The `0x06` pre-carry scan for other color IDs is unchanged and remains independent of the removed orange-obstacle detector.
+- After detecting the dynamic dark-blue ground boundary, the effective target-detection ROI now starts `3 px` below it. Global search, local tracking, and the `0x06` scan all use the tightened ROI.
+- The dynamic-cut debug line now shows the effective horizontal ROI boundary for direct field verification.
+- The master runtime keeps checking the yellow line every 2 frames until it reaches either bottom corner. Once that state is latched, detection runs every frame and 3 consecutive frame-level misses report the crossing.
+
+Effect:
+- Normal target detection and return mode each avoid one large-ROI `find_blobs()` call per frame, while the target-search ROI is also smaller, reducing vision-processing cost and improving effective frame rate.
+- The master crossing response after the yellow line reaches a bottom corner is reduced from about 6 main-loop frames to 3 while preserving the bottom-corner prerequisite.
+
+Verification:
+- `python -m py_compile main.py minimain.py` passed.
+- `git diff --check` passed.
 
 ### 2026-07-10 - v0.9.0 - Stable dual-car communication release
 
@@ -143,6 +253,32 @@ Verification:
 - `rg -n "tf|tflite|model|MODEL|USE_WHITE|WHITE_BEAR|find_white|load_white|model_net|model_tf|\.detect\(" main.py minimain.py` returned no matches.
 - `python -m py_compile main.py minimain.py` passed.
 - `git diff --check -- main.py minimain.py` passed.
+
+### 2026-06-21 - v0.7.5-dev - Remove SD logging to prevent offline freezes
+
+Scope: `main.py`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Removed the `ENABLE_SD_LOG`, `LOG_PATH`, `LOG_INTERVAL_MS`, and `LOG_FIRST_FRAMES` constants and the `last_log_ms` variable.
+- Removed the `log_checkpoint()` function.
+- Removed every `log_checkpoint` call at startup, inside `load_white_bear_model()`, and in the main loop (about 25 call sites).
+- Kept the watchdog logic (`ENABLE_WATCHDOG`, `WATCHDOG_TIMEOUT_MS`, `init_watchdog()`, and `feed_watchdog()`) unchanged.
+
+Effect:
+
+- Eliminated the risk that forced SD writes during the first 10 frames (about 15 writes per frame) could push a frame beyond 8 seconds and trigger a watchdog reset.
+- Removed the risk of the once-per-second runtime SD write blocking the frame loop.
+- The main loop now performs no SD I/O, giving it more stable frame timing.
+
+Maintenance rules:
+
+- Do not re-enable SD logging in offline deployment. For field diagnostics, connect the IDE and use `print()` or a separate diagnostic script instead of adding file writes to the main loop.
+- If persistent logging is required later, `log_checkpoint` must feed the watchdog and the forced-write window (`LOG_FIRST_FRAMES`) must be reduced to no more than 3 frames.
+
+Verification:
+
+- `python -m py_compile main.py` passed.
 
 ### 2026-06-20 - v0.7.4-dev - OpenART TypeError Compatibility Notes
 

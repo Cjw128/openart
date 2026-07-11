@@ -15,7 +15,7 @@ except Exception:
 # ======================================================================
 CALIBRATION_MODE = False# True = IPM calibration mode, False = normal detection
 BIRDVIEW_DEBUG = False     # True = show bird-view image in IDE, False = fast detection
-IS_SLAVE_CAR = False       # False=master OpenART(UART12), True=slave OpenART(UART2)
+IS_SLAVE_CAR = False       # Software role only; both OpenART Plus boards use UART12.
 SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
 SOFTWARE_HMIRROR = True   # Hardware keeps vflip; software only adds hmirror to avoid full-frame flip tearing.
 RUNTIME_LENS_CORR = False  # Test switch: disable per-frame lens_corr to isolate frame-buffer pressure.
@@ -149,11 +149,8 @@ def calibrate_brightness_startup(target=TARGET_BRIGHTNESS, samples=5, roi=None, 
 sensor.set_auto_exposure(False, exposure_us=1000)
 sensor.set_auto_gain(False, gain_db=0)
 
-# UART initialization (UART12, 115200 baud)
-if IS_SLAVE_CAR:
-    uart = UART(2, baudrate=115200)
-else:
-    uart = UART(12, baudrate=115200)
+# Both master and slave cameras are OpenART Plus boards and use UART12.
+uart = UART(12, baudrate=115200)
 
 # FPS timer
 clock = time.clock()
@@ -223,8 +220,9 @@ COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
-COLOR_MIN_PIXELS = 100
+COLOR_MIN_PIXELS = 150
 COLOR_MIN_AREA = 100
+COLOR_ID12_MIN_PIXELS = 100
 TENNIS_COLOR_ID = 3
 TENNIS_MIN_PIXELS = 45
 TENNIS_MIN_AREA = 45
@@ -276,7 +274,7 @@ CUT_SCAN_Y_MAX = 140
 CUT_UPDATE_INTERVAL = 2
 CUT_MIN_PIXELS = 8
 CUT_MIN_AREA = 8
-CUT_Y_MARGIN = 6
+CUT_ROI_Y_OFFSET = -10      # Target ROI starts 10 px above the detected blue-ground boundary.
 CUT_EMA_ALPHA = 0.35
 CUT_MAX_MISS = 10
 CUT_BLOB_DELTA = 2
@@ -339,7 +337,7 @@ crossline_angle_result = None
 # ======================================================================
 # Yellow line detection parameters
 # ======================================================================
-yellow_threshold = [(48, 94, -27, 51, 12, 127)]    # Yellow LAB threshold
+yellow_threshold = [(51, 91, -32, 36, 1, 118)]    # Yellow LAB threshold
 YELLOW_ROI_TOP = (0, 90, 320, 20)        # Horizontal strip centered near y=100
 YELLOW_ROI_BOTTOM = (0, 130, 320, 20)    # Horizontal strip centered near y=140
 YELLOW_DETECT_INTERVAL = 2              # Detect yellow line every N frames
@@ -347,21 +345,6 @@ YELLOW_ENTER_PIXELS = 70                # Pixel threshold for first yellow-line 
 YELLOW_KEEP_PIXELS = 8                  # Lower hold threshold after line is seen
 YELLOW_CARRY_CONFIRM_FRAMES = 2         # Consecutive hits before carry mode treats yellow as confirmed
 YELLOW_BOTTOM_Y = 239                   # Bottom edge used to arm disappear-after-bottom crossing
-# ======================================================================
-# Orange obstacle detection
-# ======================================================================
-obstacle_threshold = [(56, 96, 16, 127, 9, 127)]
-OBSTACLE_ROI = (0, 80, 320, 160)
-OBSTACLE_PATH_X_MIN = 110
-OBSTACLE_PATH_X_MAX = 210
-OBSTACLE_MIN_PIXELS = 80
-OBSTACLE_MIN_AREA = 80
-
-OBSTACLE_NONE = 0x00
-OBSTACLE_MOVE_RIGHT = 0x01
-OBSTACLE_MOVE_LEFT = 0x02
-OBSTACLE_BLOCKED = 0x03
-OBSTACLE_TARGET_OVERLAP_PIXELS = 200
 
 yellow_boundary_y = 0       # Yellow boundary Y in image pixels
 yellow_boundary_left_y = 0  # Left yellow-line center Y
@@ -376,7 +359,7 @@ yellow_line_b = 0.0
 yellow_detected = False     # Whether yellow line is visible
 yellow_tracking = False      # Hysteresis state after first yellow-line hit
 yellow_lost_count = 0       # Consecutive yellow-line lost counter
-YELLOW_LOST_THRESHOLD = 3   # Lost detections required before crossed-line decision
+YELLOW_LOST_THRESHOLD = 3   # Consecutive per-frame misses after the line reaches a bottom corner
 yellow_seen_in_carry = False # Whether yellow line was confirmed in carry mode
 yellow_bottom_reached_in_carry = False # Whether fitted yellow line has reached a bottom corner
 yellow_carry_confirm_count = 0 # Consecutive carry-mode yellow hits before confirmation
@@ -565,7 +548,7 @@ def update_dynamic_cut(img, frame_count):
             dynamic_cut_right_y = DETECT_Y_MIN
 
     if dynamic_cut_valid:
-        y_base = min(dynamic_cut_left_y, dynamic_cut_right_y) - CUT_Y_MARGIN
+        y_base = min(dynamic_cut_left_y, dynamic_cut_right_y) + CUT_ROI_Y_OFFSET
         y_base = clamp_int(y_base, DETECT_Y_MIN, 239)
     else:
         y_base = DETECT_Y_MIN
@@ -616,7 +599,7 @@ def build_local_track_roi(base_roi):
 
     y_floor = base_roi[1]
     if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-        y_floor = max(y_floor, min(dynamic_cut_left_y, dynamic_cut_right_y) - CUT_Y_MARGIN)
+        y_floor = max(y_floor, dynamic_detect_roi[1])
 
     return clamp_roi_to_frame(x, y, w, h, y_floor)
 
@@ -659,8 +642,9 @@ def make_roi_from_box(box):
     if not box:
         return dynamic_detect_roi
     x, y, w, h = box
+    y_floor = dynamic_detect_roi[1] if ENABLE_DYNAMIC_CUT and dynamic_cut_valid else DETECT_Y_MIN
     x0 = clamp_int(x - COLOR_TRACK_MARGIN, 0, 319)
-    y0 = clamp_int(y - COLOR_TRACK_MARGIN, DETECT_Y_MIN, 239)
+    y0 = clamp_int(y - COLOR_TRACK_MARGIN, y_floor, 239)
     x1 = clamp_int(x + w + COLOR_TRACK_MARGIN, x0 + 1, 320)
     y1 = clamp_int(y + h + COLOR_TRACK_MARGIN, y0 + 1, 240)
     return (x0, y0, x1 - x0, y1 - y0)
@@ -703,6 +687,8 @@ def valid_color_blob(blob, color_id):
 def color_blob_thresholds(color_id):
     if color_id == TENNIS_COLOR_ID:
         return (TENNIS_MIN_PIXELS, TENNIS_MIN_AREA)
+    if color_id == 1 or color_id == 2:
+        return (COLOR_ID12_MIN_PIXELS, COLOR_MIN_AREA)
     return (COLOR_MIN_PIXELS, COLOR_MIN_AREA)
 
 def pick_initial_color_candidate(candidates):
@@ -1068,56 +1054,6 @@ def calculate_distance(pixel_width, color_id=1):
         return -1
     return int(distance)
 
-def detect_obstacle(img):
-    blobs = img.find_blobs(obstacle_threshold, roi=OBSTACLE_ROI,
-                           pixels_threshold=OBSTACLE_MIN_PIXELS,
-                           area_threshold=OBSTACLE_MIN_AREA,
-                           merge=True)
-    if not blobs:
-        return (OBSTACLE_NONE, None)
-
-    in_path = []
-    for blob in blobs:
-        left = blob.x()
-        right = blob.x() + blob.w()
-        img.draw_rectangle(blob.rect(), color=(255, 128, 0), thickness=2)
-        if not (right < OBSTACLE_PATH_X_MIN or left > OBSTACLE_PATH_X_MAX):
-            in_path.append(blob)
-
-    if not in_path:
-        return (OBSTACLE_NONE, blobs)
-
-    if len(in_path) > 1:
-        return (OBSTACLE_BLOCKED, blobs)
-
-    blob = in_path[0]
-    left = blob.x()
-    right = blob.x() + blob.w()
-    overlap_left = max(left, OBSTACLE_PATH_X_MIN)
-    overlap_right = min(right, OBSTACLE_PATH_X_MAX)
-    overlap_center = (overlap_left + overlap_right) // 2
-
-    if overlap_center < 160:
-        return (OBSTACLE_MOVE_RIGHT, blobs)
-    return (OBSTACLE_MOVE_LEFT, blobs)
-
-def box_hits_obstacle(box, obstacle_blobs):
-    if not obstacle_blobs:
-        return False
-    x, y, w, h = box
-    x2 = x + w
-    y2 = y + h
-    for blob in obstacle_blobs:
-        bx = blob.x()
-        by = blob.y()
-        bx2 = bx + blob.w()
-        by2 = by + blob.h()
-        inter_w = min(x2, bx2) - max(x, bx)
-        inter_h = min(y2, by2) - max(y, by)
-        if inter_w > 0 and inter_h > 0 and inter_w * inter_h >= OBSTACLE_TARGET_OVERLAP_PIXELS:
-            return True
-    return False
-
 # ======================================================================
 # UART protocol
 # ======================================================================
@@ -1251,7 +1187,7 @@ def send_world_no_target(yellow_flag=False, pos_flag=0x00, obstacle_flag=0x00,
 def process_return_beacon_frame(img):
     global beacon_last_box, beacon_lost_frames, last_print_time
 
-    obstacle_flag, obstacle_blobs = detect_obstacle(img)
+    obstacle_flag = 0
     angle_flag, angle_cdeg = get_crossline_angle_fields()
 
     if H_pix2world is None:
@@ -1430,7 +1366,7 @@ def current_pos_flag(frame_count):
             return POS_NO_BOUNDARY
         if not yellow_seen_in_carry:
             yellow_carry_confirm_count = 0
-        if yellow_bottom_reached_in_carry and (frame_count % YELLOW_DETECT_INTERVAL == 0):
+        if yellow_bottom_reached_in_carry:
             yellow_lost_count += 1
             if yellow_lost_count >= YELLOW_LOST_THRESHOLD:
                 openart_mode = MODE_WAIT_TURN
@@ -1450,7 +1386,8 @@ def update_yellow_detection(img, frame_count):
     global yellow_boundary_y, yellow_boundary_left_y, yellow_boundary_right_y, yellow_boundary_wy
     global yellow_line_x1, yellow_line_y1, yellow_line_x2, yellow_line_y2, yellow_line_k, yellow_line_b
 
-    if frame_count % YELLOW_DETECT_INTERVAL != 0:
+    detect_every_frame = openart_mode == MODE_CARRY and yellow_bottom_reached_in_carry
+    if not detect_every_frame and frame_count % YELLOW_DETECT_INTERVAL != 0:
         return
 
     yellow_pixels_threshold = YELLOW_KEEP_PIXELS if yellow_tracking else YELLOW_ENTER_PIXELS
@@ -1656,7 +1593,7 @@ while True:
             gc.collect()
         feed_watchdog()
         continue
-    obstacle_flag, obstacle_blobs = detect_obstacle(img)
+    obstacle_flag = 0
     update_yellow_detection(img, frame_count)
 
     # ===== Color blob detection / tracking =====
@@ -1672,14 +1609,11 @@ while True:
         y1 = blob.y()
         w = blob.w()
         h = blob.h()
-        if not box_hits_obstacle((x1, y1, w, h), obstacle_blobs):
-            best = (send_color_id, x1, y1, w, h)
-            color_track_active = True
-            color_track_box = (x1, y1, w, h)
-            color_track_color_id = send_color_id
-            color_lost_count = 0
-        else:
-            found = None
+        best = (send_color_id, x1, y1, w, h)
+        color_track_active = True
+        color_track_box = (x1, y1, w, h)
+        color_track_color_id = send_color_id
+        color_lost_count = 0
 
     if not found and color_track_active and color_track_box:
         color_lost_count += 1
@@ -1755,7 +1689,7 @@ while True:
 
     # Draw dynamic cut line (debug)
     if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-        img.draw_line(CUT_LEFT_X, dynamic_cut_left_y, CUT_RIGHT_X, dynamic_cut_right_y,
+        img.draw_line(0, dynamic_detect_roi[1], 319, dynamic_detect_roi[1],
                       color=(0, 180, 255), thickness=2)
 
     # Draw fitted yellow boundary line
