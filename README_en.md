@@ -26,6 +26,23 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
 
+### 2026-07-13 - v0.9.9-dev - Long-range world-coordinate clamping fix
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+- IPM describes points on the ground plane, so both runtimes now use the bottom-center of the target bounding box as the ground-contact point instead of averaging all four corners. A target's top edge can no longer corrupt the final distance when it approaches or crosses the projection horizon.
+- The valid forward-coordinate range is now `0 < world_y <= 300 cm`. Zero, negative, NaN, infinite, and above-limit results all produce the `300 cm` long-range saturation value. This value keeps the car approaching the target; it does not claim calibrated accuracy at `300 cm`.
+- The lateral world coordinate remains limited to `-250 cm` through `250 cm`. Signed 16-bit saturation is now applied before UART encoding so an out-of-range positive coordinate cannot be decoded by the controller as a negative value after bit masking.
+- The 16-byte world-coordinate packet layout and millimetre unit are unchanged. The forward long-range saturation value is transmitted as `3000 mm`.
+
+Verification:
+- Host-side syntax compilation passed for `main.py` and `minimain.py`.
+- Representative ground-contact rows were scanned along the image axis. Both runtimes stayed positive and at or below `300 cm`; `main.py` remained at `300 cm` after crossing the projection horizon.
+- Injected zero, negative, NaN, and positive/negative infinity cases all converted to `300 cm`.
+- Long-range packets from both runtimes decoded to `3000 mm`, and out-of-range positive and negative `int16` test values saturated correctly.
+- `git diff --check` passed.
+
 ### 2026-07-12 - v0.9.8-dev - Offline hot-path cleanup and vision-return removal
 
 Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
