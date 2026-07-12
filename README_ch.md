@@ -12,6 +12,9 @@
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
 | `calib_ide_tune.py` | OpenART Plus / IDE | 自动标定参数调试脚本 |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
+| `calibrate_ground_camera.py` | PC / OpenCV | 从红色沙包对应点生成结构化三角坐标网格 |
+| `ground_mesh_16_points_template.csv` | PC | 已完成的 24 点主相机标定数据（文件名保留历史名称） |
+| `raw_ground_projection_test.py` | OpenART Plus / IDE | 使用红色沙包验证原图像素到真实地面坐标 |
 
 ## 结构说明
 
@@ -21,6 +24,26 @@
 - 标定、阈值调参和搬运前色块扫描验证保留为独立 IDE / 测试脚本，不作为正式脱机入口。
 - 多文件版本曾导致 TFLite 检测卡死，原因和维护约束见 v0.4.0 日志；不要把 v0.3.0 的模块化结构重新作为比赛部署结构。
 - 以后所有结构说明和迭代记录都写入 `README_ch.md` / `README_en.md`，并保持中英文同步更新。
+
+## 原始图像真实坐标测试
+
+该测试链路不调用 `lens_corr()`，不做图像拉伸或鸟瞰变换，也不需要棋盘格和相机内参；`main.py` / `minimain.py` 保持不变。OpenART 在原始 QVGA 画面中识别 `main.py` 颜色 ID 2 的红色沙包，取色块底边中心作为接地点，通过相邻标定点组成的结构化三角网格插值真实 `X/Y`。
+
+当前 `ground_mesh_16_points_template.csv` 实际包含 24 个 `fit` 点：原有 16 点完整保留，新增 `Y=30 cm` 和 `Y=9 cm` 两排各 4 点。行号是稳定 ID，生成器按实测 Y 自动排序。当前网格为 `6 x 4`、30 个三角形，有效 Y 范围为 `9–164 cm`，像素凸包覆盖 QVGA 的 `57.5%`。
+
+1. CSV 表头必须为 `point_id,u,v,Xcm,Ycm,split`。X 向右为正、Y 向前为正，单位厘米。每一排 X 可以不同，但同排必须从 C1 到 C4 递增；标定采点仍应避免沙包碰到图像四边。
+2. 生成主相机网格：
+
+```powershell
+python calibrate_ground_camera.py --ground-csv ground_mesh_16_points_template.csv --role master --expected-points 24 --required-near-y-cm 9 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
+```
+
+3. 生成器会拒绝重复像素、退化三角形和网格翻折。当前数据的最小三角角为 `7.82°`；24 个拟合节点可被精确复现。生成器还会拟合一个仅用于网格外补点的全局单应模型，其节点 RMS / 最大误差为 `1.727 / 3.191 cm`。
+4. 将 `camera_ground_mesh.txt` 放到 OpenART SD 卡根目录，设备路径必须为 `/sd/camera_ground_mesh.txt`，然后运行 `raw_ground_projection_test.py`。
+5. 网格内输出 `status=VALID source=MESH`；网格外输出 `status=VALID source=HOMOGRAPHY_FALLBACK`。远端后备坐标限制在 `Y=164 cm`，不再出现 `300 cm`。整幅 QVGA 的 76,800 个像素已扫描：42,782 个走网格，34,018 个由后备模型补齐，坐标空洞为 0。
+6. 测试运行时，触边红色块不会再被丢弃：脚本会放宽仅限边缘候选的形状过滤并继续输出坐标，同时标记 `quality=CLIPPED_ESTIMATE`。没有检测到红色区域或参数文件无效时才输出 `status=NOT_FOUND`。裁切估计和后备坐标精度低于网格内坐标，仍建议在实际搬运路径上验收。
+7. `DRAW_VALIDITY_GRID=True` 可显示直接网格覆盖范围。填写 `EXPECTED_X_CM` / `EXPECTED_Y_CM` 时，画面和串口还会显示实测总误差。
+8. 从相机必须独立采集并生成网格；同时将脚本的 `CAMERA_ROLE` 和命令行 `--role` 改为 `slave`，不能交换两块相机的参数文件。
 
 ## 更新日志
 

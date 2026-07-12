@@ -1,0 +1,1367 @@
+{
+  "schema": 4,
+  "model": "triangle_mesh",
+  "role": "master",
+  "raw_image_pipeline": {
+    "width": 320,
+    "height": 240,
+    "software_hmirror": true,
+    "sensor_vflip": true,
+    "lens_corr": false
+  },
+  "fit_points": [
+    {
+      "line": 2,
+      "point_id": "R1C1",
+      "u": 30.0,
+      "v": 69.5,
+      "Xcm": -50.0,
+      "Ycm": 65.0,
+      "split": "fit"
+    },
+    {
+      "line": 3,
+      "point_id": "R1C2",
+      "u": 123.0,
+      "v": 68.5,
+      "Xcm": -18.0,
+      "Ycm": 65.0,
+      "split": "fit"
+    },
+    {
+      "line": 4,
+      "point_id": "R1C3",
+      "u": 213.5,
+      "v": 69.5,
+      "Xcm": 18.0,
+      "Ycm": 65.0,
+      "split": "fit"
+    },
+    {
+      "line": 5,
+      "point_id": "R1C4",
+      "u": 296.0,
+      "v": 71.5,
+      "Xcm": 50.0,
+      "Ycm": 65.0,
+      "split": "fit"
+    },
+    {
+      "line": 6,
+      "point_id": "R2C1",
+      "u": 70.0,
+      "v": 50.5,
+      "Xcm": -50.0,
+      "Ycm": 98.0,
+      "split": "fit"
+    },
+    {
+      "line": 7,
+      "point_id": "R2C2",
+      "u": 134.0,
+      "v": 51.5,
+      "Xcm": -18.0,
+      "Ycm": 98.0,
+      "split": "fit"
+    },
+    {
+      "line": 8,
+      "point_id": "R2C3",
+      "u": 201.5,
+      "v": 52.5,
+      "Xcm": 18.0,
+      "Ycm": 98.0,
+      "split": "fit"
+    },
+    {
+      "line": 9,
+      "point_id": "R2C4",
+      "u": 262.5,
+      "v": 53.5,
+      "Xcm": 50.0,
+      "Ycm": 98.0,
+      "split": "fit"
+    },
+    {
+      "line": 10,
+      "point_id": "R3C1",
+      "u": 95.0,
+      "v": 39.5,
+      "Xcm": -50.0,
+      "Ycm": 131.0,
+      "split": "fit"
+    },
+    {
+      "line": 11,
+      "point_id": "R3C2",
+      "u": 142.0,
+      "v": 40.5,
+      "Xcm": -18.0,
+      "Ycm": 131.0,
+      "split": "fit"
+    },
+    {
+      "line": 12,
+      "point_id": "R3C3",
+      "u": 193.0,
+      "v": 41.5,
+      "Xcm": 18.0,
+      "Ycm": 131.0,
+      "split": "fit"
+    },
+    {
+      "line": 13,
+      "point_id": "R3C4",
+      "u": 242.5,
+      "v": 41.5,
+      "Xcm": 50.0,
+      "Ycm": 131.0,
+      "split": "fit"
+    },
+    {
+      "line": 14,
+      "point_id": "R4C1",
+      "u": 107.0,
+      "v": 33.5,
+      "Xcm": -50.0,
+      "Ycm": 164.0,
+      "split": "fit"
+    },
+    {
+      "line": 15,
+      "point_id": "R4C2",
+      "u": 148.5,
+      "v": 34.5,
+      "Xcm": -18.0,
+      "Ycm": 164.0,
+      "split": "fit"
+    },
+    {
+      "line": 16,
+      "point_id": "R4C3",
+      "u": 188.0,
+      "v": 34.5,
+      "Xcm": 18.0,
+      "Ycm": 164.0,
+      "split": "fit"
+    },
+    {
+      "line": 17,
+      "point_id": "R4C4",
+      "u": 230.0,
+      "v": 35.5,
+      "Xcm": 50.0,
+      "Ycm": 164.0,
+      "split": "fit"
+    },
+    {
+      "line": 18,
+      "point_id": "R5C1",
+      "u": 44.5,
+      "v": 119.5,
+      "Xcm": -26.0,
+      "Ycm": 30.0,
+      "split": "fit"
+    },
+    {
+      "line": 19,
+      "point_id": "R5C2",
+      "u": 117.0,
+      "v": 121.5,
+      "Xcm": -10.0,
+      "Ycm": 30.0,
+      "split": "fit"
+    },
+    {
+      "line": 20,
+      "point_id": "R5C3",
+      "u": 176.0,
+      "v": 124.5,
+      "Xcm": 2.0,
+      "Ycm": 30.0,
+      "split": "fit"
+    },
+    {
+      "line": 21,
+      "point_id": "R5C4",
+      "u": 279.5,
+      "v": 126.5,
+      "Xcm": 25.0,
+      "Ycm": 30.0,
+      "split": "fit"
+    },
+    {
+      "line": 22,
+      "point_id": "R6C1",
+      "u": 49.5,
+      "v": 219.5,
+      "Xcm": -16.0,
+      "Ycm": 9.0,
+      "split": "fit"
+    },
+    {
+      "line": 23,
+      "point_id": "R6C2",
+      "u": 124.0,
+      "v": 220.5,
+      "Xcm": -6.0,
+      "Ycm": 9.0,
+      "split": "fit"
+    },
+    {
+      "line": 24,
+      "point_id": "R6C3",
+      "u": 235.0,
+      "v": 220.5,
+      "Xcm": 6.0,
+      "Ycm": 9.0,
+      "split": "fit"
+    },
+    {
+      "line": 25,
+      "point_id": "R6C4",
+      "u": 279.5,
+      "v": 219.5,
+      "Xcm": 12.0,
+      "Ycm": 9.0,
+      "split": "fit"
+    }
+  ],
+  "verify": {
+    "rows": [],
+    "count": 0,
+    "valid_count": 0,
+    "invalid_count": 0,
+    "rms_cm": null,
+    "mean_cm": null,
+    "max_cm": null
+  },
+  "leave_one_out": {
+    "rows": [
+      {
+        "point_index": 0,
+        "build_error": "triangle (2, 6, 10) has near-zero world area"
+      },
+      {
+        "point_index": 1,
+        "build_error": "triangle (2, 6, 10) has near-zero world area"
+      },
+      {
+        "point_index": 2,
+        "build_error": "triangle (2, 6, 10) has near-zero world area"
+      },
+      {
+        "point_index": 3,
+        "build_error": "triangle (3, 11, 7) has near-zero world area"
+      },
+      {
+        "point_index": 4,
+        "build_error": "triangle (0, 11, 7) has near-zero world area"
+      },
+      {
+        "point_index": 5,
+        "build_error": "triangle (3, 6, 10) has near-zero world area"
+      },
+      {
+        "point_index": 6,
+        "build_error": "triangle (3, 6, 10) has near-zero world area"
+      },
+      {
+        "point_index": 7,
+        "build_error": "triangle (4, 11, 7) has near-zero world area"
+      },
+      {
+        "point_index": 8,
+        "build_error": "triangle (3, 7, 10) has near-zero world area"
+      },
+      {
+        "point_index": 9,
+        "build_error": "triangle (3, 7, 10) has near-zero world area"
+      },
+      {
+        "point_index": 10,
+        "build_error": "triangle (3, 7, 10) has near-zero world area"
+      },
+      {
+        "point_index": 11,
+        "build_error": "triangle (4, 11, 8) has near-zero world area"
+      },
+      {
+        "point_index": 12,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 13,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 14,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 15,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 16,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 17,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 18,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 19,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 20,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 21,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 22,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      },
+      {
+        "point_index": 23,
+        "build_error": "triangle (3, 7, 11) has near-zero world area"
+      }
+    ],
+    "valid_count": 0,
+    "rms_cm": null,
+    "max_cm": null
+  },
+  "mesh": {
+    "triangulation_method": "structured_6x4",
+    "grid_rows": 6,
+    "grid_columns": 4,
+    "grid_row_order_near_to_far": [
+      6,
+      5,
+      1,
+      2,
+      3,
+      4
+    ],
+    "triangle_count": 30,
+    "triangles": [
+      {
+        "indices": [
+          20,
+          17,
+          21
+        ],
+        "values": [
+          49.5,
+          219.5,
+          -16.0,
+          9.0,
+          117.0,
+          121.5,
+          -10.0,
+          30.0,
+          124.0,
+          220.5,
+          -6.0,
+          9.0
+        ],
+        "pixel_area2": 7368.5,
+        "world_area2": -210.0,
+        "min_angle_deg": 38.60260454990644
+      },
+      {
+        "indices": [
+          20,
+          16,
+          17
+        ],
+        "values": [
+          49.5,
+          219.5,
+          -16.0,
+          9.0,
+          44.5,
+          119.5,
+          -26.0,
+          30.0,
+          117.0,
+          121.5,
+          -10.0,
+          30.0
+        ],
+        "pixel_area2": 7240.0,
+        "world_area2": -336.0,
+        "min_angle_deg": 37.42052420183708
+      },
+      {
+        "indices": [
+          21,
+          18,
+          22
+        ],
+        "values": [
+          124.0,
+          220.5,
+          -6.0,
+          9.0,
+          176.0,
+          124.5,
+          2.0,
+          30.0,
+          235.0,
+          220.5,
+          6.0,
+          9.0
+        ],
+        "pixel_area2": 10656.0,
+        "world_area2": -252.0,
+        "min_angle_deg": 58.42580924971468
+      },
+      {
+        "indices": [
+          21,
+          17,
+          18
+        ],
+        "values": [
+          124.0,
+          220.5,
+          -6.0,
+          9.0,
+          117.0,
+          121.5,
+          -10.0,
+          30.0,
+          176.0,
+          124.5,
+          2.0,
+          30.0
+        ],
+        "pixel_area2": 5820.0,
+        "world_area2": -252.0,
+        "min_angle_deg": 32.48741419854446
+      },
+      {
+        "indices": [
+          22,
+          19,
+          23
+        ],
+        "values": [
+          235.0,
+          220.5,
+          6.0,
+          9.0,
+          279.5,
+          126.5,
+          25.0,
+          30.0,
+          279.5,
+          219.5,
+          12.0,
+          9.0
+        ],
+        "pixel_area2": 4138.5,
+        "world_area2": -126.0,
+        "min_angle_deg": 25.333073774438258
+      },
+      {
+        "indices": [
+          22,
+          18,
+          19
+        ],
+        "values": [
+          235.0,
+          220.5,
+          6.0,
+          9.0,
+          176.0,
+          124.5,
+          2.0,
+          30.0,
+          279.5,
+          126.5,
+          25.0,
+          30.0
+        ],
+        "pixel_area2": 9818.0,
+        "world_area2": -483.0,
+        "min_angle_deg": 56.90726452472358
+      },
+      {
+        "indices": [
+          16,
+          1,
+          17
+        ],
+        "values": [
+          44.5,
+          119.5,
+          -26.0,
+          30.0,
+          123.0,
+          68.5,
+          -18.0,
+          65.0,
+          117.0,
+          121.5,
+          -10.0,
+          30.0
+        ],
+        "pixel_area2": 3854.5,
+        "world_area2": -560.0,
+        "min_angle_deg": 34.59121070066215
+      },
+      {
+        "indices": [
+          16,
+          0,
+          1
+        ],
+        "values": [
+          44.5,
+          119.5,
+          -26.0,
+          30.0,
+          30.0,
+          69.5,
+          -50.0,
+          65.0,
+          123.0,
+          68.5,
+          -18.0,
+          65.0
+        ],
+        "pixel_area2": 4664.5,
+        "world_area2": -1120.0,
+        "min_angle_deg": 32.394978319462915
+      },
+      {
+        "indices": [
+          17,
+          1,
+          18
+        ],
+        "values": [
+          117.0,
+          121.5,
+          -10.0,
+          30.0,
+          123.0,
+          68.5,
+          -18.0,
+          65.0,
+          176.0,
+          124.5,
+          2.0,
+          30.0
+        ],
+        "pixel_area2": 3145.0,
+        "world_area2": -420.0,
+        "min_angle_deg": 43.66571222901597
+      },
+      {
+        "indices": [
+          18,
+          1,
+          2
+        ],
+        "values": [
+          176.0,
+          124.5,
+          2.0,
+          30.0,
+          123.0,
+          68.5,
+          -18.0,
+          65.0,
+          213.5,
+          69.5,
+          18.0,
+          65.0
+        ],
+        "pixel_area2": 5015.0,
+        "world_area2": -1260.0,
+        "min_angle_deg": 45.943473283752596
+      },
+      {
+        "indices": [
+          18,
+          2,
+          19
+        ],
+        "values": [
+          176.0,
+          124.5,
+          2.0,
+          30.0,
+          213.5,
+          69.5,
+          18.0,
+          65.0,
+          279.5,
+          126.5,
+          25.0,
+          30.0
+        ],
+        "pixel_area2": 5767.5,
+        "world_area2": -805.0,
+        "min_angle_deg": 39.70805682920081
+      },
+      {
+        "indices": [
+          19,
+          2,
+          3
+        ],
+        "values": [
+          279.5,
+          126.5,
+          25.0,
+          30.0,
+          213.5,
+          69.5,
+          18.0,
+          65.0,
+          296.0,
+          71.5,
+          50.0,
+          65.0
+        ],
+        "pixel_area2": 4570.5,
+        "world_area2": -1120.0,
+        "min_angle_deg": 39.42636728533025
+      },
+      {
+        "indices": [
+          0,
+          4,
+          1
+        ],
+        "values": [
+          30.0,
+          69.5,
+          -50.0,
+          65.0,
+          70.0,
+          50.5,
+          -50.0,
+          98.0,
+          123.0,
+          68.5,
+          -18.0,
+          65.0
+        ],
+        "pixel_area2": 1727.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 19.37471025624148
+      },
+      {
+        "indices": [
+          1,
+          4,
+          5
+        ],
+        "values": [
+          123.0,
+          68.5,
+          -18.0,
+          65.0,
+          70.0,
+          50.5,
+          -50.0,
+          98.0,
+          134.0,
+          51.5,
+          -18.0,
+          98.0
+        ],
+        "pixel_area2": 1099.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 17.863476637631166
+      },
+      {
+        "indices": [
+          1,
+          6,
+          2
+        ],
+        "values": [
+          123.0,
+          68.5,
+          -18.0,
+          65.0,
+          201.5,
+          52.5,
+          18.0,
+          98.0,
+          213.5,
+          69.5,
+          18.0,
+          65.0
+        ],
+        "pixel_area2": 1526.5,
+        "world_area2": -1188.0,
+        "min_angle_deg": 12.153396719142217
+      },
+      {
+        "indices": [
+          1,
+          5,
+          6
+        ],
+        "values": [
+          123.0,
+          68.5,
+          -18.0,
+          65.0,
+          134.0,
+          51.5,
+          -18.0,
+          98.0,
+          201.5,
+          52.5,
+          18.0,
+          98.0
+        ],
+        "pixel_area2": 1158.5,
+        "world_area2": -1188.0,
+        "min_angle_deg": 12.369084219264645
+      },
+      {
+        "indices": [
+          2,
+          7,
+          3
+        ],
+        "values": [
+          213.5,
+          69.5,
+          18.0,
+          65.0,
+          262.5,
+          53.5,
+          50.0,
+          98.0,
+          296.0,
+          71.5,
+          50.0,
+          65.0
+        ],
+        "pixel_area2": 1418.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 19.4721619726
+      },
+      {
+        "indices": [
+          2,
+          6,
+          7
+        ],
+        "values": [
+          213.5,
+          69.5,
+          18.0,
+          65.0,
+          201.5,
+          52.5,
+          18.0,
+          98.0,
+          262.5,
+          53.5,
+          50.0,
+          98.0
+        ],
+        "pixel_area2": 1025.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 19.022636328784245
+      },
+      {
+        "indices": [
+          4,
+          8,
+          5
+        ],
+        "values": [
+          70.0,
+          50.5,
+          -50.0,
+          98.0,
+          95.0,
+          39.5,
+          -50.0,
+          131.0,
+          134.0,
+          51.5,
+          -18.0,
+          98.0
+        ],
+        "pixel_area2": 729.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 16.207555258841268
+      },
+      {
+        "indices": [
+          5,
+          8,
+          9
+        ],
+        "values": [
+          134.0,
+          51.5,
+          -18.0,
+          98.0,
+          95.0,
+          39.5,
+          -50.0,
+          131.0,
+          142.0,
+          40.5,
+          -18.0,
+          131.0
+        ],
+        "pixel_area2": 525.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 15.883853733921098
+      },
+      {
+        "indices": [
+          5,
+          10,
+          6
+        ],
+        "values": [
+          134.0,
+          51.5,
+          -18.0,
+          98.0,
+          193.0,
+          41.5,
+          18.0,
+          131.0,
+          201.5,
+          52.5,
+          18.0,
+          98.0
+        ],
+        "pixel_area2": 734.0,
+        "world_area2": -1188.0,
+        "min_angle_deg": 10.468492071252465
+      },
+      {
+        "indices": [
+          5,
+          9,
+          10
+        ],
+        "values": [
+          134.0,
+          51.5,
+          -18.0,
+          98.0,
+          142.0,
+          40.5,
+          -18.0,
+          131.0,
+          193.0,
+          41.5,
+          18.0,
+          131.0
+        ],
+        "pixel_area2": 569.0,
+        "world_area2": -1188.0,
+        "min_angle_deg": 10.743030513774347
+      },
+      {
+        "indices": [
+          6,
+          11,
+          7
+        ],
+        "values": [
+          201.5,
+          52.5,
+          18.0,
+          98.0,
+          242.5,
+          41.5,
+          50.0,
+          131.0,
+          262.5,
+          53.5,
+          50.0,
+          98.0
+        ],
+        "pixel_area2": 712.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 15.957551576886235
+      },
+      {
+        "indices": [
+          6,
+          10,
+          11
+        ],
+        "values": [
+          201.5,
+          52.5,
+          18.0,
+          98.0,
+          193.0,
+          41.5,
+          18.0,
+          131.0,
+          242.5,
+          41.5,
+          50.0,
+          131.0
+        ],
+        "pixel_area2": 544.5,
+        "world_area2": -1056.0,
+        "min_angle_deg": 15.018360631150673
+      },
+      {
+        "indices": [
+          8,
+          12,
+          9
+        ],
+        "values": [
+          95.0,
+          39.5,
+          -50.0,
+          131.0,
+          107.0,
+          33.5,
+          -50.0,
+          164.0,
+          142.0,
+          40.5,
+          -18.0,
+          131.0
+        ],
+        "pixel_area2": 294.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 10.091057238888965
+      },
+      {
+        "indices": [
+          9,
+          12,
+          13
+        ],
+        "values": [
+          142.0,
+          40.5,
+          -18.0,
+          131.0,
+          107.0,
+          33.5,
+          -50.0,
+          164.0,
+          148.5,
+          34.5,
+          -18.0,
+          164.0
+        ],
+        "pixel_area2": 255.5,
+        "world_area2": -1056.0,
+        "min_angle_deg": 9.929578400575778
+      },
+      {
+        "indices": [
+          9,
+          13,
+          10
+        ],
+        "values": [
+          142.0,
+          40.5,
+          -18.0,
+          131.0,
+          148.5,
+          34.5,
+          -18.0,
+          164.0,
+          193.0,
+          41.5,
+          18.0,
+          131.0
+        ],
+        "pixel_area2": 312.5,
+        "world_area2": -1188.0,
+        "min_angle_deg": 7.816262289076172
+      },
+      {
+        "indices": [
+          10,
+          13,
+          14
+        ],
+        "values": [
+          193.0,
+          41.5,
+          18.0,
+          131.0,
+          148.5,
+          34.5,
+          -18.0,
+          164.0,
+          188.0,
+          34.5,
+          18.0,
+          164.0
+        ],
+        "pixel_area2": 276.5,
+        "world_area2": -1188.0,
+        "min_angle_deg": 8.939565003151522
+      },
+      {
+        "indices": [
+          10,
+          15,
+          11
+        ],
+        "values": [
+          193.0,
+          41.5,
+          18.0,
+          131.0,
+          230.0,
+          35.5,
+          50.0,
+          164.0,
+          242.5,
+          41.5,
+          50.0,
+          131.0
+        ],
+        "pixel_area2": 297.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 9.211026540816688
+      },
+      {
+        "indices": [
+          10,
+          14,
+          15
+        ],
+        "values": [
+          193.0,
+          41.5,
+          18.0,
+          131.0,
+          188.0,
+          34.5,
+          18.0,
+          164.0,
+          230.0,
+          35.5,
+          50.0,
+          164.0
+        ],
+        "pixel_area2": 289.0,
+        "world_area2": -1056.0,
+        "min_angle_deg": 10.574954072419617
+      }
+    ],
+    "boundaries": [
+      {
+        "status": 1,
+        "indices": [
+          20,
+          21
+        ],
+        "values": [
+          49.5,
+          219.5,
+          124.0,
+          220.5
+        ]
+      },
+      {
+        "status": 1,
+        "indices": [
+          21,
+          22
+        ],
+        "values": [
+          124.0,
+          220.5,
+          235.0,
+          220.5
+        ]
+      },
+      {
+        "status": 1,
+        "indices": [
+          22,
+          23
+        ],
+        "values": [
+          235.0,
+          220.5,
+          279.5,
+          219.5
+        ]
+      },
+      {
+        "status": 2,
+        "indices": [
+          12,
+          13
+        ],
+        "values": [
+          107.0,
+          33.5,
+          148.5,
+          34.5
+        ]
+      },
+      {
+        "status": 2,
+        "indices": [
+          13,
+          14
+        ],
+        "values": [
+          148.5,
+          34.5,
+          188.0,
+          34.5
+        ]
+      },
+      {
+        "status": 2,
+        "indices": [
+          14,
+          15
+        ],
+        "values": [
+          188.0,
+          34.5,
+          230.0,
+          35.5
+        ]
+      },
+      {
+        "status": 3,
+        "indices": [
+          20,
+          16
+        ],
+        "values": [
+          49.5,
+          219.5,
+          44.5,
+          119.5
+        ]
+      },
+      {
+        "status": 3,
+        "indices": [
+          16,
+          0
+        ],
+        "values": [
+          44.5,
+          119.5,
+          30.0,
+          69.5
+        ]
+      },
+      {
+        "status": 3,
+        "indices": [
+          0,
+          4
+        ],
+        "values": [
+          30.0,
+          69.5,
+          70.0,
+          50.5
+        ]
+      },
+      {
+        "status": 3,
+        "indices": [
+          4,
+          8
+        ],
+        "values": [
+          70.0,
+          50.5,
+          95.0,
+          39.5
+        ]
+      },
+      {
+        "status": 3,
+        "indices": [
+          8,
+          12
+        ],
+        "values": [
+          95.0,
+          39.5,
+          107.0,
+          33.5
+        ]
+      },
+      {
+        "status": 4,
+        "indices": [
+          23,
+          19
+        ],
+        "values": [
+          279.5,
+          219.5,
+          279.5,
+          126.5
+        ]
+      },
+      {
+        "status": 4,
+        "indices": [
+          19,
+          3
+        ],
+        "values": [
+          279.5,
+          126.5,
+          296.0,
+          71.5
+        ]
+      },
+      {
+        "status": 4,
+        "indices": [
+          3,
+          7
+        ],
+        "values": [
+          296.0,
+          71.5,
+          262.5,
+          53.5
+        ]
+      },
+      {
+        "status": 4,
+        "indices": [
+          7,
+          11
+        ],
+        "values": [
+          262.5,
+          53.5,
+          242.5,
+          41.5
+        ]
+      },
+      {
+        "status": 4,
+        "indices": [
+          11,
+          15
+        ],
+        "values": [
+          242.5,
+          41.5,
+          230.0,
+          35.5
+        ]
+      }
+    ],
+    "pixel_hull": [
+      [
+        296.0,
+        71.5
+      ],
+      [
+        279.5,
+        219.5
+      ],
+      [
+        235.0,
+        220.5
+      ],
+      [
+        124.0,
+        220.5
+      ],
+      [
+        49.5,
+        219.5
+      ],
+      [
+        30.0,
+        69.5
+      ],
+      [
+        70.0,
+        50.5
+      ],
+      [
+        107.0,
+        33.5
+      ],
+      [
+        188.0,
+        34.5
+      ],
+      [
+        230.0,
+        35.5
+      ],
+      [
+        242.5,
+        41.5
+      ]
+    ],
+    "pixel_hull_area_px2": 44192.0,
+    "image_coverage_fraction": 0.5754166666666667,
+    "minimum_triangle_angle_deg": 7.816262289076172,
+    "calibrated_y_min_cm": 9.0,
+    "calibrated_y_max_cm": 164.0,
+    "fallback": {
+      "model": "homography",
+      "values": [
+        -13.59152379025427,
+        0.12924420277413978,
+        2279.821954439284,
+        0.112351894437588,
+        8.612825315933007,
+        -2995.1821569289896,
+        0.009796377752421,
+        -0.5523951720800364,
+        1.0
+      ],
+      "fit_rms_cm": 1.7274594687064797,
+      "fit_mean_cm": 1.5401423676912136,
+      "fit_max_cm": 3.1909344857090467
+    }
+  },
+  "qa": {
+    "passed": true,
+    "has_independent_verify_points": false,
+    "failures": [],
+    "thresholds": {
+      "max_verify_rms_cm": 2.0,
+      "max_verify_error_cm": 3.0,
+      "required_near_y_cm": 9.0
+    }
+  },
+  "mesh_exported": true
+}

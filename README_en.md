@@ -12,6 +12,9 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
 | `calib_ide_tune.py` | OpenART Plus / IDE | Auto-calibration parameter tuning script |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | Pre-carry front color-blob scan preview script |
+| `calibrate_ground_camera.py` | PC / OpenCV | Build a structured triangular coordinate mesh from red-bag correspondences |
+| `ground_mesh_16_points_template.csv` | PC | Completed 24-point master-camera data (historical filename retained) |
+| `raw_ground_projection_test.py` | OpenART Plus / IDE | Validate raw-pixel ground coordinates with the red bag |
 
 ## Structure Notes
 
@@ -21,6 +24,26 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 - Calibration, threshold tuning, and pre-carry color-scan checks remain standalone IDE / test scripts, not official offline entrypoints.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
 - Keep all structure notes and iteration records in `README_ch.md` / `README_en.md`, and update both languages together.
+
+## Raw-Image Ground-Coordinate Test
+
+This test path never calls `lens_corr()`, stretches the image, or builds a bird view. It requires no checkerboard or camera intrinsics and leaves `main.py` / `minimain.py` unchanged. OpenART detects the red bag using `main.py` color ID 2, treats the blob's bottom center as its ground contact, and interpolates real `X/Y` inside a structured adjacent-point triangle mesh.
+
+Despite its historical filename, `ground_mesh_16_points_template.csv` now contains 24 `fit` points: all original 16 plus four points at `Y=30 cm` and four at `Y=9 cm`. Row labels are stable IDs and the generator orders rows by measured Y. The result is a `6 x 4`, 30-triangle mesh covering `Y=9–164 cm` and `57.5%` of QVGA by pixel convex-hull area.
+
+1. The CSV header must be `point_id,u,v,Xcm,Ycm,split`. X is positive right, Y is positive forward, and units are centimetres. X positions may differ by row, but C1 through C4 must increase within each row. Calibration samples should still avoid image-edge clipping.
+2. Generate the master-camera mesh:
+
+```powershell
+python calibrate_ground_camera.py --ground-csv ground_mesh_16_points_template.csv --role master --expected-points 24 --required-near-y-cm 9 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
+```
+
+3. The generator rejects duplicate pixels, degenerate triangles, and mesh folds. The completed data has a `7.82°` minimum triangle angle and reproduces every fit node. It also fits a global homography used only outside the mesh; its fit-node RMS / maximum error is `1.727 / 3.191 cm`.
+4. Put `camera_ground_mesh.txt` in the OpenART SD-card root as `/sd/camera_ground_mesh.txt`, then run `raw_ground_projection_test.py`.
+5. Inside-mesh coordinates print `status=VALID source=MESH`; outside-mesh coordinates print `status=VALID source=HOMOGRAPHY_FALLBACK`. Far fallback coordinates are capped at `Y=164 cm`, never `300 cm`. A full scan of all 76,800 QVGA pixels used the mesh for 42,782 and the fallback for 34,018, leaving zero coordinate holes.
+6. During testing, edge-clipped red blobs are no longer discarded. The script relaxes shape filtering only for edge candidates, continues coordinate output, and adds `quality=CLIPPED_ESTIMATE`. Only no detected red region or an invalid parameter file prints `status=NOT_FOUND`. Clipped estimates and fallback coordinates are less accurate than mesh coordinates and should be checked on the carrying path.
+7. Set `DRAW_VALIDITY_GRID=True` to inspect direct mesh coverage. Setting `EXPECTED_X_CM` / `EXPECTED_Y_CM` also displays total measured error.
+8. Calibrate the slave camera independently. Set both the script's `CAMERA_ROLE` and the CLI `--role` to `slave`; never swap parameter files between cameras.
 
 ## Logs
 
