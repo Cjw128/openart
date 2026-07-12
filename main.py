@@ -1,9 +1,9 @@
 # ======================================================================
-# OpenART Plus front camera - multi-target object detection
+# OpenART Plus fixed master-camera runtime - multi-target object detection
 # ======================================================================
 
 
-import sensor, image, time, math, gc
+import sensor, image, time, gc
 from machine import UART
 try:
     from machine import WDT
@@ -13,10 +13,7 @@ except Exception:
 # ======================================================================
 # Mode selection
 # ======================================================================
-CALIBRATION_MODE = False# True = IPM calibration mode, False = normal detection
-BIRDVIEW_DEBUG = False     # True = show bird-view image in IDE, False = fast detection
-IS_SLAVE_CAR = False       # Software role only; both OpenART Plus boards use UART12.
-SLAVE_MODE = IS_SLAVE_CAR  # True: color is controlled by host 0x03 command
+CALIBRATION_MODE = False  # True = IPM calibration mode, False = normal detection
 SOFTWARE_HMIRROR = True   # Hardware keeps vflip; software only adds hmirror to avoid full-frame flip tearing.
 RUNTIME_LENS_CORR = False  # Test switch: disable per-frame lens_corr to isolate frame-buffer pressure.
 ENABLE_WATCHDOG = True
@@ -79,72 +76,6 @@ else:
     sensor.skip_frames(time=2000)
     sensor.set_auto_whitebal(False)
 
-# ======================================================================
-# Startup brightness calibration
-# ======================================================================
-
-TARGET_BRIGHTNESS = 45.0
-EXPOSURE_MIN = 100
-EXPOSURE_MAX = 4500
-EXPOSURE_INIT = 1000
-GAIN_INIT = 0
-CALIBRATION_DELAY = 50
-CALIBRATION_SETTLE_MS = 200
-MAX_EXPOSURE_STEP_UP = 1.6
-MAX_EXPOSURE_STEP_DOWN = 0.6
-
-def set_exposure(exposure_us):
-    sensor.set_auto_exposure(False, exposure_us=exposure_us)
-
-def measure_brightness(roi=None):
-    img = snapshot_frame()
-    if roi:
-        stats = img.get_statistics(roi=roi)
-    else:
-        stats = img.get_statistics()
-    return stats.l_mean()
-
-def measure_brightness_stable(samples=5, roi=None):
-    total = 0.0
-    for _ in range(samples):
-        total += measure_brightness(roi)
-        time.sleep_ms(CALIBRATION_DELAY)
-    return total / samples
-
-def calculate_exposure_adjustment(current_brightness, target_brightness, current_exposure):
-    if current_brightness <= 0:
-        return current_exposure
-    ratio = target_brightness / current_brightness
-    if ratio > MAX_EXPOSURE_STEP_UP:
-        ratio = MAX_EXPOSURE_STEP_UP
-    elif ratio < MAX_EXPOSURE_STEP_DOWN:
-        ratio = MAX_EXPOSURE_STEP_DOWN
-    new_exposure = int(current_exposure * ratio)
-    return max(EXPOSURE_MIN, min(EXPOSURE_MAX, new_exposure))
-
-def calibrate_brightness_startup(target=TARGET_BRIGHTNESS, samples=5, roi=None, max_iterations=3):
-
-    sensor.set_auto_exposure(False, exposure_us=EXPOSURE_INIT)
-    sensor.set_auto_gain(False, gain_db=GAIN_INIT)
-
-    exposure = EXPOSURE_INIT
-    set_exposure(exposure)
-    time.sleep_ms(CALIBRATION_SETTLE_MS)
-
-    for _ in range(max_iterations):
-        current_brightness = measure_brightness_stable(samples=samples, roi=roi)
-        error = abs(target - current_brightness)
-        if error < 3.0:
-            break
-        exposure = calculate_exposure_adjustment(current_brightness, target, exposure)
-        set_exposure(exposure)
-        time.sleep_ms(CALIBRATION_SETTLE_MS)
-
-    if not WB_FIXED:
-        sensor.skip_frames(time=1500)
-        sensor.set_auto_whitebal(False)
-    return exposure
-
 # Fixed exposure
 sensor.set_auto_exposure(False, exposure_us=1000)
 sensor.set_auto_gain(False, gain_db=0)
@@ -201,22 +132,22 @@ def _load_calibrated_params(path='/sd/color_thr.txt'):
                 if 1 <= slot <= 5 and len(values) == 6:
                     rows[slot] = values
         if len(rows) == 5:
-            return [rows[i] for i in range(1, 6)], exposure, 'loaded'
-        return None, None, 'incomplete'
+            return [rows[i] for i in range(1, 6)], exposure
+        return None, None
     except Exception:
         pass
-    return None, None, 'missing_or_invalid'
+    return None, None
 
-_loaded, _loaded_exposure, _threshold_source = _load_calibrated_params()
+_loaded, _loaded_exposure = _load_calibrated_params()
 if _loaded:
     all_color_thresholds = _loaded
     if _loaded_exposure is not None:
         sensor.set_auto_exposure(False, exposure_us=_loaded_exposure)
-    print('[color_thr] loaded /sd/color_thr.txt exposure={}'.format(_loaded_exposure))
-else:
-    print('[color_thr] using built-in thresholds ({})'.format(_threshold_source))
+
+_color_threshold_groups = [[threshold] for threshold in all_color_thresholds]
 
 COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
+_single_color_ids = [[color_id] for color_id in COLOR_SEARCH_ORDER]
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
@@ -232,23 +163,13 @@ BEAR_MIN_BOX_AREA = 480
 # Focus on the B channel; blue is usually below -20.
 # BLUE_GROUND_THRESHOLD = (10, 50, -20, 50, -77, -25)
 
-# Dynamic active-threshold state
-red_thresholds = all_color_thresholds  # Initial search uses all colors
-active_threshold = None                 # Currently locked single-color threshold
-active_color_id = 0                     # Locked color ID, 0 means unlocked
-
 # Target-lost counters
 lost_frame_count = 0                    # Consecutive frames without target
 MAX_LOST_FRAMES = 30                    # Maximum lost frames, about 0.5s at 60 FPS
-stable_detect_count = 0                 # Stable detection counter for color locking
-STABLE_FRAMES_REQUIRED = 5              # Frames required before locking a color
 
 # ======================================================================
 # Recognition parameters
 # ======================================================================
-MIN_PIXELS = 30        # Blob pixel threshold
-MIN_AREA = 80          # Minimum bounding-box area
-MERGE_DISTANCE = False      # Merge threshold matches at the same position
 DETECT_Y_MIN = 8           # Ignore image rows above this Y value
 DETECT_ROI = (0, DETECT_Y_MIN, 320, 240 - DETECT_Y_MIN)
 
@@ -262,8 +183,6 @@ BLUE_GROUND_THRESHOLD = [(0, 55, -30, 45, -90, -7)]
 CUT_BLOB_MIN_H = 12          # 条带内蓝色块最小高度，滤掉零星蓝色噪点/浅蓝沙包边缘
 CUT_BLOB_BOTTOM_MARGIN = 25  # 蓝色块底部须延伸到条带底部附近，才认为是连续的赛道地面
 CUT_GAP_BRIDGE = 10          # 向上桥接的最大间隙(px)：黄线横穿会把蓝地面切成上下两段，跨过它继续延伸
-CUT_LEFT_X = 0
-CUT_RIGHT_X = 320
 # 多条竖直采样带横跨画面：正对直角弯时赛道尖角在画面中间、比左右两侧更远，
 # 只采左右两条再连斜线会割掉尖角；改为取所有带的最高点做一条水平裁切线（保守）。
 CUT_STRIP_XS = (10, 85, 160, 235, 310)
@@ -271,6 +190,11 @@ CUT_MIN_VALID_STRIPS = 2   # 至少几条带看到蓝地面才认为裁切线有
 CUT_STRIP_HALF_W = 2
 CUT_SCAN_Y_MIN = 0
 CUT_SCAN_Y_MAX = 140
+CUT_STRIP_ROIS = [
+    (x - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN,
+     CUT_STRIP_HALF_W * 2 + 1, CUT_SCAN_Y_MAX - CUT_SCAN_Y_MIN)
+    for x in CUT_STRIP_XS
+]
 CUT_UPDATE_INTERVAL = 2
 CUT_MIN_PIXELS = 8
 CUT_MIN_AREA = 8
@@ -279,39 +203,16 @@ CUT_EMA_ALPHA = 0.35
 CUT_MAX_MISS = 10
 CUT_BLOB_DELTA = 2
 
-# Local ROI tracking (lock-target fast path)
-ENABLE_LOCAL_TRACK_ROI = True
-TRACK_MARGIN_X_RATIO = 0.50
-TRACK_MARGIN_Y_RATIO = 0.50
-TRACK_MARGIN_X_MIN = 12
-TRACK_MARGIN_Y_MIN = 12
-TRACK_MARGIN_X_MAX = 90
-TRACK_MARGIN_Y_MAX = 70
-TRACK_MIN_ROI_W = 16
-TRACK_MIN_ROI_H = 16
+# Target continuity filters
 TRACK_MAX_JUMP_PX = 90
 TRACK_AREA_CHANGE_MAX_PERCENT = 60
 TRACK_MIN_IOU = 0.05
 
-# Aspect-ratio filter to reduce false positives
-ENABLE_ASPECT_RATIO_FILTER = True   # Enable aspect-ratio filtering
-MIN_ASPECT_RATIO = 0.3            # Minimum width/height ratio
-MAX_ASPECT_RATIO = 2.3             # Maximum width/height ratio
-
-MIN_ROUNDNESS = 0.4                 # Roundness threshold; ball high, line very low
-MIN_DENSITY = 0.6
-
-last_target_cx = -1
-last_target_cy = -1
 dynamic_cut_left_y = DETECT_Y_MIN
 dynamic_cut_right_y = DETECT_Y_MIN
 dynamic_cut_valid = False
 dynamic_cut_miss_count = 0
 dynamic_detect_roi = DETECT_ROI
-local_track_rect = None
-last_tracked_pixels = -1
-track_force_global_next = False
-track_local_miss_count = 0
 target_color_id = 0
 host_color_id_received = False
 color_track_active = False
@@ -346,14 +247,6 @@ YELLOW_KEEP_PIXELS = 8                  # Lower hold threshold after line is see
 YELLOW_CARRY_CONFIRM_FRAMES = 2         # Consecutive hits before carry mode treats yellow as confirmed
 YELLOW_BOTTOM_Y = 239                   # Bottom edge used to arm disappear-after-bottom crossing
 
-yellow_boundary_y = 0       # Yellow boundary Y in image pixels
-yellow_boundary_left_y = 0  # Left yellow-line center Y
-yellow_boundary_right_y = 0 # Right yellow-line center Y
-yellow_boundary_wy = 0.0    # Yellow boundary Y in world coordinates, cm
-yellow_line_x1 = 0
-yellow_line_y1 = 0
-yellow_line_x2 = 0
-yellow_line_y2 = 0
 yellow_line_k = 0.0
 yellow_line_b = 0.0
 yellow_detected = False     # Whether yellow line is visible
@@ -363,8 +256,6 @@ YELLOW_LOST_THRESHOLD = 3   # Consecutive per-frame misses after the line reache
 yellow_seen_in_carry = False # Whether yellow line was confirmed in carry mode
 yellow_bottom_reached_in_carry = False # Whether fitted yellow line has reached a bottom corner
 yellow_carry_confirm_count = 0 # Consecutive carry-mode yellow hits before confirmation
-YELLOW_RECENT_DETECTIONS = 5 # Recent yellow-line latch window for carry occlusion
-yellow_recent_count = 0
 YELLOW_CARRY_IGNORE_FRAMES = 4 # Ignore stale yellow line right after entering carry mode
 carry_start_frame = -1
 
@@ -372,59 +263,21 @@ carry_start_frame = -1
 MODE_SEARCH = 0
 MODE_CARRY = 1
 MODE_WAIT_TURN = 2
-MODE_RETURN = 3
 
-openart_mode = MODE_SEARCH   # 0=search, 1=carry, 2=wait for turn, 3=return
+openart_mode = MODE_SEARCH   # 0=search, 1=carry, 2=wait for turn
 
 # Position flags
 POS_NO_BOUNDARY = 0x00
 POS_RIGHT_SIDE  = 0x01
 POS_CROSSED     = 0x02
 
-# Return-to-depot beacon detection. Uses the same IPM and UART packet as normal targets.
-RETURN_BEACON_ID = 0x06
-BEACON_THRESHOLD = [(52, 100, 4, 91, -14, 127)]
-BEACON_DETECT_Y_MIN = 20
-BEACON_DETECT_ROI = (0, BEACON_DETECT_Y_MIN, 320, 240 - BEACON_DETECT_Y_MIN)
-BEACON_MIN_PIXELS = 40
-BEACON_MIN_AREA = 40
-BEACON_MERGE_BLOBS = True
-BEACON_MIN_ASPECT_RATIO = 0.01
-BEACON_MAX_ASPECT_RATIO = 20.00
-BEACON_MIN_DENSITY = 0.10
-BEACON_TRACK_MAX_LOST = 10
-beacon_last_box = None
-beacon_lost_frames = 0
-
-def code_to_color_id(code):
-    """将find_blobs返回的位掩码code映射为颜色ID(1/2/3...)。"""
-    if code <= 0:
-        return 0
-    for i in range(len(all_color_thresholds)):
-        if code & (1 << i):
-            return i + 1
-    return 0
-
 def reset_target_tracking_state():
     """清空上一轮搬运留下的目标锁定状态，下一帧从全局重新找场地中央目标。"""
-    global active_threshold, active_color_id, red_thresholds
-    global lost_frame_count, stable_detect_count
-    global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
-    global last_target_cx, last_target_cy
+    global lost_frame_count
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
 
-    active_threshold = None
-    active_color_id = 0
-    red_thresholds = all_color_thresholds
     lost_frame_count = 0
-    stable_detect_count = 0
-    local_track_rect = None
-    last_tracked_pixels = -1
-    track_force_global_next = False
-    track_local_miss_count = 0
-    last_target_cx = -1
-    last_target_cy = -1
     target_color_id = 0
     host_color_id_received = False
     color_track_active = False
@@ -435,9 +288,8 @@ def reset_target_tracking_state():
 def reset_yellow_state():
     """清空黄线状态，避免新一轮任务继承上一轮的边界/滞回。"""
     global yellow_lost_count, yellow_seen_in_carry, yellow_tracking, yellow_detected
-    global yellow_bottom_reached_in_carry, yellow_carry_confirm_count, yellow_recent_count
-    global yellow_boundary_y, yellow_boundary_left_y, yellow_boundary_right_y, yellow_boundary_wy
-    global yellow_line_x1, yellow_line_y1, yellow_line_x2, yellow_line_y2, yellow_line_k, yellow_line_b
+    global yellow_bottom_reached_in_carry, yellow_carry_confirm_count
+    global yellow_line_k, yellow_line_b
 
     yellow_lost_count = 0
     yellow_seen_in_carry = False
@@ -445,22 +297,8 @@ def reset_yellow_state():
     yellow_carry_confirm_count = 0
     yellow_tracking = False
     yellow_detected = False
-    yellow_recent_count = 0
-    yellow_boundary_y = 0
-    yellow_boundary_left_y = 0
-    yellow_boundary_right_y = 0
-    yellow_boundary_wy = 0.0
-    yellow_line_x1 = 0
-    yellow_line_y1 = 0
-    yellow_line_x2 = 0
-    yellow_line_y2 = 0
     yellow_line_k = 0.0
     yellow_line_b = 0.0
-
-def reset_beacon_state():
-    global beacon_last_box, beacon_lost_frames
-    beacon_last_box = None
-    beacon_lost_frames = 0
 
 # ======================================================================
 # Homography transform for inverse perspective mapping
@@ -515,11 +353,9 @@ def update_dynamic_cut(img, frame_count):
     if (not ENABLE_DYNAMIC_CUT) or (frame_count % CUT_UPDATE_INTERVAL != 0):
         return
 
-    strip_h = CUT_SCAN_Y_MAX - CUT_SCAN_Y_MIN
     top_y_min = None
     valid_strips = 0
-    for sx in CUT_STRIP_XS:
-        roi = (sx - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN, CUT_STRIP_HALF_W * 2 + 1, strip_h)
+    for roi in CUT_STRIP_ROIS:
         blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=roi,
                                pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
         ty = pick_top_y_from_strip(blobs)
@@ -553,55 +389,6 @@ def update_dynamic_cut(img, frame_count):
     else:
         y_base = DETECT_Y_MIN
     dynamic_detect_roi = (0, y_base, 320, 240 - y_base)
-
-def clamp_roi_to_frame(x, y, w, h, y_min_limit):
-    # Strict ROI clamping to avoid firmware ValueError/assert.
-    y_min_limit = clamp_int(y_min_limit, 0, 239)
-    if y_min_limit > 240 - TRACK_MIN_ROI_H:
-        y_min_limit = 240 - TRACK_MIN_ROI_H
-
-    x0 = clamp_int(x, 0, 319)
-    y0 = clamp_int(y, y_min_limit, 239)
-    x1 = clamp_int(x + w, x0 + 1, 320)
-    y1 = clamp_int(y + h, y0 + 1, 240)
-
-    if (x1 - x0) < TRACK_MIN_ROI_W:
-        if x0 + TRACK_MIN_ROI_W <= 320:
-            x1 = x0 + TRACK_MIN_ROI_W
-        else:
-            x0 = 320 - TRACK_MIN_ROI_W
-            x1 = 320
-
-    if (y1 - y0) < TRACK_MIN_ROI_H:
-        if y0 + TRACK_MIN_ROI_H <= 240:
-            y1 = y0 + TRACK_MIN_ROI_H
-        else:
-            y0 = 240 - TRACK_MIN_ROI_H
-            y1 = 240
-        if y0 < y_min_limit:
-            y0 = y_min_limit
-            y1 = min(240, y0 + TRACK_MIN_ROI_H)
-
-    return (x0, y0, x1 - x0, y1 - y0)
-
-def build_local_track_roi(base_roi):
-    if local_track_rect is None:
-        return base_roi
-
-    rx, ry, rw, rh = local_track_rect
-    mx = clamp_int(int(rw * TRACK_MARGIN_X_RATIO), TRACK_MARGIN_X_MIN, TRACK_MARGIN_X_MAX)
-    my = clamp_int(int(rh * TRACK_MARGIN_Y_RATIO), TRACK_MARGIN_Y_MIN, TRACK_MARGIN_Y_MAX)
-
-    x = rx - mx
-    y = ry - my
-    w = rw + mx * 2
-    h = rh + my * 2
-
-    y_floor = base_roi[1]
-    if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-        y_floor = max(y_floor, dynamic_detect_roi[1])
-
-    return clamp_roi_to_frame(x, y, w, h, y_floor)
 
 def box_iou(a, b):
     ax1, ay1, aw, ah = a
@@ -649,15 +436,10 @@ def make_roi_from_box(box):
     y1 = clamp_int(y + h + COLOR_TRACK_MARGIN, y0 + 1, 240)
     return (x0, y0, x1 - x0, y1 - y0)
 
-def threshold_items_for_color():
-    items = []
-    for color_id in COLOR_SEARCH_ORDER:
-        if color_id < 1 or color_id > len(all_color_thresholds):
-            continue
-        if target_color_id > 0 and color_id != target_color_id:
-            continue
-        items.append((color_id, all_color_thresholds[color_id - 1]))
-    return items
+def color_ids_for_search():
+    if target_color_id > 0:
+        return _single_color_ids[target_color_id - 1]
+    return COLOR_SEARCH_ORDER
 
 def valid_color_blob(blob, color_id):
     w = blob.w()
@@ -694,32 +476,42 @@ def color_blob_thresholds(color_id):
 def pick_initial_color_candidate(candidates):
     # For the same color, acquire the leftmost valid blob first. Keep the
     # existing cross-color priority by comparing one representative per color.
-    color_representatives = []
-    for color_id in COLOR_SEARCH_ORDER:
-        same_color = [item for item in candidates if item[0] == color_id]
-        if not same_color:
+    representatives = [None] * len(COLOR_SEARCH_ORDER)
+    for item in candidates:
+        index = item[0] - 1
+        current = representatives[index]
+        if current is None:
+            representatives[index] = item
             continue
-        color_representatives.append(
-            min(same_color, key=lambda item: (item[1].cx(), item[1].x(), -item[1].pixels()))
-        )
-    if not color_representatives:
-        return None
-    # Prefer the object whose bounding-box bottom is closest to y=240.
-    return min(color_representatives, key=lambda item: 240 - (item[1].y() + item[1].h()))
+        blob = item[1]
+        current_blob = current[1]
+        if ((blob.cx(), blob.x(), -blob.pixels()) <
+                (current_blob.cx(), current_blob.x(), -current_blob.pixels())):
+            representatives[index] = item
+
+    best = None
+    best_distance = None
+    for color_id in COLOR_SEARCH_ORDER:
+        item = representatives[color_id - 1]
+        if item is None:
+            continue
+        blob = item[1]
+        distance = 240 - (blob.y() + blob.h())
+        if best is None or distance < best_distance:
+            best = item
+            best_distance = distance
+    return best
 
 def find_color_target(img, last_box):
-    items = threshold_items_for_color()
-    if not items:
-        return None
+    color_ids = color_ids_for_search()
     roi = make_roi_from_box(last_box)
     candidates = []
-    for color_id, threshold in items:
+    for color_id in color_ids:
         if last_box and color_track_color_id > 0 and color_id != color_track_color_id:
             continue
-        color_candidates = []
         pixels_threshold, area_threshold = color_blob_thresholds(color_id)
         try:
-            blobs = img.find_blobs([threshold], roi=roi,
+            blobs = img.find_blobs(_color_threshold_groups[color_id - 1], roi=roi,
                                    pixels_threshold=pixels_threshold,
                                    area_threshold=area_threshold,
                                    merge=True)
@@ -734,11 +526,11 @@ def find_color_target(img, last_box):
             if valid_color_blob(blob, color_id):
                 item = (color_id, blob)
                 candidates.append(item)
-                color_candidates.append(item)
     if not candidates:
         return None
     if last_box:
-        tracked_candidates = []
+        best_item = None
+        best_score = None
         max_jump2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
         for item in candidates:
             b = item[1]
@@ -749,15 +541,11 @@ def find_color_target(img, last_box):
             if area_change > TRACK_AREA_CHANGE_MAX_PERCENT:
                 continue
             if dist2 <= max_jump2 or iou >= TRACK_MIN_IOU:
-                tracked_candidates.append((item, dist2, iou))
-        if not tracked_candidates:
-            return None
-
-        def score_tracked(candidate):
-            item, dist2, iou = candidate
-            b = item[1]
-            return int(iou * 100000) - dist2 + b.pixels() // 8
-        return max(tracked_candidates, key=score_tracked)[0]
+                score = int(iou * 100000) - dist2 + b.pixels() // 8
+                if best_item is None or score > best_score:
+                    best_item = item
+                    best_score = score
+        return best_item
     return pick_initial_color_candidate(candidates)
 
 def front_scan_current_target():
@@ -790,10 +578,9 @@ def scan_front_other_color_ids(img):
     for color_id in COLOR_SEARCH_ORDER:
         if color_id < 1 or color_id > len(all_color_thresholds):
             continue
-        threshold = all_color_thresholds[color_id - 1]
         pixels_threshold, area_threshold = color_blob_thresholds(color_id)
         try:
-            blobs = img.find_blobs([threshold], roi=roi,
+            blobs = img.find_blobs(_color_threshold_groups[color_id - 1], roi=roi,
                                    pixels_threshold=pixels_threshold,
                                    area_threshold=area_threshold,
                                    merge=True)
@@ -860,70 +647,19 @@ def process_front_scan_request(img):
         reset_front_scan_state()
     return True
 
-def beacon_roi_from_box(box):
-    if (not ENABLE_LOCAL_TRACK_ROI) or box is None:
-        return BEACON_DETECT_ROI
-
-    x, y, w, h = box
-    mx = clamp_int(int(w * TRACK_MARGIN_X_RATIO), TRACK_MARGIN_X_MIN, TRACK_MARGIN_X_MAX)
-    my = clamp_int(int(h * TRACK_MARGIN_Y_RATIO), TRACK_MARGIN_Y_MIN, TRACK_MARGIN_Y_MAX)
-    return clamp_roi_to_frame(x - mx, y - my, w + mx * 2, h + my * 2, BEACON_DETECT_Y_MIN)
-
-def valid_beacon_blob(blob):
-    w = blob.w()
-    h = blob.h()
-    if w <= 0 or h <= 0:
-        return False
-
-    aspect = w / h
-    if aspect < BEACON_MIN_ASPECT_RATIO or aspect > BEACON_MAX_ASPECT_RATIO:
-        return False
-    if blob.density() < BEACON_MIN_DENSITY:
-        return False
-    return True
-
-def beacon_center_dist2(blob, box):
-    bx = box[0] + box[2] // 2
-    by = box[1] + box[3] // 2
-    dx = blob.cx() - bx
-    dy = blob.cy() - by
-    return dx * dx + dy * dy
-
-def find_beacon_blob(img, last_box):
-    roi = beacon_roi_from_box(last_box)
-    blobs = img.find_blobs(BEACON_THRESHOLD, roi=roi,
-                           pixels_threshold=BEACON_MIN_PIXELS,
-                           area_threshold=BEACON_MIN_AREA,
-                           merge=BEACON_MERGE_BLOBS)
-    if not blobs:
-        return None
-
-    candidates = []
-    for blob in blobs:
-        if valid_beacon_blob(blob):
-            candidates.append(blob)
-    if not candidates:
-        return None
-
-    if last_box is not None:
-        return max(candidates, key=lambda b: b.pixels() - beacon_center_dist2(b, last_box) // 20)
-    return max(candidates, key=lambda b: b.pixels())
-
 def box_to_world(x, y, w, h):
     if H_pix2world is None:
         return (0.0, 0.0)
-    corners = [
-        (x, y),
-        (x + w, y),
-        (x, y + h),
-        (x + w, y + h),
-    ]
-    wx_sum = 0.0
-    wy_sum = 0.0
-    for px, py in corners:
-        wx, wy = pixel_to_world(px, py, H_pix2world)
-        wx_sum += wx
-        wy_sum += wy
+    wx_sum, wy_sum = pixel_to_world(x, y, H_pix2world)
+    wx, wy = pixel_to_world(x + w, y, H_pix2world)
+    wx_sum += wx
+    wy_sum += wy
+    wx, wy = pixel_to_world(x, y + h, H_pix2world)
+    wx_sum += wx
+    wy_sum += wy
+    wx, wy = pixel_to_world(x + w, y + h, H_pix2world)
+    wx_sum += wx
+    wy_sum += wy
     return (wx_sum / 4.0, wy_sum / 4.0)
 
 def mat_solve_8x8(A, B):
@@ -980,14 +716,6 @@ def pixel_to_world(px, py, H):
     Y = (H[1][0] * px + H[1][1] * py + H[1][2]) / w
     return (X, Y)
 
-def world_to_pixel(X, Y, H):
-    w = H[2][0] * X + H[2][1] * Y + H[2][2]
-    if abs(w) < 1e-10:
-        return (-1, -1)
-    u = (H[0][0] * X + H[0][1] * Y + H[0][2]) / w
-    v = (H[1][0] * X + H[1][1] * Y + H[1][2]) / w
-    return (int(u), int(v))
-
 # ======================================================================
 # IPM calibration data; current Plus camera setup is calibrated at 22 cm above ground.
 # Re-run calibration mode if the camera height or pitch changes.
@@ -1009,129 +737,32 @@ CALIB_WORLD = [
 
 # Compute homography matrix
 H_pix2world = calc_homography(CALIB_PIXEL, CALIB_WORLD)
-H_world2pix = calc_homography(CALIB_WORLD, CALIB_PIXEL)
 
 # ======================================================================
-# Bird-view configuration for debug mode
-# ======================================================================
-BIRD_W = 80
-BIRD_H = 80
-X_MIN = -15.0    # Left 15 cm
-X_MAX = 15.0     # Right 15 cm
-Y_MIN = 5.0      # Near 5 cm
-Y_MAX = 35.0     # Far 35 cm
-SX = (X_MAX - X_MIN) / BIRD_W
-SY = (Y_MAX - Y_MIN) / BIRD_H
-
-# ======================================================================
-# Distance estimation parameters based on target width
-# ======================================================================
-# Distance formula: distance = (real_width * focal_length) / pixel_width
-
-# Real target widths in mm
-TARGET_REAL_WIDTH = [
-    70.0,   # Color 1: bag, 7 cm
-    70.0,   # Color 2: bag, 7 cm
-    67.0,   # Color 3: tennis ball, about 6.7 cm diameter
-    120.0,  # Color 4: brown teddy bear, about 12 cm body width
-    120.0   # Color 5: white teddy bear, about 12 cm body width
-]
-
-# Camera calibration parameter from field testing
-FOCAL_LENGTH = 167.5  # Focal length parameter; tune after calibration
-
-# Valid distance range in mm
-MIN_DETECT_DISTANCE = 50    # Minimum detection distance
-MAX_DETECT_DISTANCE = 2000  # Maximum detection distance
-
-def calculate_distance(pixel_width, color_id=1):
-    """根据目标像素宽度和颜色ID计算距离"""
-    if pixel_width <= 0:
-        return -1
-    real_width = TARGET_REAL_WIDTH[color_id - 1] if 1 <= color_id <= len(TARGET_REAL_WIDTH) else 70.0
-    distance = (real_width * FOCAL_LENGTH) / pixel_width
-    if distance < MIN_DETECT_DISTANCE or distance > MAX_DETECT_DISTANCE:
-        return -1
-    return int(distance)
-
-# ======================================================================
-# UART protocol
-# ======================================================================
-# Packet format, 14 bytes:
-# [0-1]   Header: 0xAA 0x55
-# [2]     Color ID, 0=no target, 1=light blue, 2=red, 3+=reserved
-# [3-4]   Center X, low byte then high byte
-# [5-6]   Center Y, low byte then high byte
-# [7-8]   Width, low byte then high byte
-# [9-10]  Height, low byte then high byte
-# [11-12] Distance in mm, low byte then high byte
-# [13]    Checksum, sum of data bytes masked to 0xFF
-
-def calculate_checksum(data):
-    """计算校验和"""
-    return sum(data) & 0xFF
-
-def send_target_data(color_id, cx, cy, w, h, distance):
-    """
-    发送沙包坐标数据到RT1021主控
-
-    Args:
-        color_id: 颜色ID (1=颜色1, 2=颜色2, ...)
-        cx: 中心X坐标 (0-320)
-        cy: 中心Y坐标 (0-240)
-        w: 宽度
-        h: 高度
-        distance: 距离 (mm)
-    """
-    data = bytearray(14)
-
-    # Header
-    data[0] = 0xAA
-    data[1] = 0x55
-
-    # Color ID
-    data[2] = color_id
-
-    # Coordinates and size, little-endian
-    data[3] = cx & 0xFF          # X low byte
-    data[4] = (cx >> 8) & 0xFF   # X high byte
-    data[5] = cy & 0xFF          # Y low byte
-    data[6] = (cy >> 8) & 0xFF   # Y high byte
-    data[7] = w & 0xFF           # Width low byte
-    data[8] = (w >> 8) & 0xFF    # Width high byte
-    data[9] = h & 0xFF           # Height low byte
-    data[10] = (h >> 8) & 0xFF   # Height high byte
-
-    # Distance, little-endian
-    if distance < 0:
-        distance = 0
-    data[11] = distance & 0xFF          # Distance low byte
-    data[12] = (distance >> 8) & 0xFF   # Distance high byte
-
-    # Checksum over data bytes 2 through 12
-    data[13] = calculate_checksum(data[2:13])
-
-    # Send packet
-    uart.write(data)
-
-def send_no_target():
-    """发送无目标数据"""
-    data = bytearray(14)
-    data[0] = 0xAA
-    data[1] = 0x55
-    # data[2-12] remain zero, so color ID 0 means no target
-    data[13] = 0  # Checksum is also zero
-    uart.write(data)
-
-# ======================================================================
-# UART protocol, world-coordinate packet
+# UART protocol, 16-byte world-coordinate packet
 # ======================================================================
 # [0-1]  Header: 0xAA 0x55
 # [2]    Color ID, 0=no target, 1=light blue, 2=red, 3=ball, 4=brown bear, 5=white bear
-# [3-4]  World X, int16 little-endian, mm*10, left positive
-# [5-6]  World Y, int16 little-endian, mm*10, forward positive
+# [3-4]  World X in mm, int16 little-endian
+# [5-6]  World Y in mm, int16 little-endian
 # [7-8]  Pixel width, uint16 little-endian
-# [9]    Checksum, sum(data[2:9]) & 0xFF
+# [9]    Yellow-line flag
+# [10]   Position flag
+# [11]   Reserved obstacle flag, currently zero
+# [12]   Angle status flag
+# [13-14] Cross-line angle, int16 little-endian, degree * 100
+# [15]   Checksum, sum(data[2:15]) & 0xFF
+
+_tx_world_buf = bytearray(16)
+_tx_world_no_target_buf = bytearray(16)
+_tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
+_tx_world_buf[1] = _tx_world_no_target_buf[1] = 0x55
+
+def _calculate_checksum_range(data, start, end):
+    checksum = 0
+    for i in range(start, end):
+        checksum += data[i]
+    return checksum & 0xFF
 
 def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00, obstacle_flag=0x00,
                     angle_flag=0x00, angle_cdeg=0):
@@ -1139,7 +770,7 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     # [12] angle_flag: bit0=angle enabled, bit1=angle valid
     # [13-14] crossline angle, int16 little-endian, degree * 100
     # [15] checksum = sum(data[2:15]) & 0xFF
-    """发送世界坐标数据包 (12字节, 含黄线信息)
+    """发送 16 字节世界坐标数据包。
     [0-1]  帧头 0xAA 0x55
     [2]    颜色ID
     [3-4]  世界X (mm, int16, 小端序)
@@ -1147,11 +778,12 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     [7-8]  像素宽度 (uint16)
     [9]    黄线标志 0x00/0x01
     [10]   位置关系 0x00/0x01/0x02
-    [11]   校验和 (data[2:11])
+    [11]   预留障碍字段
+    [12]   角度状态
+    [13-14] 黄线角度
+    [15]   校验和 (data[2:15])
     """
-    data = bytearray(16)
-    data[0] = 0xAA
-    data[1] = 0x55
+    data = _tx_world_buf
     data[2] = color_id & 0xFF
     data[3] = wx_mm & 0xFF
     data[4] = (wx_mm >> 8) & 0xFF
@@ -1165,84 +797,34 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     data[12] = angle_flag & 0xFF
     data[13] = angle_cdeg & 0xFF
     data[14] = (angle_cdeg >> 8) & 0xFF
-    data[15] = sum(data[2:15]) & 0xFF
+    data[15] = _calculate_checksum_range(data, 2, 15)
     uart.write(data)
 
 def send_world_no_target(yellow_flag=False, pos_flag=0x00, obstacle_flag=0x00,
                          angle_flag=0x00, angle_cdeg=0):
     # Same 16-byte packet layout as send_world_data(), with color_id/position fields zero.
-    """发送无目标数据包 (12字节)"""
-    data = bytearray(16)
-    data[0] = 0xAA
-    data[1] = 0x55
+    """发送无目标的 16 字节世界坐标数据包。"""
+    data = _tx_world_no_target_buf
     data[9] = 0x01 if yellow_flag else 0x00
     data[10] = pos_flag & 0xFF
     data[11] = obstacle_flag & 0xFF
     data[12] = angle_flag & 0xFF
     data[13] = angle_cdeg & 0xFF
     data[14] = (angle_cdeg >> 8) & 0xFF
-    data[15] = sum(data[2:15]) & 0xFF
+    data[15] = _calculate_checksum_range(data, 2, 15)
     uart.write(data)
-
-def process_return_beacon_frame(img):
-    global beacon_last_box, beacon_lost_frames, last_print_time
-
-    obstacle_flag = 0
-    angle_flag, angle_cdeg = get_crossline_angle_fields()
-
-    if H_pix2world is None:
-        send_world_no_target(False, POS_NO_BOUNDARY, obstacle_flag, angle_flag, angle_cdeg)
-        return
-
-    blob = find_beacon_blob(img, beacon_last_box)
-    if blob is not None:
-        x = blob.x()
-        y = blob.y()
-        w = blob.w()
-        h = blob.h()
-        cx = blob.cx()
-        cy = blob.cy()
-
-        beacon_last_box = (x, y, w, h)
-        beacon_lost_frames = 0
-
-        world_x, world_y = box_to_world(x, y, w, h)
-        wx_mm = int(world_x * 10)
-        wy_mm = int(world_y * 10)
-        send_world_data(RETURN_BEACON_ID, wx_mm, wy_mm, w, False, POS_NO_BOUNDARY,
-                        obstacle_flag, angle_flag, angle_cdeg)
-
-        img.draw_rectangle(blob.rect(), color=(0, 255, 255), thickness=2)
-        img.draw_cross(cx, cy, color=(255, 0, 0), size=8, thickness=2)
-        img.draw_string(x, max(0, y - 16),
-                        "return ({:.1f},{:.1f})cm".format(world_x, world_y),
-                        color=(0, 255, 255), scale=1)
-
-        now = time.ticks_ms()
-        if time.ticks_diff(now, last_print_time) >= 300:
-            last_print_time = now
-    else:
-        beacon_lost_frames += 1
-        if beacon_lost_frames > BEACON_TRACK_MAX_LOST:
-            beacon_last_box = None
-        send_world_no_target(False, POS_NO_BOUNDARY, obstacle_flag, angle_flag, angle_cdeg)
-
-        now = time.ticks_ms()
-        if time.ticks_diff(now, last_print_time) >= 500:
-            last_print_time = now
 
 def receive_command_from_host():
     """接收RT1021主机命令"""
-    global active_threshold, active_color_id, red_thresholds
-    global lost_frame_count, stable_detect_count, openart_mode, carry_start_frame
-    global local_track_rect, last_tracked_pixels, track_force_global_next, track_local_miss_count
+    global lost_frame_count, openart_mode, carry_start_frame
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
     global _cmd_rx_buf, crossline_angle_enabled, crossline_angle_result, front_scan_requested
-    global yellow_seen_in_carry, yellow_tracking, yellow_detected, yellow_recent_count
+    global yellow_seen_in_carry, yellow_tracking, yellow_detected
 
-    if uart.any():
-        chunk = uart.read(uart.any())
+    available = uart.any()
+    if available:
+        chunk = uart.read(available)
         if chunk:
             _cmd_rx_buf.extend(chunk)
     if len(_cmd_rx_buf) > 64:
@@ -1256,16 +838,16 @@ def receive_command_from_host():
                 break
         if idx < 0:
             _cmd_rx_buf = bytearray()
-            return (0, 0)
+            return
         if idx > 0:
             _cmd_rx_buf = _cmd_rx_buf[idx:]
         if len(_cmd_rx_buf) < 4:
-            return (0, 0)
+            return
 
         command = _cmd_rx_buf[2]
         if command == 0x03 or command == 0x04:
             if len(_cmd_rx_buf) < 5:
-                return (0, 0)
+                return
             param = _cmd_rx_buf[3]
             checksum_recv = _cmd_rx_buf[4]
             checksum_calc = (command + param) & 0xFF
@@ -1286,35 +868,21 @@ def receive_command_from_host():
             if 1 <= param <= len(all_color_thresholds):
                 target_color_id = param
                 host_color_id_received = True
-                active_color_id = param
-                active_threshold = [all_color_thresholds[param - 1]]
-                red_thresholds = active_threshold
                 lost_frame_count = 0
-                stable_detect_count = 0
                 color_track_active = False
                 color_track_box = None
                 color_track_color_id = 0
                 color_lost_count = 0
-                local_track_rect = None
-                last_tracked_pixels = -1
-                track_force_global_next = False
-                track_local_miss_count = 0
         elif command == 0x01:  # Enter carry mode
             openart_mode = MODE_CARRY
             carry_start_frame = frame_count
             reset_yellow_state()
-            reset_beacon_state()
         elif command == 0x04:  # SET_CROSSLINE_ANGLE_ENABLE
             crossline_angle_enabled = (param == 1)
             if not crossline_angle_enabled:
                 crossline_angle_result = None
-        elif command == 0x05:  # ENTER_RETURN_MODE
-            openart_mode = MODE_RETURN
-            reset_target_tracking_state()
-            reset_yellow_state()
-            reset_beacon_state()
-            crossline_angle_enabled = False
-            crossline_angle_result = None
+        elif command == 0x05:  # Return vision is disabled; consume and ignore broadcasts.
+            pass
         elif command == 0x06:  # Pre-carry front scan for other color IDs
             reset_front_scan_state()
             front_scan_requested = True
@@ -1322,11 +890,9 @@ def receive_command_from_host():
             openart_mode = MODE_SEARCH
             reset_target_tracking_state()
             reset_yellow_state()
-            reset_beacon_state()
             crossline_angle_enabled = False
             crossline_angle_result = None
-        return (command, param)
-    return (0, 0)
+        return
 
 def pick_largest_blob(blobs):
     if not blobs:
@@ -1382,9 +948,7 @@ def current_pos_flag(frame_count):
 
 def update_yellow_detection(img, frame_count):
     global yellow_tracking, yellow_detected
-    global yellow_recent_count
-    global yellow_boundary_y, yellow_boundary_left_y, yellow_boundary_right_y, yellow_boundary_wy
-    global yellow_line_x1, yellow_line_y1, yellow_line_x2, yellow_line_y2, yellow_line_k, yellow_line_b
+    global yellow_line_k, yellow_line_b
 
     detect_every_frame = openart_mode == MODE_CARRY and yellow_bottom_reached_in_carry
     if not detect_every_frame and frame_count % YELLOW_DETECT_INTERVAL != 0:
@@ -1407,43 +971,25 @@ def update_yellow_detection(img, frame_count):
     if raw_yellow_seen:
         yellow_tracking = True
         yellow_detected = True
-        yellow_recent_count = YELLOW_RECENT_DETECTIONS
     else:
         yellow_detected = False
-        if yellow_recent_count > 0:
-            yellow_recent_count -= 1
         if openart_mode == MODE_SEARCH or (openart_mode == MODE_CARRY and not yellow_seen_in_carry):
             yellow_tracking = False
 
     if yellow_detected:
-        yellow_line_x1 = top_blob.cx()
-        yellow_line_y1 = top_blob.cy()
-        yellow_line_x2 = bottom_blob.cx()
-        yellow_line_y2 = bottom_blob.cy()
+        line_x1 = top_blob.cx()
+        line_y1 = top_blob.cy()
+        line_x2 = bottom_blob.cx()
+        line_y2 = bottom_blob.cy()
 
-        dx = yellow_line_x2 - yellow_line_x1
+        dx = line_x2 - line_x1
         if dx == 0:
             yellow_line_k = 0.0
-            yellow_line_b = (yellow_line_y1 + yellow_line_y2) / 2.0
+            yellow_line_b = (line_y1 + line_y2) / 2.0
         else:
-            yellow_line_k = (yellow_line_y2 - yellow_line_y1) / dx
-            yellow_line_b = yellow_line_y1 - yellow_line_k * yellow_line_x1
-
-        yellow_boundary_left_y = yellow_line_y1
-        yellow_boundary_right_y = yellow_line_y2
-        yellow_boundary_y = clamp_int(yellow_line_y_at_x(160), 0, 239)
-
-        if H_pix2world:
-            _, yellow_boundary_wy = pixel_to_world(160, yellow_boundary_y, H_pix2world)
+            yellow_line_k = (line_y2 - line_y1) / dx
+            yellow_line_b = line_y1 - yellow_line_k * line_x1
     elif openart_mode == MODE_SEARCH:
-        yellow_boundary_y = 0
-        yellow_boundary_left_y = 0
-        yellow_boundary_right_y = 0
-        yellow_boundary_wy = 0.0
-        yellow_line_x1 = 0
-        yellow_line_y1 = 0
-        yellow_line_x2 = 0
-        yellow_line_y2 = 0
         yellow_line_k = 0.0
         yellow_line_b = 0.0
 
@@ -1460,8 +1006,6 @@ def get_crossline_angle_fields():
 # Main loop
 # ======================================================================
 frame_count = 0
-detect_count = 0
-last_print_time = time.ticks_ms()
 
 # ======================================================================
 # Calibration mode, enabled when CALIBRATION_MODE is True
@@ -1562,29 +1106,16 @@ if CALIBRATION_MODE:
             if time.ticks_diff(_now, _calib_t) >= 500:
                 _calib_t = _now
 
-# ======================================================================
-# Bird-view frame buffer for debug mode
-# ======================================================================
-if BIRDVIEW_DEBUG and not CALIBRATION_MODE:
-    bird = sensor.alloc_extra_fb(BIRD_W, BIRD_H, sensor.RGB565)
-
 while True:
     # FPS accounting
     clock.tick()
     frame_count += 1
 
     # Receive host command
-    cmd, param = receive_command_from_host()
+    receive_command_from_host()
 
     # Capture image and apply lens correction
     img = snapshot_frame(apply_lens_corr=RUNTIME_LENS_CORR)
-    world_x = 0.0
-    world_y = 0.0
-
-    if openart_mode == MODE_RETURN:
-        process_return_beacon_frame(img)
-        feed_watchdog()
-        continue
 
     # ===== Dynamic cut update =====
     update_dynamic_cut(img, frame_count)
@@ -1598,7 +1129,6 @@ while True:
 
     # ===== Color blob detection / tracking =====
     best = None
-    source = 'color'
     send_color_id = 0
     last_box = color_track_box if color_track_active else None
     found = find_color_target(img, last_box)
@@ -1621,7 +1151,6 @@ while True:
             x1, y1, w, h = color_track_box
             send_color_id = color_track_color_id
             best = (send_color_id, x1, y1, w, h)
-            source = 'color_hold'
         else:
             color_track_active = False
             color_track_box = None
@@ -1633,101 +1162,40 @@ while True:
 
     if best:
         lost_frame_count = 0
-        stable_detect_count += 1
         send_color_id, x1, y1, w, h = best
 
         # Local detection is only a candidate report; final color lock comes from host 0x03.
 
-        cx = x1 + w // 2
-        cy = y1 + h // 2
-        x2 = x1 + w
-        y2 = y1 + h
-
         world_x, world_y = box_to_world(x1, y1, w, h)
         wx_mm = int(world_x * 10)
         wy_mm = int(world_y * 10)
-        distance = calculate_distance(w, send_color_id)
         send_world_data(send_color_id, wx_mm, wy_mm, w, yellow_detected, pos_flag, obstacle_flag,
                         angle_flag, angle_cdeg)
 
         color = (255, 0, 0)
         if send_color_id == 1:
             color = (0, 170, 255)
-        elif send_color_id == 2:
-            color = (255, 0, 0)
         elif send_color_id == 3:
             color = (0, 255, 0)
         elif send_color_id == 4:
             color = (160, 96, 32)
         elif send_color_id == 5:
             color = (255, 255, 255)
-        text = 'cid={} {}'.format(send_color_id, source)
         img.draw_rectangle((x1, y1, w, h), color=color, thickness=2)
-        img.draw_cross(cx, cy, color=color, size=8, thickness=2)
-        img.draw_string(x1, max(0, y1 - 15), text, color=color, scale=1)
-        detect_count += 1
 
     else:
         lost_frame_count += 1
-        stable_detect_count = 0
-        if lost_frame_count > MAX_LOST_FRAMES and (target_color_id > 0 or active_threshold is not None or color_track_active):
+        if lost_frame_count > MAX_LOST_FRAMES and (target_color_id > 0 or color_track_active):
             if host_color_id_received:
                 color_track_active = False
                 color_track_box = None
                 color_track_color_id = 0
                 color_lost_count = 0
-                local_track_rect = None
-                last_tracked_pixels = -1
-                track_force_global_next = False
-                track_local_miss_count = 0
                 lost_frame_count = 0
-                stable_detect_count = 0
             else:
                 reset_target_tracking_state()
         send_world_no_target(yellow_detected, pos_flag, obstacle_flag, angle_flag, angle_cdeg)
     # Yellow detection is updated before pos_flag is calculated.
-
-    # Draw dynamic cut line (debug)
-    if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-        img.draw_line(0, dynamic_detect_roi[1], 319, dynamic_detect_roi[1],
-                      color=(0, 180, 255), thickness=2)
-
-    # Draw fitted yellow boundary line
-    if yellow_detected:
-        if yellow_line_x1 == yellow_line_x2:
-            img.draw_line(yellow_line_x1, 0, yellow_line_x1, 239,
-                          color=(255, 255, 0), thickness=2)
-        else:
-            y_at_left = clamp_int(yellow_line_y_at_x(0), 0, 239)
-            y_at_right = clamp_int(yellow_line_y_at_x(319), 0, 239)
-            img.draw_line(0, y_at_left, 319, y_at_right,
-                          color=(255, 255, 0), thickness=2)
-        img.draw_cross(160, yellow_boundary_y,
-                       color=(255, 255, 0), size=6, thickness=1)
-
-    # Render bird-view debug image
-    if BIRDVIEW_DEBUG:
-        bird.clear()
-        for _by in range(BIRD_H):
-            Y = Y_MIN + _by * SY
-            for _bx in range(BIRD_W):
-                X = X_MIN + _bx * SX
-                u, v = world_to_pixel(X, Y, H_world2pix)
-                if 0 <= u < 320 and 0 <= v < 240:
-                    bird.set_pixel(_bx, _by, img.get_pixel(u, v))
-
-        if world_x != 0.0 or world_y != 0.0:
-            bx_mark = int((world_x - X_MIN) / SX)
-            by_mark = int((world_y - Y_MIN) / SY)
-            if 0 <= bx_mark < BIRD_W and 0 <= by_mark < BIRD_H:
-                bird.draw_cross(bx_mark, by_mark, color=(255, 0, 0), size=5, thickness=2)
-
-        img.clear()
-        img.draw_image(bird, 0, 0)
-        img.draw_string(85, 5, "w=({:.1f},{:.1f})".format(world_x, world_y),
-                        color=(0,255,255), scale=1)
-        img.draw_string(85, 20, "FPS:{:.1f}".format(clock.fps()),
-                        color=(255,255,0), scale=1)
 
     if frame_count % 10 == 0:
         gc.collect()

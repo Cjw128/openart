@@ -17,14 +17,34 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 - Current competition/offline deployment uses the single-file layout. `main.py` and `minimain.py` keep the complete master-role and slave-role logic.
 - The multi-file runtime modules have been removed. The deployment no longer uses `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, or `openart_calibration.py`.
-- White-bear target handling now uses LAB color blobs like the other targets. Color target detection, yellow-line state, return beacon, UART protocol, IPM, and the main loop live inside the corresponding single-file runtime.
+- White-bear target handling now uses LAB color blobs like the other targets. Color target detection, yellow-line state, UART protocol, IPM, and the main loop live inside the corresponding single-file runtime; neither car currently performs vision-based return-to-depot handling.
 - Calibration, threshold tuning, and pre-carry color-scan checks remain standalone IDE / test scripts, not official offline entrypoints.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
 - Keep all structure notes and iteration records in `README_ch.md` / `README_en.md`, and update both languages together.
 
 ## Logs
 
-> **Current dual-car hardware rule: both the master and slave cameras are OpenART Plus boards. `main.py` and `minimain.py` both use `UART12` at 115200 bps. `IS_SLAVE_CAR` selects only the software role and never selects UART2.**
+> **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-12 - v0.9.8-dev - Offline hot-path cleanup and vision-return removal
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Removed vision-return mode, return-beacon thresholds/tracking state, and the associated `find_blobs()` path from both cars. Command `0x05` is still validated and consumed as a four-byte frame but no longer changes runtime state.
+- Checked the latest RT1021 controller tree and confirmed that its business logic no longer sends `0x05`; active commands are `0x00/0x01/0x02/0x03/0x04/0x06`. The 16-byte world-coordinate return packet is unchanged.
+- Completely removed the bird-view switch, reverse homography, extra frame buffer, and per-pixel renderer. `CALIBRATION_MODE`, four-point IPM capture, calibration verification graphics, and `H_pix2world` coordinate conversion remain intact.
+- Kept color-coded target bounding boxes in the normal offline path while removing target crosses/text, dynamic-cut lines, and yellow-line debug overlays. Unused distance calculations, startup banners, and runtime debug formatting were also removed.
+- Removed the zero-call brightness-calibration chain, legacy 14-byte pixel protocol, obsolete local-ROI state, obsolete lock counters, ineffective role switches, and write-only yellow-boundary world coordinates. Fixed exposure, SD threshold loading, color/yellow detection parameters, and state machines are unchanged.
+- Cached single-color threshold lists and fixed cut ROIs, changed candidate filtering to an equivalent single-pass selection, and removed the temporary corner list from world-coordinate conversion.
+- Preallocated separate target/no-target 16-byte UART buffers and replaced sliced checksums to avoid per-frame `bytearray` and `data[2:15]` allocations.
+
+Verification:
+- `python -m py_compile main.py minimain.py` passed.
+- The old and new initial-candidate selectors matched across `10000` randomized cases.
+- The old and new target/no-target UART encoders matched byte-for-byte across `4000` randomized frames.
+- A parser test with `0x05` immediately followed by `0x03` passed without losing command-buffer synchronization.
+- `git diff --check` passed.
 
 ### 2026-07-11 - v0.9.7-dev - Master yellow-line threshold and documentation sync
 
