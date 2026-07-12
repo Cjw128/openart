@@ -1,9 +1,9 @@
 # ======================================================================
-# 16-point raw-image ground-coordinate mesh test for OpenART Plus
+# 28-point raw-image ground-coordinate mesh test for OpenART Plus
 #
 # No checkerboard, lens_corr(), bird-view image, or camera model is used.
 # The mesh is calibrated from the red bag's bottom-center pixel and measured
-# ground coordinate at 16 positions.
+# ground coordinate at 28 positions.
 # ======================================================================
 
 import sensor, image, time
@@ -16,6 +16,7 @@ IMAGE_W = 320
 IMAGE_H = 240
 MAX_WORLD_X_CM = 250.0
 MAX_WORLD_Y_CM = 164.0
+REQUIRED_NEAR_Y_CM = 6.0
 SOFTWARE_HMIRROR = True
 SENSOR_VFLIP = True
 WB_GAINS = (101.00, 64.00, 97.00)
@@ -158,6 +159,8 @@ def load_ground_mesh(path=CAMERA_GROUND_MESH_PATH):
         calibrated_y_max_cm = float(rows.get('calibrated_y_max_cm', '0'))
         if not (0.0 < calibrated_y_min_cm < calibrated_y_max_cm):
             return None
+        if calibrated_y_min_cm > REQUIRED_NEAR_Y_CM + 1e-6:
+            return None
         if abs(calibrated_y_max_cm - MAX_WORLD_Y_CM) > 1e-6:
             return None
         triangle_count = int(rows.get('triangle_count', '0'))
@@ -279,12 +282,10 @@ def mesh_pixel_to_ground(mesh, u, v, out):
     return classify_outside_mesh(mesh, u, v)
 
 
-def classify_outside_mesh(mesh, u, v):
-    # A contact point below the calibrated near edge is always near. This
-    # prevents bottom-of-frame targets from ever taking the far clamp.
-    if v > mesh['near_v_max'] + OUTSIDE_DEADBAND_PX:
-        return MESH_TOO_NEAR
+def nearest_mesh_boundary(mesh, u, v):
     best_status = MESH_INVALID
+    best_u = 0.0
+    best_v = 0.0
     best_distance2 = 1e30
     for edge in mesh['boundaries']:
         status, u0, v0, u1, v1, length2 = edge
@@ -303,9 +304,18 @@ def classify_outside_mesh(mesh, u, v):
         if distance2 < best_distance2:
             best_distance2 = distance2
             best_status = status
-    if best_distance2 <= OUTSIDE_DEADBAND_PX * OUTSIDE_DEADBAND_PX:
-        return MESH_INVALID
-    return best_status
+            best_u = nearest_u
+            best_v = nearest_v
+    return (best_status, best_u, best_v)
+
+
+def classify_outside_mesh(mesh, u, v):
+    nearest = nearest_mesh_boundary(mesh, u, v)
+    # A contact point below the calibrated near edge is always near. This
+    # prevents bottom-of-frame targets from ever taking the far clamp.
+    if v > mesh['near_v_max'] + OUTSIDE_DEADBAND_PX:
+        return MESH_TOO_NEAR
+    return nearest[0]
 
 
 def mesh_status_name(status):
@@ -320,13 +330,47 @@ def mesh_status_name(status):
     return 'INVALID'
 
 
+def homography_pixel_to_ground(h, u, v):
+    denominator = h[6]*u + h[7]*v + h[8]
+    if -HOMOGRAPHY_EPSILON < denominator < HOMOGRAPHY_EPSILON:
+        return None
+    x = (h[0]*u + h[1]*v + h[2]) / denominator
+    y = (h[3]*u + h[4]*v + h[5]) / denominator
+    if x != x or y != y:
+        return None
+    return (x, y)
+
+
+def far_limit_x(h, u):
+    far_y = MAX_WORLD_Y_CM
+    v_denominator = h[4] - far_y*h[7]
+    if -HOMOGRAPHY_EPSILON < v_denominator < HOMOGRAPHY_EPSILON:
+        return None
+    far_v = (far_y*(h[6]*u + h[8]) - (h[3]*u + h[5])) / v_denominator
+    projected = homography_pixel_to_ground(h, u, far_v)
+    if projected is None:
+        return None
+    return projected[0]
+
+
 def fallback_pixel_to_ground(mesh, u, v, mesh_status, out):
     h = mesh['fallback_h']
-    denominator = h[6]*u + h[7]*v + h[8]
+    nearest_status, boundary_u, boundary_v = nearest_mesh_boundary(mesh, u, v)
+    boundary_world = [0.0, 0.0]
+    boundary_valid = mesh_pixel_to_ground(
+        mesh, boundary_u, boundary_v, boundary_world) == MESH_VALID
+    boundary_h = homography_pixel_to_ground(h, boundary_u, boundary_v)
+    correction_x = 0.0
+    correction_y = 0.0
+    if boundary_valid and boundary_h is not None:
+        correction_x = boundary_world[0] - boundary_h[0]
+        correction_y = boundary_world[1] - boundary_h[1]
+
     use_far_limit = mesh_status == MESH_TOO_FAR
-    if denominator < -HOMOGRAPHY_EPSILON or denominator > HOMOGRAPHY_EPSILON:
-        x = (h[0]*u + h[1]*v + h[2]) / denominator
-        y = (h[3]*u + h[4]*v + h[5]) / denominator
+    projected = homography_pixel_to_ground(h, u, v)
+    if projected is not None:
+        x = projected[0] + correction_x
+        y = projected[1] + correction_y
         if (mesh_status != MESH_TOO_FAR and
                 x >= -MAX_WORLD_X_CM and x <= MAX_WORLD_X_CM and
                 y > 0.0 and y <= MAX_WORLD_Y_CM):
@@ -341,19 +385,19 @@ def fallback_pixel_to_ground(mesh, u, v, mesh_status, out):
 
     # Pixels above the calibrated far edge are projected onto the Y=164 cm
     # limit along the same image column, avoiding the homography horizon.
-    far_y = MAX_WORLD_Y_CM
-    v_denominator = h[4] - far_y*h[7]
-    if -HOMOGRAPHY_EPSILON < v_denominator < HOMOGRAPHY_EPSILON:
+    far_x = far_limit_x(h, u)
+    if far_x is None:
         return False
-    far_v = (far_y*(h[6]*u + h[8]) - (h[3]*u + h[5])) / v_denominator
-    denominator = h[6]*u + h[7]*far_v + h[8]
-    if -HOMOGRAPHY_EPSILON < denominator < HOMOGRAPHY_EPSILON:
-        return False
-    far_x = (h[0]*u + h[1]*far_v + h[2]) / denominator
+    if boundary_valid:
+        boundary_far_x = far_limit_x(h, boundary_u)
+        if nearest_status == MESH_TOO_FAR and boundary_far_x is not None:
+            far_x += boundary_world[0] - boundary_far_x
+        else:
+            far_x += correction_x
     if far_x < -MAX_WORLD_X_CM or far_x > MAX_WORLD_X_CM:
         return False
     out[0] = far_x
-    out[1] = far_y
+    out[1] = MAX_WORLD_Y_CM
     return True
 
 

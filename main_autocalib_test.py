@@ -699,10 +699,18 @@ def blob_reject_reason(img, b, cid):
 
 target_color_id = 0     # 0=不限色(多色检测); 0x03 命令锁定后只检测该色
 
-# ---- 上行数据帧(12字节, 与生产一致) ----
-def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00):
-    x = int(wx_mm)
-    y = int(wy_mm)
+# ---- 上行数据帧(12字节, 坐标单位0.01 cm / 0.1 mm) ----
+WORLD_UART_UNITS_PER_CM = 100.0
+
+def world_cm_to_uart_units(value_cm):
+    scaled = float(value_cm) * WORLD_UART_UNITS_PER_CM
+    if scaled >= 0.0:
+        return int(scaled + 0.5)
+    return int(scaled - 0.5)
+
+def send_world_data(color_id, wx_01mm, wy_01mm, pw, yellow_flag=False, pos_flag=0x00):
+    x = int(wx_01mm)
+    y = int(wy_01mm)
     if x < -32768: x = -32768
     if x > 32767: x = 32767
     if y < -32768: y = -32768
@@ -2085,7 +2093,8 @@ while True:
         if best:
             cid, b = best
             wx, wy = box_to_world(b.x(), b.y(), b.w(), b.h())
-            send_world_data(cid, int(wx * 10), int(wy * 10), b.w())
+            send_world_data(cid, world_cm_to_uart_units(wx),
+                            world_cm_to_uart_units(wy), b.w())
             img.draw_rectangle(b.rect(), color=DRAW_COLORS.get(cid, (255, 255, 255)))
             img.draw_string(b.x(), max(0, b.y() - 10), SLOT_NAMES.get(cid, "?"),
                             color=DRAW_COLORS.get(cid, (255, 255, 255)))

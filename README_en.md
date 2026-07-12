@@ -13,7 +13,7 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 | `calib_ide_tune.py` | OpenART Plus / IDE | Auto-calibration parameter tuning script |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | Pre-carry front color-blob scan preview script |
 | `calibrate_ground_camera.py` | PC / OpenCV | Build a structured triangular coordinate mesh from red-bag correspondences |
-| `ground_mesh_16_points_template.csv` | PC | Completed 24-point master-camera data (historical filename retained) |
+| `ground_mesh_24_points_template.csv` | PC | Local 28-point master-camera data (historical filename; not tracked) |
 | `raw_ground_projection_test.py` | OpenART Plus / IDE | Validate raw-pixel ground coordinates with the red bag |
 
 ## Structure Notes
@@ -27,27 +27,47 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 ## Raw-Image Ground-Coordinate Test
 
-This test path never calls `lens_corr()`, stretches the image, or builds a bird view. It requires no checkerboard or camera intrinsics and leaves `main.py` / `minimain.py` unchanged. OpenART detects the red bag using `main.py` color ID 2, treats the blob's bottom center as its ground contact, and interpolates real `X/Y` inside a structured adjacent-point triangle mesh.
+This approach never calls `lens_corr()`, stretches the image, or builds a bird view. It requires no checkerboard or camera intrinsics. It was first validated independently in `raw_ground_projection_test.py`, then integrated into `main.py` / `minimain.py` for v1.0.0. OpenART treats the red bag blob's bottom center as its ground contact and interpolates real `X/Y` inside a structured adjacent-point triangle mesh.
 
-Despite its historical filename, `ground_mesh_16_points_template.csv` now contains 24 `fit` points: all original 16 plus four points at `Y=30 cm` and four at `Y=9 cm`. Row labels are stable IDs and the generator orders rows by measured Y. The result is a `6 x 4`, 30-triangle mesh covering `Y=9–164 cm` and `57.5%` of QVGA by pixel convex-hull area.
+Despite its historical filename, the local `ground_mesh_24_points_template.csv` contains 28 `fit` points: all original 16 plus four points at each of `Y=30 cm`, `Y=9 cm`, and the bottom-of-frame `Y=6 cm` row. It contains camera-specific measurements and is intentionally not tracked; place it beside the generator when recalibrating. Row labels are stable IDs and the generator orders rows by measured Y. The result is a `7 x 4`, 36-triangle mesh covering `Y=6–164 cm` and `61.9%` of QVGA by pixel convex-hull area.
 
 1. The CSV header must be `point_id,u,v,Xcm,Ycm,split`. X is positive right, Y is positive forward, and units are centimetres. X positions may differ by row, but C1 through C4 must increase within each row. Calibration samples should still avoid image-edge clipping.
 2. Generate the master-camera mesh:
 
 ```powershell
-python calibrate_ground_camera.py --ground-csv ground_mesh_16_points_template.csv --role master --expected-points 24 --required-near-y-cm 9 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
+python calibrate_ground_camera.py --ground-csv ground_mesh_24_points_template.csv --role master --expected-points 28 --required-near-y-cm 6 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
 ```
 
-3. The generator rejects duplicate pixels, degenerate triangles, and mesh folds. The completed data has a `7.82°` minimum triangle angle and reproduces every fit node. It also fits a global homography used only outside the mesh; its fit-node RMS / maximum error is `1.727 / 3.191 cm`.
+3. The generator rejects duplicate pixels, degenerate triangles, and mesh folds. The completed data has a `7.82°` minimum triangle angle and reproduces every fit node. It also fits a global homography used only outside the mesh; its fit-node RMS / maximum error is `1.679 / 3.281 cm`. Re-fitting that homography with one point omitted at a time gives `1.994 / 4.056 cm`, with valid predictions for all 28 points.
 4. Put `camera_ground_mesh.txt` in the OpenART SD-card root as `/sd/camera_ground_mesh.txt`, then run `raw_ground_projection_test.py`.
-5. Inside-mesh coordinates print `status=VALID source=MESH`; outside-mesh coordinates print `status=VALID source=HOMOGRAPHY_FALLBACK`. Far fallback coordinates are capped at `Y=164 cm`, never `300 cm`. A full scan of all 76,800 QVGA pixels used the mesh for 42,782 and the fallback for 34,018, leaving zero coordinate holes.
+5. Inside-mesh coordinates print `status=VALID source=MESH`; outside-mesh coordinates print `status=VALID source=HOMOGRAPHY_FALLBACK`. Far fallback coordinates are capped at `Y=164 cm`, never `300 cm`. A full scan of all 76,800 QVGA pixels used the mesh for 45,866 and the fallback for 30,934, leaving zero coordinate holes.
 6. During testing, edge-clipped red blobs are no longer discarded. The script relaxes shape filtering only for edge candidates, continues coordinate output, and adds `quality=CLIPPED_ESTIMATE`. Only no detected red region or an invalid parameter file prints `status=NOT_FOUND`. Clipped estimates and fallback coordinates are less accurate than mesh coordinates and should be checked on the carrying path.
 7. Set `DRAW_VALIDITY_GRID=True` to inspect direct mesh coverage. Setting `EXPECTED_X_CM` / `EXPECTED_Y_CM` also displays total measured error.
-8. Calibrate the slave camera independently. Set both the script's `CAMERA_ROLE` and the CLI `--role` to `slave`; never swap parameter files between cameras.
+8. v1.0.0 currently assumes identical camera height and angle on both cars, so `main.py` / `minimain.py` read the same `role=master` mesh. If their geometry diverges, collect slave-camera points independently and change the role configuration in `minimain.py`, the test script, and the generator command together.
 
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-13 - v1.0.0 - Complete world-coordinate calculation rewrite
+
+Scope: `main.py`, `minimain.py`, `main_autocalib_test.py`, `calibrate_ground_camera.py`, `raw_ground_projection_test.py`, `camera_ground_mesh.txt`, `camera_ground_mesh_report.json`, `.gitignore`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Built a `7 x 4` structured mesh and 36 adjacent triangles from 28 measured red-bag bottom-center-pixel/ground-coordinate pairs, replacing the old runtime 4-point homography. All original 16 points remain, while three added near rows extend calibrated coverage to `6 cm`. The raw frame is never lens-corrected, bird-view rendered, or pixel-warped, so the coordinate rewrite introduces no image tearing.
+- Local barycentric interpolation is used inside the mesh. Outside it, calibrated near/far/left/right boundaries select a global homography fitted from the same 28 points. Fallback coordinates are corrected by the residual at the nearest mesh-boundary point, removing the jump caused by switching directly between the local mesh and global homography. Far positions are limited along the same image column to `Y=164 cm`; the bottom of the frame can still produce a clipped near estimate around `5.3 cm`, eliminating coordinate holes and the old fake `300 cm` distance.
+- Both runtimes load `/sd/camera_ground_mesh.txt` once at startup and validate its version, role, image orientation, triangle orientation, and `164 cm` ceiling. If the SD mesh is absent, an embedded master-camera full-frame homography replaces the old IPM fallback.
+- Ground contact is consistently `x + w/2, y + h - 0.5`. Both `main.py` and `minimain.py` now use a `45`-pixel/area base threshold for every color. Candidates try the original strict shape rule first, then a relaxed all-color aspect/density rule even away from image edges. The dynamic ground cut checks the blob bottom instead of its center. To match the `1200 us` offline exposure, all five built-in LAB thresholds now use a brightness lower bound of `10` while retaining their A/B color ranges; a complete `/sd/color_thr.txt` still overrides these defaults. This prevents small, dark, fragmented, or ground-boundary-straddling visible targets from becoming false no-target reports before coordinate projection.
+- Master and slave default exposure now matches the calibration value of `1200 us`; `/sd/color_thr.txt` can still override exposure through the existing mechanism. The legacy four-point `CALIBRATION_MODE` tool remains available but is no longer used for normal target coordinates.
+- UART length, field positions, and checksum remain unchanged. World coordinates now use `0.01 cm` (`0.1 mm`) per integer unit and are rounded before transmission; `164 cm` is encoded as `16400`. The external parser must divide by `100.0` to recover centimetres. A true projection failure still sends the existing no-target packet without repurposing the obstacle field for quality metadata.
+
+Verification:
+- `python -m py_compile main.py minimain.py` and `mpy-cross` compilation for both files passed.
+- The 28 calibration nodes reproduce in the production master mapping with a maximum error of `2.93e-14 cm`; the minimum mesh angle is `7.82°`, with no degeneracy or folds.
+- Scanned all 76,800 QVGA pixels: 45,866 used triangle interpolation and 30,934 used the fallback, with zero holes; X spans `-136.131..128.327 cm` and Y spans `5.351..164.000 cm`. Another 153,600 half-pixel contact locations also had zero holes.
+- Sampling all 18 outer mesh segments reduced the maximum limiting seam difference from about `8.424 cm` to `0.000575 cm`; the 28 calibration nodes still reproduce with a `2.93e-14 cm` maximum error.
+- The embedded 28-point no-SD fallback also completed a full-frame scan with zero holes. Bottom-center `v=239.5` returns about `6.47 cm`, while the top far region is strictly capped at `164 cm`.
+- UART regression confirmed positive and negative rounding at `0.01 cm` resolution and `164 cm -> 16400`, with the same 16-byte length and checksum. The standalone test script passed on hardware.
 
 ### 2026-07-13 - v0.9.9-dev - Long-range world-coordinate clamping fix
 

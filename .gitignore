@@ -16,5 +16,8 @@ env/
 
 cmm_cfg.csv
 cmm_load.py
+/csv
+test*
+ground_mesh_24_points_template.csv
 
 *.tflite

@@ -72,11 +72,11 @@ clock = time.clock()
 
 # 所有支持的颜色阈值；如果 /sd/color_thr.txt 完整有效，会在启动时覆盖这些默认值。
 all_color_thresholds = [
-    (34, 100, -41, 5, -72, -17),    # 颜色1: 淡蓝色沙包
+    (10, 100, -41, 5, -72, -17),    # 颜色1: 淡蓝色沙包
     (10, 80, 22, 122, -17, 93),    # 颜色2: 红色沙包
-    (50, 100, -128, -27, 20, 127), # 颜色3: 网球(浅绿/荧光黄绿)
-    (21, 52, -77, 25, 1, 99),      # 颜色4: 棕色泰迪熊 ← 需实际标定!
-    (53, 100, -10, 11, -11, 8)    # 颜色5: 白色泰迪熊 ← 需实际标定!
+    (10, 100, -128, -27, 20, 127), # 颜色3: 网球(浅绿/荧光黄绿)
+    (10, 52, -77, 25, 1, 99),      # 颜色4: 棕色泰迪熊 ← 需实际标定!
+    (10, 100, -10, 11, -11, 8)    # 颜色5: 白色泰迪熊 ← 需实际标定!
 ]
 
 def _load_calibrated_params(path='/sd/color_thr.txt'):
@@ -127,12 +127,15 @@ _single_color_ids = [[color_id] for color_id in COLOR_SEARCH_ORDER]
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
-COLOR_MIN_PIXELS = 150
-COLOR_MIN_AREA = 100
-COLOR_ID12_MIN_PIXELS = 100
+COLOR_MIN_PIXELS = 45
+COLOR_MIN_AREA = 45
+COLOR_ID12_MIN_PIXELS = 45
 TENNIS_COLOR_ID = 3
 TENNIS_MIN_PIXELS = 45
 TENNIS_MIN_AREA = 45
+RELAXED_BLOB_ASPECT_MIN = 0.15
+RELAXED_BLOB_ASPECT_MAX = 6.00
+RELAXED_BLOB_DENSITY_MIN = 0.10
 BEAR_MIN_BOX_AREA = 480
 # Runtime target detection uses LAB color blobs only.
 
@@ -267,7 +270,351 @@ def reset_yellow_state():
 # ======================================================================
 
 WORLD_X_LIMIT_CM = 250.0
-WORLD_Y_MAX_CM = 300.0
+WORLD_Y_MAX_CM = 164.0
+WORLD_UART_UNITS_PER_CM = 100.0  # 0.01 cm (0.1 mm) per signed int16 unit.
+CAMERA_GROUND_MESH_PATH = '/sd/camera_ground_mesh.txt'
+CAMERA_ROLE = 'master'  # Both cars share the same calibrated mesh file.
+GROUND_TRIANGLE_EPSILON = 1e-6
+GROUND_HOMOGRAPHY_EPSILON = 1e-6
+GROUND_OUTSIDE_DEADBAND_PX = 1.5
+GROUND_REQUIRED_NEAR_Y_CM = 6.0
+
+MESH_INVALID = 0
+MESH_VALID = 1
+MESH_TOO_NEAR = 2
+MESH_TOO_FAR = 3
+MESH_LEFT = 4
+MESH_RIGHT = 5
+
+# Boundary codes stored by calibrate_ground_camera.py.
+BOUNDARY_TO_STATUS = {
+    1: MESH_TOO_NEAR,
+    2: MESH_TOO_FAR,
+    3: MESH_LEFT,
+    4: MESH_RIGHT,
+}
+
+# Full-frame fallback generated from the current 28-point master-camera
+# calibration. Both cars share the same camera mounting and the same SD
+# camera_ground_mesh.txt (role=master); a valid SD mesh overrides it with
+# local triangle interpolation.
+DEFAULT_GROUND_FALLBACK_H = (
+    -17.7638385071, 0.28145619199, 2975.34856703,
+    0.177873489376, 11.811411406, -3947.19080263,
+    0.0130205434305, -0.715824718611, 1.0,
+)
+
+ground_mesh_triangles = ()
+ground_mesh_boundaries = ()
+ground_mesh_near_v_max = -1.0
+ground_fallback_h = DEFAULT_GROUND_FALLBACK_H
+
+def _parse_ground_float_list(text, count):
+    parts = text.split(',')
+    if len(parts) != count:
+        return None
+    values = []
+    for part in parts:
+        value = float(part.strip())
+        if value != value or value <= -1e9 or value >= 1e9:
+            return None
+        values.append(value)
+    return values
+
+def load_ground_projection(path=CAMERA_GROUND_MESH_PATH):
+    try:
+        rows = {}
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('=', 1)
+                if len(parts) != 2:
+                    return None
+                key = parts[0].strip()
+                if key in rows:
+                    return None
+                rows[key] = parts[1].strip()
+
+        if int(rows.get('version', '0')) != 4:
+            return None
+        if rows.get('model') != 'triangle_mesh':
+            return None
+        if rows.get('role') != CAMERA_ROLE or rows.get('units') != 'cm':
+            return None
+        if int(rows.get('image_w', '0')) != 320:
+            return None
+        if int(rows.get('image_h', '0')) != 240:
+            return None
+        if int(rows.get('software_hmirror', '-1')) != (1 if SOFTWARE_HMIRROR else 0):
+            return None
+        if int(rows.get('sensor_vflip', '-1')) != 1:
+            return None
+        if int(rows.get('lens_corr', '-1')) != 0:
+            return None
+        point_count = int(rows.get('point_count', '0'))
+        grid_rows = int(rows.get('grid_rows', '0'))
+        grid_columns = int(rows.get('grid_columns', '0'))
+        if (grid_rows < 4 or grid_rows > 16 or grid_columns != 4 or
+                point_count != grid_rows * grid_columns):
+            return None
+
+        max_x_cm = float(rows.get('max_x_cm', '0'))
+        max_y_cm = float(rows.get('max_y_cm', '0'))
+        if not (max_x_cm > 0.0 and max_x_cm <= WORLD_X_LIMIT_CM):
+            return None
+        if abs(max_y_cm - WORLD_Y_MAX_CM) > 1e-6:
+            return None
+        calibrated_y_min_cm = float(rows.get('calibrated_y_min_cm', '0'))
+        calibrated_y_max_cm = float(rows.get('calibrated_y_max_cm', '0'))
+        if not (0.0 < calibrated_y_min_cm < calibrated_y_max_cm):
+            return None
+        if calibrated_y_min_cm > GROUND_REQUIRED_NEAR_Y_CM + 1e-6:
+            return None
+        if abs(calibrated_y_max_cm - WORLD_Y_MAX_CM) > 1e-6:
+            return None
+        triangle_count = int(rows.get('triangle_count', '0'))
+        expected_triangle_count = (grid_rows - 1) * (grid_columns - 1) * 2
+        if triangle_count != expected_triangle_count or triangle_count > 96:
+            return None
+
+        triangles = []
+        orientation_sign = 0
+        for index in range(triangle_count):
+            values = _parse_ground_float_list(rows.get('triangle{}'.format(index), ''), 12)
+            if values is None:
+                return None
+            u0, v0, x0, y0 = values[0], values[1], values[2], values[3]
+            u1, v1, x1, y1 = values[4], values[5], values[6], values[7]
+            u2, v2, x2, y2 = values[8], values[9], values[10], values[11]
+            if (u0 < 0.0 or u0 >= 320.0 or v0 < 0.0 or v0 >= 240.0 or
+                    u1 < 0.0 or u1 >= 320.0 or v1 < 0.0 or v1 >= 240.0 or
+                    u2 < 0.0 or u2 >= 320.0 or v2 < 0.0 or v2 >= 240.0):
+                return None
+            if (abs(x0) > max_x_cm or abs(x1) > max_x_cm or abs(x2) > max_x_cm or
+                    y0 <= 0.0 or y0 > max_y_cm or
+                    y1 <= 0.0 or y1 > max_y_cm or
+                    y2 <= 0.0 or y2 > max_y_cm):
+                return None
+            denominator = ((v1 - v2)*(u0 - u2) +
+                           (u2 - u1)*(v0 - v2))
+            if not (denominator < -1.0 or denominator > 1.0):
+                return None
+            world_area2 = ((x1 - x0)*(y2 - y0) -
+                           (x2 - x0)*(y1 - y0))
+            if not (world_area2 < -1e-4 or world_area2 > 1e-4):
+                return None
+            sign = 1 if denominator * world_area2 > 0.0 else -1
+            if orientation_sign == 0:
+                orientation_sign = sign
+            elif sign != orientation_sign:
+                return None
+            triangles.append(tuple(values) + (1.0 / denominator,))
+
+        boundary_count = int(rows.get('boundary_count', '0'))
+        expected_boundary_count = 2 * (grid_rows - 1) + 2 * (grid_columns - 1)
+        if boundary_count != expected_boundary_count:
+            return None
+        boundaries = []
+        boundary_status_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+        near_v_max = -1.0
+        for index in range(boundary_count):
+            values = _parse_ground_float_list(rows.get('boundary{}'.format(index), ''), 5)
+            if values is None:
+                return None
+            boundary_code = int(values[0])
+            if values[0] != boundary_code or boundary_code not in BOUNDARY_TO_STATUS:
+                return None
+            u0, v0, u1, v1 = values[1], values[2], values[3], values[4]
+            if (u0 < 0.0 or u0 >= 320.0 or v0 < 0.0 or v0 >= 240.0 or
+                    u1 < 0.0 or u1 >= 320.0 or v1 < 0.0 or v1 >= 240.0):
+                return None
+            dx = u1 - u0
+            dy = v1 - v0
+            length2 = dx*dx + dy*dy
+            if length2 <= 1.0:
+                return None
+            boundaries.append((BOUNDARY_TO_STATUS[boundary_code],
+                               u0, v0, u1, v1, length2))
+            boundary_status_counts[boundary_code] += 1
+            if boundary_code == 1:
+                near_v_max = max(near_v_max, v0, v1)
+        if (boundary_status_counts[1] != grid_columns - 1 or
+                boundary_status_counts[2] != grid_columns - 1 or
+                boundary_status_counts[3] != grid_rows - 1 or
+                boundary_status_counts[4] != grid_rows - 1):
+            return None
+
+        if rows.get('fallback_model') != 'homography':
+            return None
+        fallback_h = _parse_ground_float_list(rows.get('fallback_h', ''), 9)
+        if fallback_h is None:
+            return None
+        fallback_fit_max = float(rows.get('fallback_fit_max_cm', '1000'))
+        if fallback_fit_max < 0.0 or fallback_fit_max > 10.0:
+            return None
+        determinant = (
+            fallback_h[0] * (fallback_h[4]*fallback_h[8] - fallback_h[5]*fallback_h[7]) -
+            fallback_h[1] * (fallback_h[3]*fallback_h[8] - fallback_h[5]*fallback_h[6]) +
+            fallback_h[2] * (fallback_h[3]*fallback_h[7] - fallback_h[4]*fallback_h[6])
+        )
+        if -GROUND_HOMOGRAPHY_EPSILON < determinant < GROUND_HOMOGRAPHY_EPSILON:
+            return None
+        return (tuple(triangles), tuple(boundaries), near_v_max, tuple(fallback_h))
+    except Exception:
+        return None
+
+def mesh_ground_pixel_to_world(px, py):
+    for triangle in ground_mesh_triangles:
+        u0, v0, x0, y0 = triangle[0], triangle[1], triangle[2], triangle[3]
+        u1, v1, x1, y1 = triangle[4], triangle[5], triangle[6], triangle[7]
+        u2, v2, x2, y2 = triangle[8], triangle[9], triangle[10], triangle[11]
+        inverse_denominator = triangle[12]
+        a = ((v1 - v2)*(px - u2) + (u2 - u1)*(py - v2)) * inverse_denominator
+        b = ((v2 - v0)*(px - u2) + (u0 - u2)*(py - v2)) * inverse_denominator
+        c = 1.0 - a - b
+        if (a >= -GROUND_TRIANGLE_EPSILON and
+                b >= -GROUND_TRIANGLE_EPSILON and
+                c >= -GROUND_TRIANGLE_EPSILON):
+            wx = a*x0 + b*x1 + c*x2
+            wy = a*y0 + b*y1 + c*y2
+            if wy > WORLD_Y_MAX_CM:
+                wy = WORLD_Y_MAX_CM
+            if wy <= 0.0:
+                return None
+            if wx != wx:
+                wx = 0.0
+            elif wx < -WORLD_X_LIMIT_CM:
+                wx = -WORLD_X_LIMIT_CM
+            elif wx > WORLD_X_LIMIT_CM:
+                wx = WORLD_X_LIMIT_CM
+            return (wx, wy)
+    return None
+
+def nearest_ground_boundary(u, v):
+    best_status = MESH_INVALID
+    best_u = 0.0
+    best_v = 0.0
+    best_distance2 = 1e30
+    for edge in ground_mesh_boundaries:
+        status, u0, v0, u1, v1, length2 = edge
+        du = u1 - u0
+        dv = v1 - v0
+        position = ((u - u0)*du + (v - v0)*dv) / length2
+        if position < 0.0:
+            position = 0.0
+        elif position > 1.0:
+            position = 1.0
+        nearest_u = u0 + position*du
+        nearest_v = v0 + position*dv
+        delta_u = u - nearest_u
+        delta_v = v - nearest_v
+        distance2 = delta_u*delta_u + delta_v*delta_v
+        if distance2 < best_distance2:
+            best_distance2 = distance2
+            best_status = status
+            best_u = nearest_u
+            best_v = nearest_v
+    return (best_status, best_u, best_v)
+
+def classify_ground_outside(u, v):
+    nearest = nearest_ground_boundary(u, v)
+    # A contact point below the calibrated near edge is always near. This
+    # prevents bottom-of-frame targets from ever taking the far clamp.
+    if v > ground_mesh_near_v_max + GROUND_OUTSIDE_DEADBAND_PX:
+        return (MESH_TOO_NEAR, nearest[1], nearest[2])
+    return nearest
+
+def ground_homography_pixel_to_world(h, px, py):
+    denominator = h[6]*px + h[7]*py + h[8]
+    if -GROUND_HOMOGRAPHY_EPSILON < denominator < GROUND_HOMOGRAPHY_EPSILON:
+        return None
+    wx = (h[0]*px + h[1]*py + h[2]) / denominator
+    wy = (h[3]*px + h[4]*py + h[5]) / denominator
+    if wx != wx or wy != wy:
+        return None
+    return (wx, wy)
+
+def ground_far_limit_x(h, px):
+    far_y = WORLD_Y_MAX_CM
+    v_denominator = h[4] - far_y*h[7]
+    if -GROUND_HOMOGRAPHY_EPSILON < v_denominator < GROUND_HOMOGRAPHY_EPSILON:
+        return None
+    far_v = (far_y*(h[6]*px + h[8]) - (h[3]*px + h[5])) / v_denominator
+    projected = ground_homography_pixel_to_world(h, px, far_v)
+    if projected is None:
+        return None
+    return projected[0]
+
+def fallback_ground_pixel_to_world(px, py, mesh_status, boundary_u=None, boundary_v=None):
+    h = ground_fallback_h
+    correction_x = 0.0
+    correction_y = 0.0
+    boundary_world = None
+    if boundary_u is not None and boundary_v is not None:
+        boundary_world = mesh_ground_pixel_to_world(boundary_u, boundary_v)
+        boundary_h = ground_homography_pixel_to_world(h, boundary_u, boundary_v)
+        if boundary_world is not None and boundary_h is not None:
+            correction_x = boundary_world[0] - boundary_h[0]
+            correction_y = boundary_world[1] - boundary_h[1]
+
+    use_far_limit = mesh_status == MESH_TOO_FAR
+    projected = ground_homography_pixel_to_world(h, px, py)
+    if projected is not None:
+        wx = projected[0] + correction_x
+        wy = projected[1] + correction_y
+        if (mesh_status != MESH_TOO_FAR and
+                wx >= -WORLD_X_LIMIT_CM and wx <= WORLD_X_LIMIT_CM and
+                wy > 0.0 and wy <= WORLD_Y_MAX_CM):
+            return (wx, wy)
+        if wy <= 0.0 or wy > WORLD_Y_MAX_CM:
+            use_far_limit = True
+
+    if mesh_status == MESH_TOO_NEAR or not use_far_limit:
+        return None
+
+    # Pixels above the calibrated far edge are projected onto the Y=164 cm
+    # limit along the same image column, avoiding the homography horizon.
+    far_x = ground_far_limit_x(h, px)
+    if far_x is None:
+        return None
+    if boundary_world is not None and boundary_u is not None:
+        boundary_far_x = ground_far_limit_x(h, boundary_u)
+        if mesh_status == MESH_TOO_FAR and boundary_far_x is not None:
+            far_x += boundary_world[0] - boundary_far_x
+        else:
+            far_x += correction_x
+    if far_x < -WORLD_X_LIMIT_CM or far_x > WORLD_X_LIMIT_CM:
+        return None
+    return (far_x, WORLD_Y_MAX_CM)
+
+def ground_pixel_to_world(px, py):
+    px = float(px)
+    py = float(py)
+    if (RUNTIME_LENS_CORR or px < 0.0 or px >= 320.0 or
+            py < 0.0 or py >= 240.0):
+        return None
+    result = mesh_ground_pixel_to_world(px, py)
+    if result is not None:
+        return result
+    if ground_mesh_boundaries:
+        mesh_status, boundary_u, boundary_v = classify_ground_outside(px, py)
+    else:
+        # Without SD triangles, the embedded master-camera homography still
+        # provides full-frame coordinates and applies the 164 cm far limit.
+        mesh_status = MESH_INVALID
+        boundary_u = None
+        boundary_v = None
+    return fallback_ground_pixel_to_world(px, py, mesh_status, boundary_u, boundary_v)
+
+_loaded_ground_projection = None if CALIBRATION_MODE else load_ground_projection()
+if _loaded_ground_projection is not None:
+    ground_mesh_triangles = _loaded_ground_projection[0]
+    ground_mesh_boundaries = _loaded_ground_projection[1]
+    ground_mesh_near_v_max = _loaded_ground_projection[2]
+    ground_fallback_h = _loaded_ground_projection[3]
+del _loaded_ground_projection
 
 def clamp_int(v, lo, hi):
     if v < lo:
@@ -275,6 +622,12 @@ def clamp_int(v, lo, hi):
     if v > hi:
         return hi
     return v
+
+def world_cm_to_uart_units(value_cm):
+    scaled = float(value_cm) * WORLD_UART_UNITS_PER_CM
+    if scaled >= 0.0:
+        return int(scaled + 0.5)
+    return int(scaled - 0.5)
 
 def cut_line_y_at_x(x):
     dx = CUT_RIGHT_X - CUT_LEFT_X
@@ -391,24 +744,22 @@ def valid_color_blob(blob, color_id):
     if w <= 0 or h <= 0:
         return False
     aspect = w / h
+    density = blob.density()
+    valid = False
     if color_id == 3:
-        if aspect < 0.45 or aspect > 1.85:
-            return False
-        if blob.density() < 0.35:
-            return False
+        valid = aspect >= 0.45 and aspect <= 1.85 and density >= 0.35
     elif color_id == 4 or color_id == 5:
-        if aspect < 0.30 or aspect > 2.50:
-            return False
-        if w * h <= BEAR_MIN_BOX_AREA:
-            return False
-        if blob.pixels() < 120:
-            return False
+        valid = (aspect >= 0.30 and aspect <= 2.50 and
+                 w * h > BEAR_MIN_BOX_AREA and blob.pixels() >= 120)
     else:
-        if aspect < 0.60 or aspect > 1.80:
-            return False
-        if blob.density() < 0.40:
-            return False
-    return True
+        valid = aspect >= 0.60 and aspect <= 1.80 and density >= 0.40
+    if valid:
+        return True
+    # Keep LAB plus pixel/area thresholds as the noise guards, but do not drop
+    # visible targets solely because perspective or fragmentation distorts shape.
+    return (aspect >= RELAXED_BLOB_ASPECT_MIN and
+            aspect <= RELAXED_BLOB_ASPECT_MAX and
+            density >= RELAXED_BLOB_DENSITY_MIN)
 
 def color_blob_thresholds(color_id):
     if color_id == TENNIS_COLOR_ID:
@@ -464,7 +815,7 @@ def find_color_target(img, last_box):
             continue
         for blob in blobs:
             if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-                if blob.cy() < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
+                if blob.y() + blob.h() - 0.5 < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
                     continue
             if valid_color_blob(blob, color_id):
                 item = (color_id, blob)
@@ -534,7 +885,7 @@ def scan_front_other_color_ids(img):
             continue
         for blob in blobs:
             if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-                if blob.cy() < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
+                if blob.y() + blob.h() - 0.5 < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
                     continue
             if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
                 continue
@@ -591,21 +942,10 @@ def process_front_scan_request(img):
         reset_front_scan_state()
     return True
 def box_to_world(x, y, w, h):
-    if H_pix2world is None:
-        return (0.0, 0.0)
-    # 单应性只描述地面点，目标底边中点才是接地点。四角平均会让上边缘越过
-    # 投影地平线，使远处的正距离突然发散并翻成负数。
-    wx, wy = pixel_to_world(x + w / 2.0, y + h, H_pix2world)
-    # 该写法也能覆盖地平线处产生的零值、NaN 和无穷值。
-    if not (wy > 0.0 and wy <= WORLD_Y_MAX_CM):
-        wy = WORLD_Y_MAX_CM
-    if wx != wx:
-        wx = 0.0
-    elif wx < -WORLD_X_LIMIT_CM:
-        wx = -WORLD_X_LIMIT_CM
-    elif wx > WORLD_X_LIMIT_CM:
-        wx = WORLD_X_LIMIT_CM
-    return (wx, wy)
+    # Match calibration: the visible bottom-center pixel is the ground contact.
+    # A bottom-clipped target therefore saturates near v=239.5 instead of being
+    # discarded, which preserves the carrying approach signal.
+    return ground_pixel_to_world(x + w / 2.0, y + h - 0.5)
 
 def mat_solve_8x8(A, B):
     n = 8
@@ -686,8 +1026,8 @@ H_pix2world = calc_homography(CALIB_PIXEL, CALIB_WORLD)
 # ======================================================================
 # [0-1]  帧头: 0xAA 0x55
 # [2]    颜色ID (0=无目标, 1=淡蓝, 2=红色, 3=网球, 4=棕熊, 5=白熊)
-# [3-4]  世界X (mm, int16, 小端序)
-# [5-6]  世界Y (mm, int16, 小端序)
+# [3-4]  世界X (0.01 cm / 0.1 mm, int16, 小端序)
+# [5-6]  世界Y (0.01 cm / 0.1 mm, int16, 小端序)
 # [7-8]  像素宽度 (uint16, 小端序)
 # [9]    黄线标志
 # [10]   位置关系
@@ -706,7 +1046,7 @@ def _calculate_checksum_range(data, start, end):
         checksum += data[i]
     return checksum & 0xFF
 
-def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00, obstacle_flag=0x00,
+def send_world_data(color_id, wx_01mm, wy_01mm, pw, yellow_flag=False, pos_flag=0x00, obstacle_flag=0x00,
                     angle_flag=0x00, angle_cdeg=0):
     # World packet v2, 16 bytes:
     # [12] angle_flag: bit0=angle enabled, bit1=angle valid
@@ -715,8 +1055,8 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     """发送 16 字节世界坐标数据包。
     [0-1]  帧头 0xAA 0x55
     [2]    颜色ID
-    [3-4]  世界X (mm, int16, 小端序)
-    [5-6]  世界Y (mm, int16, 小端序)
+    [3-4]  世界X (0.01 cm / 0.1 mm, int16, 小端序)
+    [5-6]  世界Y (0.01 cm / 0.1 mm, int16, 小端序)
     [7-8]  像素宽度 (uint16)
     [9]    黄线标志 0x00/0x01
     [10]   位置关系 0x00/0x01/0x02
@@ -725,14 +1065,14 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     [15]   校验和 (data[2:15])
     """
     # 编码前饱和；若直接掩码，超出 int16 的正数会被主控解码成负数。
-    wx_mm = clamp_int(int(wx_mm), -32768, 32767)
-    wy_mm = clamp_int(int(wy_mm), -32768, 32767)
+    wx_01mm = clamp_int(int(wx_01mm), -32768, 32767)
+    wy_01mm = clamp_int(int(wy_01mm), -32768, 32767)
     data = _tx_world_buf
     data[2] = color_id & 0xFF
-    data[3] = wx_mm & 0xFF
-    data[4] = (wx_mm >> 8) & 0xFF
-    data[5] = wy_mm & 0xFF
-    data[6] = (wy_mm >> 8) & 0xFF
+    data[3] = wx_01mm & 0xFF
+    data[4] = (wx_01mm >> 8) & 0xFF
+    data[5] = wy_01mm & 0xFF
+    data[6] = (wy_01mm >> 8) & 0xFF
     data[7] = pw & 0xFF
     data[8] = (pw >> 8) & 0xFF
     data[9] = 0x01 if yellow_flag else 0x00
@@ -1098,10 +1438,14 @@ while True:
 
         # Local detection is only a candidate report; final color lock comes from host 0x03.
 
-        world_x, world_y = box_to_world(x1, y1, w, h)
-        wx_mm = int(world_x * 10)
-        wy_mm = int(world_y * 10)
-        send_world_data(send_color_id, wx_mm, wy_mm, w, yellow_detected, pos_flag)
+        world_position = box_to_world(x1, y1, w, h)
+        if world_position is not None:
+            world_x, world_y = world_position
+            wx_01mm = world_cm_to_uart_units(world_x)
+            wy_01mm = world_cm_to_uart_units(world_y)
+            send_world_data(send_color_id, wx_01mm, wy_01mm, w, yellow_detected, pos_flag)
+        else:
+            send_world_no_target(yellow_detected, pos_flag)
 
         color = (255, 0, 0)
         if send_color_id == 1:

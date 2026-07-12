@@ -24,7 +24,7 @@ import numpy as np
 IMAGE_W = 320
 IMAGE_H = 240
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_GROUND_CSV = SCRIPT_DIR / "ground_mesh_16_points_template.csv"
+DEFAULT_GROUND_CSV = SCRIPT_DIR / "ground_mesh_24_points_template.csv"
 DEFAULT_MESH_OUTPUT = SCRIPT_DIR / "camera_ground_mesh.txt"
 DEFAULT_REPORT_OUTPUT = SCRIPT_DIR / "camera_ground_mesh_report.json"
 BOUNDARY_TOO_NEAR = 1
@@ -352,30 +352,51 @@ def verify_mesh(mesh, points):
     }
 
 
-def leave_one_out_diagnostics(points, min_triangle_angle_deg):
+def leave_one_out_diagnostics(points, _min_triangle_angle_deg):
+    # Removing one node breaks the complete 4-column topology, while a
+    # Delaunay rebuild can join same-Y world points into zero-area triangles.
+    # Measure the exported fallback model instead: fit it from N-1 points and
+    # predict the omitted point.
     rows = []
     errors = []
+    pixels = np.asarray([[point["u"], point["v"]] for point in points], dtype=np.float64)
+    worlds = np.asarray([[point["Xcm"], point["Ycm"]] for point in points], dtype=np.float64)
     for index, point in enumerate(points):
-        reduced = points[:index] + points[index + 1:]
+        reduced_pixels = np.delete(pixels, index, axis=0)
+        reduced_worlds = np.delete(worlds, index, axis=0)
         try:
-            mesh = build_mesh(reduced, min_triangle_angle_deg)
-            predicted = interpolate_mesh(mesh, point["u"], point["v"])
-        except CalibrationError as exc:
-            rows.append({"point_index": index, "build_error": str(exc)})
+            homography, _ = cv2.findHomography(reduced_pixels, reduced_worlds, method=0)
+        except cv2.error as exc:
+            rows.append({"point_index": index, "point_id": point["point_id"],
+                         "build_error": str(exc)})
             continue
-        if predicted is None:
-            rows.append({"point_index": index, "inside_reduced_hull": False})
+        if (homography is None or not np.all(np.isfinite(homography)) or
+                abs(float(homography[2, 2])) <= 1e-12):
+            rows.append({"point_index": index, "point_id": point["point_id"],
+                         "build_error": "could not fit leave-one-out homography"})
+            continue
+        homography = homography / homography[2, 2]
+        predicted = cv2.perspectiveTransform(
+            pixels[index:index + 1].reshape(-1, 1, 2), homography
+        ).reshape(-1, 2)[0]
+        if not np.all(np.isfinite(predicted)):
+            rows.append({"point_index": index, "point_id": point["point_id"],
+                         "build_error": "leave-one-out prediction is not finite"})
             continue
         error_x = predicted[0] - point["Xcm"]
         error_y = predicted[1] - point["Ycm"]
         error = math.sqrt(error_x*error_x + error_y*error_y)
         errors.append(error)
-        rows.append({"point_index": index, "inside_reduced_hull": True,
-                     "predicted_Xcm": predicted[0], "predicted_Ycm": predicted[1],
+        rows.append({"point_index": index, "point_id": point["point_id"],
+                     "predicted_Xcm": float(predicted[0]),
+                     "predicted_Ycm": float(predicted[1]),
                      "error_cm": error})
     return {
+        "model": "fallback_homography",
         "rows": rows,
+        "count": len(points),
         "valid_count": len(errors),
+        "invalid_count": len(points) - len(errors),
         "rms_cm": math.sqrt(sum(error*error for error in errors) / len(errors)) if errors else None,
         "max_cm": max(errors) if errors else None,
     }
@@ -442,21 +463,21 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--ground-csv", default=str(DEFAULT_GROUND_CSV),
-        help="CSV with point_id,u,v,Xcm,Ycm[,split] (default: checked-in 24-point data)"
+        help="CSV with point_id,u,v,Xcm,Ycm[,split] (default: local 28-point data)"
     )
     parser.add_argument("--role", choices=("master", "slave"), default="master")
     parser.add_argument("--output", default=str(DEFAULT_MESH_OUTPUT))
     parser.add_argument("--report", default=str(DEFAULT_REPORT_OUTPUT))
     parser.add_argument(
-        "--expected-points", type=int, default=24,
-        help="optional exact fit-point count check (for example 24 for a 6x4 grid)"
+        "--expected-points", type=int, default=28,
+        help="optional exact fit-point count check (for example 28 for a 7x4 grid)"
     )
     parser.add_argument("--software-hmirror", type=int, choices=(0, 1), default=1)
     parser.add_argument("--sensor-vflip", type=int, choices=(0, 1), default=1)
     parser.add_argument("--max-x-cm", type=float, default=250.0)
     parser.add_argument("--max-y-cm", type=float, default=164.0)
     parser.add_argument(
-        "--required-near-y-cm", type=float, default=9.0,
+        "--required-near-y-cm", type=float, default=6.0,
         help="reject export if the nearest fit row does not reach this pickup distance"
     )
     parser.add_argument("--min-triangle-angle-deg", type=float, default=1.0)
@@ -483,6 +504,8 @@ def main(argv=None):
         leave_one_out = leave_one_out_diagnostics(fit_points, args.min_triangle_angle_deg)
 
         failures = []
+        if leave_one_out["invalid_count"]:
+            failures.append("leave-one-out fallback diagnostics could not predict every fit point")
         calibrated_y_min = min(point["Ycm"] for point in fit_points)
         calibrated_y_max = max(point["Ycm"] for point in fit_points)
         if (args.required_near_y_cm is not None and
@@ -564,7 +587,7 @@ def main(argv=None):
         print("fallback homography RMS/max: {:.3f}/{:.3f} cm".format(
             mesh["fallback"]["fit_rms_cm"], mesh["fallback"]["fit_max_cm"]))
         if leave_one_out["rms_cm"] is not None:
-            print("leave-one-out RMS/max: {:.3f}/{:.3f} cm ({} interior points)".format(
+            print("leave-one-out RMS/max: {:.3f}/{:.3f} cm ({} points)".format(
                 leave_one_out["rms_cm"], leave_one_out["max_cm"], leave_one_out["valid_count"]))
         if verify_points:
             print("verify RMS/max: {:.3f}/{:.3f} cm".format(

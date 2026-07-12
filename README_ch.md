@@ -13,7 +13,7 @@
 | `calib_ide_tune.py` | OpenART Plus / IDE | 自动标定参数调试脚本 |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
 | `calibrate_ground_camera.py` | PC / OpenCV | 从红色沙包对应点生成结构化三角坐标网格 |
-| `ground_mesh_16_points_template.csv` | PC | 已完成的 24 点主相机标定数据（文件名保留历史名称） |
+| `ground_mesh_24_points_template.csv` | PC | 本地 28 点主相机标定数据（沿用旧文件名，不纳入 Git） |
 | `raw_ground_projection_test.py` | OpenART Plus / IDE | 使用红色沙包验证原图像素到真实地面坐标 |
 
 ## 结构说明
@@ -27,27 +27,47 @@
 
 ## 原始图像真实坐标测试
 
-该测试链路不调用 `lens_corr()`，不做图像拉伸或鸟瞰变换，也不需要棋盘格和相机内参；`main.py` / `minimain.py` 保持不变。OpenART 在原始 QVGA 画面中识别 `main.py` 颜色 ID 2 的红色沙包，取色块底边中心作为接地点，通过相邻标定点组成的结构化三角网格插值真实 `X/Y`。
+该方案不调用 `lens_corr()`，不做图像拉伸或鸟瞰变换，也不需要棋盘格和相机内参。它先在 `raw_ground_projection_test.py` 中独立验证，v1.0.0 再同步到 `main.py` / `minimain.py`。OpenART 在原始 QVGA 画面中识别红色沙包，取色块底边中心作为接地点，通过相邻标定点组成的结构化三角网格插值真实 `X/Y`。
 
-当前 `ground_mesh_16_points_template.csv` 实际包含 24 个 `fit` 点：原有 16 点完整保留，新增 `Y=30 cm` 和 `Y=9 cm` 两排各 4 点。行号是稳定 ID，生成器按实测 Y 自动排序。当前网格为 `6 x 4`、30 个三角形，有效 Y 范围为 `9–164 cm`，像素凸包覆盖 QVGA 的 `57.5%`。
+当前本地 `ground_mesh_24_points_template.csv` 沿用旧文件名，实际包含 28 个 `fit` 点：原有 16 点完整保留，新增 `Y=30 cm`、`Y=9 cm` 和贴近画面底部的 `Y=6 cm` 三排各 4 点。该文件包含相机专属实测数据，默认不纳入 Git；重新标定时需在脚本目录准备它。行号是稳定 ID，生成器按实测 Y 自动排序。当前网格为 `7 x 4`、36 个三角形，有效 Y 范围为 `6–164 cm`，像素凸包覆盖 QVGA 的 `61.9%`。
 
 1. CSV 表头必须为 `point_id,u,v,Xcm,Ycm,split`。X 向右为正、Y 向前为正，单位厘米。每一排 X 可以不同，但同排必须从 C1 到 C4 递增；标定采点仍应避免沙包碰到图像四边。
 2. 生成主相机网格：
 
 ```powershell
-python calibrate_ground_camera.py --ground-csv ground_mesh_16_points_template.csv --role master --expected-points 24 --required-near-y-cm 9 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
+python calibrate_ground_camera.py --ground-csv ground_mesh_24_points_template.csv --role master --expected-points 28 --required-near-y-cm 6 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
 ```
 
-3. 生成器会拒绝重复像素、退化三角形和网格翻折。当前数据的最小三角角为 `7.82°`；24 个拟合节点可被精确复现。生成器还会拟合一个仅用于网格外补点的全局单应模型，其节点 RMS / 最大误差为 `1.727 / 3.191 cm`。
+3. 生成器会拒绝重复像素、退化三角形和网格翻折。当前数据的最小三角角为 `7.82°`；28 个拟合节点可被精确复现。生成器还会拟合一个仅用于网格外补点的全局单应模型，其节点 RMS / 最大误差为 `1.679 / 3.281 cm`；按每次移除一个点重新拟合单应的留一诊断为 `1.994 / 4.056 cm`，28 个点均得到有效预测。
 4. 将 `camera_ground_mesh.txt` 放到 OpenART SD 卡根目录，设备路径必须为 `/sd/camera_ground_mesh.txt`，然后运行 `raw_ground_projection_test.py`。
-5. 网格内输出 `status=VALID source=MESH`；网格外输出 `status=VALID source=HOMOGRAPHY_FALLBACK`。远端后备坐标限制在 `Y=164 cm`，不再出现 `300 cm`。整幅 QVGA 的 76,800 个像素已扫描：42,782 个走网格，34,018 个由后备模型补齐，坐标空洞为 0。
+5. 网格内输出 `status=VALID source=MESH`；网格外输出 `status=VALID source=HOMOGRAPHY_FALLBACK`。远端后备坐标限制在 `Y=164 cm`，不再出现 `300 cm`。整幅 QVGA 的 76,800 个像素已扫描：45,866 个走网格，30,934 个由后备模型补齐，坐标空洞为 0。
 6. 测试运行时，触边红色块不会再被丢弃：脚本会放宽仅限边缘候选的形状过滤并继续输出坐标，同时标记 `quality=CLIPPED_ESTIMATE`。没有检测到红色区域或参数文件无效时才输出 `status=NOT_FOUND`。裁切估计和后备坐标精度低于网格内坐标，仍建议在实际搬运路径上验收。
 7. `DRAW_VALIDITY_GRID=True` 可显示直接网格覆盖范围。填写 `EXPECTED_X_CM` / `EXPECTED_Y_CM` 时，画面和串口还会显示实测总误差。
-8. 从相机必须独立采集并生成网格；同时将脚本的 `CAMERA_ROLE` 和命令行 `--role` 改为 `slave`，不能交换两块相机的参数文件。
+8. v1.0.0 当前按两车相机安装角度和高度一致处理，`main.py` / `minimain.py` 都读取同一份 `role=master` 网格。如果以后两车几何位置出现差异，必须为从相机独立采点，并同时修改 `minimain.py`、测试脚本和生成命令的角色配置。
 
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-07-13 - v1.0.0 - 世界坐标计算完全重构
+
+范围：`main.py`, `minimain.py`, `main_autocalib_test.py`, `calibrate_ground_camera.py`, `raw_ground_projection_test.py`, `camera_ground_mesh.txt`, `camera_ground_mesh_report.json`, `.gitignore`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+- 用 28 个“红色沙包底边中心像素 ↔ 实测地面坐标”建立 `7 x 4` 结构化网格和 36 个相邻三角形，正式替换运行期旧 4 点单应。原始 16 点完整保留，新增三排近距离点并将标定覆盖扩展到 `6 cm`。原始图像不做畸变校正、鸟瞰渲染或逐像素拉伸，因此不会引入图像撕裂。
+- 网格内使用局部重心插值；网格外先按近、远、左、右边界分类，再使用同一批 28 点拟合的全局单应补齐。后备坐标使用最近网格边界点的残差校正，消除局部网格与全局单应直接切换造成的跳变。过远位置沿同一图像列限制到 `Y=164 cm`，近端画面底部可继续输出约 `5.3 cm` 的裁切估计，不再出现坐标空洞或 `300 cm` 假距离。
+- 两份正式程序启动时只加载一次 `/sd/camera_ground_mesh.txt`；参数会校验版本、角色、画面方向、三角形方向和 `164 cm` 上限。SD 网格缺失时使用内置主相机全图后备矩阵，不再回退旧 IPM。
+- 接地点统一为 `x + w/2, y + h - 0.5`。`main.py` / `minimain.py` 将所有颜色的基础色块门槛统一降至 `45` 像素/面积；候选先走原有严格形状规则，失败后再走全颜色宽松宽高比/密度规则，不再要求必须触边。动态地面线也改用色块底边而不是中心判断。为适配 `1200 us` 脱机曝光，五种内置 LAB 阈值的亮度下限统一为 `10`，A/B 色彩范围保持不变；完整的 `/sd/color_thr.txt` 仍优先覆盖内置值。这些改动避免画面内的小目标、较暗目标、破碎目标和跨越地面边界的目标在坐标计算前被误报为无目标。
+- 主车与从车默认曝光统一为标定时的 `1200 us`；`/sd/color_thr.txt` 中的曝光配置仍可按原机制覆盖。两份文件的 `CALIBRATION_MODE` 旧 4 点工具保留，但正常运行不再使用它计算目标坐标。
+- UART 包长、字段位置和校验和保持不变，世界坐标改为每单位 `0.01 cm`（`0.1 mm`），发送前四舍五入；`164 cm` 在线路上编码为 `16400`。外部解析端必须按 `/100.0` 还原厘米。投影真正失败时仍发送原有无目标包，不占用障碍字段传递质量状态。
+
+验证：
+- `python -m py_compile main.py minimain.py` 与两份文件的 `mpy-cross` 编译均通过。
+- 28 个标定节点在正式主车映射中的最大复现误差为 `2.93e-14 cm`；网格最小三角角为 `7.82°`，无退化或翻折。
+- 扫描全部 76,800 个 QVGA 像素：45,866 个走三角网格、30,934 个走后备模型、无空洞；X 范围为 `-136.131..128.327 cm`，Y 范围为 `5.351..164.000 cm`。另扫描 153,600 个半像素接地点，同样无空洞。
+- 沿 18 段网格外边界采样，趋近边界时的最大接缝差从约 `8.424 cm` 降至 `0.000575 cm`；28 个标定节点仍保持 `2.93e-14 cm` 最大复现误差。
+- 无 SD 网格时的 28 点内置后备同样完成全图扫描且无空洞；底部中心 `v=239.5` 返回约 `6.47 cm`，顶部远端严格限制为 `164 cm`。
+- UART 回归确认正负坐标按 `0.01 cm` 四舍五入，`164 cm` 编码为 `16400`；16 字节长度和校验和不变。独立测试脚本已在实机运行通过。
 
 ### 2026-07-13 - v0.9.9-dev - 远距离世界坐标限幅修复
 
