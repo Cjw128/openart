@@ -266,6 +266,9 @@ def reset_yellow_state():
 # 单应性变换 (逆透视)
 # ======================================================================
 
+WORLD_X_LIMIT_CM = 250.0
+WORLD_Y_MAX_CM = 300.0
+
 def clamp_int(v, lo, hi):
     if v < lo:
         return lo
@@ -590,17 +593,19 @@ def process_front_scan_request(img):
 def box_to_world(x, y, w, h):
     if H_pix2world is None:
         return (0.0, 0.0)
-    wx_sum, wy_sum = pixel_to_world(x, y, H_pix2world)
-    wx, wy = pixel_to_world(x + w, y, H_pix2world)
-    wx_sum += wx
-    wy_sum += wy
-    wx, wy = pixel_to_world(x, y + h, H_pix2world)
-    wx_sum += wx
-    wy_sum += wy
-    wx, wy = pixel_to_world(x + w, y + h, H_pix2world)
-    wx_sum += wx
-    wy_sum += wy
-    return (wx_sum / 4.0, wy_sum / 4.0)
+    # 单应性只描述地面点，目标底边中点才是接地点。四角平均会让上边缘越过
+    # 投影地平线，使远处的正距离突然发散并翻成负数。
+    wx, wy = pixel_to_world(x + w / 2.0, y + h, H_pix2world)
+    # 该写法也能覆盖地平线处产生的零值、NaN 和无穷值。
+    if not (wy > 0.0 and wy <= WORLD_Y_MAX_CM):
+        wy = WORLD_Y_MAX_CM
+    if wx != wx:
+        wx = 0.0
+    elif wx < -WORLD_X_LIMIT_CM:
+        wx = -WORLD_X_LIMIT_CM
+    elif wx > WORLD_X_LIMIT_CM:
+        wx = WORLD_X_LIMIT_CM
+    return (wx, wy)
 
 def mat_solve_8x8(A, B):
     n = 8
@@ -719,6 +724,9 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     [12-14] 预留角度字段
     [15]   校验和 (data[2:15])
     """
+    # 编码前饱和；若直接掩码，超出 int16 的正数会被主控解码成负数。
+    wx_mm = clamp_int(int(wx_mm), -32768, 32767)
+    wy_mm = clamp_int(int(wy_mm), -32768, 32767)
     data = _tx_world_buf
     data[2] = color_id & 0xFF
     data[3] = wx_mm & 0xFF

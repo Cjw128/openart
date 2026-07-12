@@ -304,6 +304,9 @@ def reset_yellow_state():
 # Homography transform for inverse perspective mapping
 # ======================================================================
 
+WORLD_X_LIMIT_CM = 250.0
+WORLD_Y_MAX_CM = 300.0
+
 def clamp_int(v, lo, hi):
     if v < lo:
         return lo
@@ -650,17 +653,20 @@ def process_front_scan_request(img):
 def box_to_world(x, y, w, h):
     if H_pix2world is None:
         return (0.0, 0.0)
-    wx_sum, wy_sum = pixel_to_world(x, y, H_pix2world)
-    wx, wy = pixel_to_world(x + w, y, H_pix2world)
-    wx_sum += wx
-    wy_sum += wy
-    wx, wy = pixel_to_world(x, y + h, H_pix2world)
-    wx_sum += wx
-    wy_sum += wy
-    wx, wy = pixel_to_world(x + w, y + h, H_pix2world)
-    wx_sum += wx
-    wy_sum += wy
-    return (wx_sum / 4.0, wy_sum / 4.0)
+    # IPM describes points on the ground, so use the target's ground-contact
+    # point. Averaging the top corners can cross the homography horizon and
+    # turn a far positive distance into a very large negative value.
+    wx, wy = pixel_to_world(x + w / 2.0, y + h, H_pix2world)
+    # This form also catches zero, NaN and infinities from the horizon.
+    if not (wy > 0.0 and wy <= WORLD_Y_MAX_CM):
+        wy = WORLD_Y_MAX_CM
+    if wx != wx:
+        wx = 0.0
+    elif wx < -WORLD_X_LIMIT_CM:
+        wx = -WORLD_X_LIMIT_CM
+    elif wx > WORLD_X_LIMIT_CM:
+        wx = WORLD_X_LIMIT_CM
+    return (wx, wy)
 
 def mat_solve_8x8(A, B):
     n = 8
@@ -783,6 +789,10 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     [13-14] 黄线角度
     [15]   校验和 (data[2:15])
     """
+    # Saturate before encoding. Masking an out-of-range positive value into
+    # int16 would otherwise make the receiver decode it as a negative value.
+    wx_mm = clamp_int(int(wx_mm), -32768, 32767)
+    wy_mm = clamp_int(int(wy_mm), -32768, 32767)
     data = _tx_world_buf
     data[2] = color_id & 0xFF
     data[3] = wx_mm & 0xFF
