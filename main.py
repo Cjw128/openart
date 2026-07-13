@@ -59,7 +59,7 @@ sensor.set_auto_whitebal(False, rgb_gain_db=WB_GAINS)
 sensor.skip_frames(time=500)
 
 # Fixed exposure
-sensor.set_auto_exposure(False, exposure_us=1000)
+sensor.set_auto_exposure(False, exposure_us=1200)
 sensor.set_auto_gain(False, gain_db=0)
 
 # Both master and slave cameras are OpenART Plus boards and use UART12.
@@ -172,8 +172,7 @@ BLUE_GROUND_THRESHOLD = [(0, 55, -30, 45, -90, -7)]
 CUT_BLOB_MIN_H = 12          # 条带内蓝色块最小高度，滤掉零星蓝色噪点/浅蓝沙包边缘
 CUT_BLOB_BOTTOM_MARGIN = 25  # 蓝色块底部须延伸到条带底部附近，才认为是连续的赛道地面
 CUT_GAP_BRIDGE = 10          # 向上桥接的最大间隙(px)：黄线横穿会把蓝地面切成上下两段，跨过它继续延伸
-# 多条竖直采样带横跨画面：正对直角弯时赛道尖角在画面中间、比左右两侧更远，
-# 只采左右两条再连斜线会割掉尖角；改为取所有带的最高点做一条水平裁切线（保守）。
+# 多条竖直采样带横跨画面，使用所有有效蓝布上界的平均值生成水平裁切线。
 CUT_STRIP_XS = (10, 85, 160, 235, 310)
 CUT_MIN_VALID_STRIPS = 2   # 至少几条带看到蓝地面才认为裁切线有效
 CUT_STRIP_HALF_W = 2
@@ -231,16 +230,16 @@ YELLOW_ROI_TOP = (0, 90, 320, 20)        # Horizontal strip centered near y=100
 YELLOW_ROI_BOTTOM = (0, 130, 320, 20)    # Horizontal strip centered near y=140
 YELLOW_DETECT_INTERVAL = 2              # Detect yellow line every N frames
 YELLOW_ENTER_PIXELS = 70                # Pixel threshold for first yellow-line hit
-YELLOW_KEEP_PIXELS = 8                  # Lower hold threshold after line is seen
+YELLOW_KEEP_PIXELS = 20                 # Reject small yellow remnants after the line is seen
 YELLOW_CARRY_CONFIRM_FRAMES = 2         # Consecutive hits before carry mode treats yellow as confirmed
-YELLOW_BOTTOM_Y = 239                   # Bottom edge used to arm disappear-after-bottom crossing
+YELLOW_BOTTOM_Y = 215                   # Arm disappearance detection before the line reaches the last image row
 
 yellow_line_k = 0.0
 yellow_line_b = 0.0
 yellow_detected = False     # Whether yellow line is visible
 yellow_tracking = False      # Hysteresis state after first yellow-line hit
 yellow_lost_count = 0       # Consecutive yellow-line lost counter
-YELLOW_LOST_THRESHOLD = 3   # Consecutive per-frame misses after the line reaches a bottom corner
+YELLOW_LOST_THRESHOLD = 2   # Consecutive per-frame misses after the line reaches a bottom corner
 yellow_seen_in_carry = False # Whether yellow line was confirmed in carry mode
 yellow_bottom_reached_in_carry = False # Whether fitted yellow line has reached a bottom corner
 yellow_carry_confirm_count = 0 # Consecutive carry-mode yellow hits before confirmation
@@ -340,7 +339,7 @@ def update_dynamic_cut(img, frame_count):
     if (not ENABLE_DYNAMIC_CUT) or (frame_count % CUT_UPDATE_INTERVAL != 0):
         return
 
-    top_y_min = None
+    top_y_sum = 0
     valid_strips = 0
     for roi in CUT_STRIP_ROIS:
         blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=roi,
@@ -348,18 +347,18 @@ def update_dynamic_cut(img, frame_count):
         ty = pick_top_y_from_strip(blobs)
         if ty is not None:
             valid_strips += 1
-            if top_y_min is None or ty < top_y_min:
-                top_y_min = ty
+            top_y_sum += ty
 
     if valid_strips >= CUT_MIN_VALID_STRIPS:
+        top_y_average = top_y_sum // valid_strips
         dynamic_cut_miss_count = 0
         if not dynamic_cut_valid:
-            dynamic_cut_left_y = top_y_min
+            dynamic_cut_left_y = top_y_average
             dynamic_cut_valid = True
         else:
             # 双向对称 EMA：单帧噪声不会瞬间把线顶高（棘轮效应），转弯时也能平滑跟随
             a = CUT_EMA_ALPHA
-            dynamic_cut_left_y = int(a * top_y_min + (1.0 - a) * dynamic_cut_left_y)
+            dynamic_cut_left_y = int(a * top_y_average + (1.0 - a) * dynamic_cut_left_y)
 
         dynamic_cut_left_y = clamp_int(dynamic_cut_left_y, DETECT_Y_MIN, CUT_SCAN_Y_MAX)
     else:
@@ -819,7 +818,7 @@ def update_yellow_detection(img, frame_count):
     global yellow_tracking, yellow_detected
     global yellow_line_k, yellow_line_b
 
-    detect_every_frame = openart_mode == MODE_CARRY and yellow_bottom_reached_in_carry
+    detect_every_frame = openart_mode == MODE_CARRY and yellow_seen_in_carry
     if not detect_every_frame and frame_count % YELLOW_DETECT_INTERVAL != 0:
         return
 
@@ -877,12 +876,13 @@ while True:
 
     # ===== Dynamic cut update =====
     update_dynamic_cut(img, frame_count)
+    update_yellow_detection(img, frame_count)
+    pos_flag = current_pos_flag(frame_count)
     if process_front_scan_request(img):
         if frame_count % 10 == 0:
             gc.collect()
         feed_watchdog()
         continue
-    update_yellow_detection(img, frame_count)
 
     # ===== Color blob detection / tracking =====
     has_target = False
@@ -913,8 +913,6 @@ while True:
             color_track_box = None
             color_track_color_id = 0
             color_lost_count = 0
-
-    pos_flag = current_pos_flag(frame_count)
 
     if has_target:
         lost_frame_count = 0

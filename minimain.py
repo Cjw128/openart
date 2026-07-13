@@ -141,17 +141,20 @@ DETECT_ROI = (0, DETECT_Y_MIN, 320, 240 - DETECT_Y_MIN)
 # Dynamic cut line (based on blue-ground strips on left/right)
 # ======================================================================
 ENABLE_DYNAMIC_CUT = True
-BLUE_GROUND_THRESHOLD = [(34, 51, -54, 78, -104, -12)]
-CUT_LEFT_X = 10
-CUT_RIGHT_X = 310
+BLUE_GROUND_THRESHOLD = [(0, 55, -30, 45, -90, -7)]
+CUT_BLOB_MIN_H = 12
+CUT_BLOB_BOTTOM_MARGIN = 25
+CUT_GAP_BRIDGE = 10
+CUT_STRIP_XS = (10, 85, 160, 235, 310)
+CUT_MIN_VALID_STRIPS = 2
 CUT_STRIP_HALF_W = 2
 CUT_SCAN_Y_MIN = 0
 CUT_SCAN_Y_MAX = 140
-CUT_STRIP_H = CUT_SCAN_Y_MAX - CUT_SCAN_Y_MIN
-CUT_LEFT_ROI = (CUT_LEFT_X - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN,
-                CUT_STRIP_HALF_W * 2 + 1, CUT_STRIP_H)
-CUT_RIGHT_ROI = (CUT_RIGHT_X - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN,
-                 CUT_STRIP_HALF_W * 2 + 1, CUT_STRIP_H)
+CUT_STRIP_ROIS = [
+    (x - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN,
+     CUT_STRIP_HALF_W * 2 + 1, CUT_SCAN_Y_MAX - CUT_SCAN_Y_MIN)
+    for x in CUT_STRIP_XS
+]
 CUT_UPDATE_INTERVAL = 2
 CUT_MIN_PIXELS = 8
 CUT_MIN_AREA = 8
@@ -167,7 +170,6 @@ TRACK_AREA_CHANGE_MAX_PERCENT = 60
 TRACK_MIN_IOU = 0.05
 
 dynamic_cut_left_y = DETECT_Y_MIN
-dynamic_cut_right_y = DETECT_Y_MIN
 dynamic_cut_valid = False
 dynamic_cut_miss_count = 0
 dynamic_detect_roi = DETECT_ROI
@@ -221,59 +223,67 @@ def clamp_int(v, lo, hi):
         return hi
     return v
 
-def cut_line_y_at_x(x):
-    dx = CUT_RIGHT_X - CUT_LEFT_X
-    if dx == 0:
-        return dynamic_cut_left_y
-    return int(dynamic_cut_left_y + (dynamic_cut_right_y - dynamic_cut_left_y) * (x - CUT_LEFT_X) / dx)
-
 def pick_top_y_from_strip(blobs):
     if not blobs:
         return None
-    top_y = 240
+    top_y = None
     for b in blobs:
-        by = b.y()
-        if by < top_y:
-            top_y = by
+        if b.h() < CUT_BLOB_MIN_H:
+            continue
+        if b.y() + b.h() < CUT_SCAN_Y_MAX - CUT_BLOB_BOTTOM_MARGIN:
+            continue
+        if top_y is None or b.y() < top_y:
+            top_y = b.y()
+    if top_y is None:
+        return None
+    bridged_top = None
+    for b in blobs:
+        if b.h() < CUT_BLOB_MIN_H:
+            continue
+        by2 = b.y() + b.h()
+        if by2 <= top_y and top_y - by2 <= CUT_GAP_BRIDGE and b.y() < top_y:
+            if bridged_top is None or b.y() < bridged_top:
+                bridged_top = b.y()
+    if bridged_top is not None:
+        top_y = bridged_top
     return top_y
 
 def update_dynamic_cut(img, frame_count):
-    global dynamic_cut_left_y, dynamic_cut_right_y
+    global dynamic_cut_left_y
     global dynamic_cut_valid, dynamic_cut_miss_count, dynamic_detect_roi
 
     if (not ENABLE_DYNAMIC_CUT) or (frame_count % CUT_UPDATE_INTERVAL != 0):
         return
 
-    left_blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=CUT_LEFT_ROI,
-                                pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
-    right_blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=CUT_RIGHT_ROI,
-                                 pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
+    top_y_sum = 0
+    valid_strips = 0
+    for roi in CUT_STRIP_ROIS:
+        blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=roi,
+                               pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
+        top_y = pick_top_y_from_strip(blobs)
+        if top_y is not None:
+            top_y_sum += top_y
+            valid_strips += 1
 
-    left_y_new = pick_top_y_from_strip(left_blobs)
-    right_y_new = pick_top_y_from_strip(right_blobs)
-
-    if left_y_new is not None and right_y_new is not None:
+    if valid_strips >= CUT_MIN_VALID_STRIPS:
+        top_y_average = top_y_sum // valid_strips
         dynamic_cut_miss_count = 0
         if not dynamic_cut_valid:
-            dynamic_cut_left_y = left_y_new
-            dynamic_cut_right_y = right_y_new
+            dynamic_cut_left_y = top_y_average
             dynamic_cut_valid = True
         else:
             a = CUT_EMA_ALPHA
-            dynamic_cut_left_y = int(a * left_y_new + (1.0 - a) * dynamic_cut_left_y)
-            dynamic_cut_right_y = int(a * right_y_new + (1.0 - a) * dynamic_cut_right_y)
+            dynamic_cut_left_y = int(a * top_y_average + (1.0 - a) * dynamic_cut_left_y)
 
         dynamic_cut_left_y = clamp_int(dynamic_cut_left_y, DETECT_Y_MIN, CUT_SCAN_Y_MAX)
-        dynamic_cut_right_y = clamp_int(dynamic_cut_right_y, DETECT_Y_MIN, CUT_SCAN_Y_MAX)
     else:
         dynamic_cut_miss_count += 1
         if dynamic_cut_miss_count > CUT_MAX_MISS:
             dynamic_cut_valid = False
             dynamic_cut_left_y = DETECT_Y_MIN
-            dynamic_cut_right_y = DETECT_Y_MIN
 
     if dynamic_cut_valid:
-        y_base = min(dynamic_cut_left_y, dynamic_cut_right_y) + CUT_ROI_Y_OFFSET
+        y_base = dynamic_cut_left_y + CUT_ROI_Y_OFFSET
         y_base = clamp_int(y_base, DETECT_Y_MIN, 239)
     else:
         y_base = DETECT_Y_MIN
@@ -374,7 +384,7 @@ def find_color_target(img, last_box):
         representative = None
         for blob in blobs:
             if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-                if blob.cy() < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
+                if blob.cy() < dynamic_cut_left_y + CUT_BLOB_DELTA:
                     continue
             if not valid_color_blob(blob, color_id):
                 continue
@@ -448,7 +458,7 @@ def scan_front_other_color_ids(img):
             continue
         for blob in blobs:
             if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-                if blob.cy() < cut_line_y_at_x(blob.cx()) + CUT_BLOB_DELTA:
+                if blob.cy() < dynamic_cut_left_y + CUT_BLOB_DELTA:
                     continue
             if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
                 continue
