@@ -26,6 +26,22 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
 
+### 2026-07-14 - v0.9.9 - Tennis carry yellow-line special case and slave cut-line fix
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+- Added the master-side `carry_target_color_id` snapshot. On command `0x01`, the runtime confirms the current carry color only when the host `target_color_id` matches the locally tracked `color_track_color_id`; stale locks, lost targets, and mismatched colors cannot enable the tennis special case.
+- During a confirmed tennis-ball carry, the upper and lower yellow-line ROIs expand to `y=70..119` and `y=120..169`, with `7/5` initial/hold pixel thresholds. The first successful line fit reports `POS_CROSSED` in the same frame and enters `MODE_WAIT_TURN` without waiting for consecutive confirmation, bottom-corner arrival, or line loss.
+- Non-tennis targets retain the original ROIs, `70/20` pixel thresholds, and two-stage crossing state machine. This prevents a red bag from inheriting the low tennis thresholds and ending its carry early.
+- Restored the slave camera's own blue-ground LAB threshold, separate left/right samples, and interpolated sloped cut line. Each target is filtered against the cut line at its own x-coordinate, fixing false rejection and false recognition caused by a single averaged horizontal cut under an oblique view.
+
+Verification:
+- Field retesting reported a stable carry flow, with red bags no longer triggering the tennis early-exit path.
+- `python -m py_compile main.py minimain.py` passed.
+- Carry-color command snapshots, tennis-only early exit, yellow ROI/pixel-parameter isolation, and slave sloped-cut branch tests passed.
+- `git diff --check` passed.
+
 ### 2026-07-12 - v0.9.8-dev - Offline hot-path cleanup and vision-return removal
 
 Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`

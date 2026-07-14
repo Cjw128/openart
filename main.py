@@ -207,6 +207,7 @@ color_track_active = False
 color_track_box = None
 color_track_color_id = 0
 color_lost_count = 0
+carry_target_color_id = 0
 _cmd_rx_buf = bytearray()
 front_scan_requested = False
 FRONT_SCAN_PACKET_ID = 0xC7
@@ -228,9 +229,13 @@ front_scan_total_count = 0
 yellow_threshold = [(51, 91, -32, 36, 1, 118)]    # Yellow LAB threshold
 YELLOW_ROI_TOP = (0, 90, 320, 20)        # Horizontal strip centered near y=100
 YELLOW_ROI_BOTTOM = (0, 130, 320, 20)    # Horizontal strip centered near y=140
+TENNIS_YELLOW_ROI_TOP = (0, 70, 320, 50)    # Tennis carry: y=70..119
+TENNIS_YELLOW_ROI_BOTTOM = (0, 120, 320, 50) # Tennis carry: y=120..169
 YELLOW_DETECT_INTERVAL = 2              # Detect yellow line every N frames
-YELLOW_ENTER_PIXELS = 70                # Pixel threshold for first yellow-line hit
-YELLOW_KEEP_PIXELS = 20                 # Reject small yellow remnants after the line is seen
+YELLOW_ENTER_PIXELS = 70               # Normal target: first yellow-line hit
+YELLOW_KEEP_PIXELS = 20                # Normal target: tracked yellow line
+TENNIS_YELLOW_ENTER_PIXELS = 7         # Tennis carry: first yellow-line hit
+TENNIS_YELLOW_KEEP_PIXELS = 5          # Tennis carry: tracked yellow line
 YELLOW_CARRY_CONFIRM_FRAMES = 2         # Consecutive hits before carry mode treats yellow as confirmed
 YELLOW_BOTTOM_Y = 215                   # Arm disappearance detection before the line reaches the last image row
 
@@ -263,6 +268,7 @@ def reset_target_tracking_state():
     global lost_frame_count
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
+    global carry_target_color_id
 
     lost_frame_count = 0
     target_color_id = 0
@@ -271,6 +277,7 @@ def reset_target_tracking_state():
     color_track_box = None
     color_track_color_id = 0
     color_lost_count = 0
+    carry_target_color_id = 0
 
 def reset_yellow_state():
     """清空黄线状态，避免新一轮任务继承上一轮的边界/滞回。"""
@@ -692,6 +699,7 @@ def receive_command_from_host():
     global lost_frame_count, openart_mode, carry_start_frame
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
+    global carry_target_color_id
     global _cmd_rx_buf, front_scan_requested
 
     available = uart.any()
@@ -745,7 +753,13 @@ def receive_command_from_host():
                 color_track_box = None
                 color_track_color_id = 0
                 color_lost_count = 0
+                carry_target_color_id = 0
         elif command == 0x01:  # Enter carry mode
+            # 仅在主控锁色与当前本地跟踪结果一致时，确认本轮实际搬运颜色。
+            if color_track_active and color_track_color_id == target_color_id:
+                carry_target_color_id = color_track_color_id
+            else:
+                carry_target_color_id = 0
             openart_mode = MODE_CARRY
             carry_start_frame = frame_count
             reset_yellow_state()
@@ -786,6 +800,10 @@ def current_pos_flag(frame_count):
     global yellow_lost_count, yellow_seen_in_carry, yellow_bottom_reached_in_carry
     global yellow_carry_confirm_count, openart_mode
     if openart_mode == MODE_CARRY:
+        # 网球搬运时，黄线拟合成功即视为已越线，不再等待触底和丢线状态机确认。
+        if carry_target_color_id == 3 and yellow_detected:
+            openart_mode = MODE_WAIT_TURN
+            return POS_CROSSED
         if carry_start_frame >= 0 and frame_count - carry_start_frame < YELLOW_CARRY_IGNORE_FRAMES:
             yellow_lost_count = 0
             return POS_NO_BOUNDARY
@@ -822,12 +840,21 @@ def update_yellow_detection(img, frame_count):
     if not detect_every_frame and frame_count % YELLOW_DETECT_INTERVAL != 0:
         return
 
-    yellow_pixels_threshold = YELLOW_KEEP_PIXELS if yellow_tracking else YELLOW_ENTER_PIXELS
+    if openart_mode == MODE_CARRY and carry_target_color_id == 3:
+        top_roi = TENNIS_YELLOW_ROI_TOP
+        bottom_roi = TENNIS_YELLOW_ROI_BOTTOM
+        yellow_pixels_threshold = (TENNIS_YELLOW_KEEP_PIXELS if yellow_tracking
+                                   else TENNIS_YELLOW_ENTER_PIXELS)
+    else:
+        top_roi = YELLOW_ROI_TOP
+        bottom_roi = YELLOW_ROI_BOTTOM
+        yellow_pixels_threshold = (YELLOW_KEEP_PIXELS if yellow_tracking
+                                   else YELLOW_ENTER_PIXELS)
 
-    top_blobs = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_TOP,
+    top_blobs = img.find_blobs(yellow_threshold, roi=top_roi,
                                pixels_threshold=yellow_pixels_threshold,
                                area_threshold=20, merge=True)
-    bottom_blobs = img.find_blobs(yellow_threshold, roi=YELLOW_ROI_BOTTOM,
+    bottom_blobs = img.find_blobs(yellow_threshold, roi=bottom_roi,
                                   pixels_threshold=yellow_pixels_threshold,
                                   area_threshold=20, merge=True)
     top_blob = pick_largest_blob(top_blobs)
