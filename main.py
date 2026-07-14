@@ -79,7 +79,7 @@ all_color_thresholds = [
     (10, 80, 22, 122, -17, 93),     # Color 2: red bag
     (50, 100, -128, -27, 20, 127),  # Color 3: tennis ball
     (21, 52, -77, 25, 6, 99),        # Color 4: brown teddy bear; tune on field
-    (53, 100, -10, 11, -11, 8)      # Color 5: white teddy bear
+    (51, 100, -5, 5, -38, 18)      # Color 5: white teddy bear
 ]
 
 def _load_calibrated_params(path='/sd/color_thr.txt'):
@@ -130,15 +130,13 @@ _single_color_ids = [[color_id] for color_id in COLOR_SEARCH_ORDER]
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
-COLOR_MIN_PIXELS = 150
+COLOR_MIN_PIXELS = 70
 COLOR_MIN_AREA = 100
-COLOR_ID12_MIN_PIXELS = 100
-TENNIS_MIN_PIXELS = 45
-TENNIS_MIN_AREA = 45
-BEAR_MIN_BOX_AREA = 480
+TENNIS_MIN_PIXELS = 80
+TENNIS_MIN_AREA = 80
 _color_blob_limits = (
-    (COLOR_ID12_MIN_PIXELS, COLOR_MIN_AREA),
-    (COLOR_ID12_MIN_PIXELS, COLOR_MIN_AREA),
+    (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
+    (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
     (TENNIS_MIN_PIXELS, TENNIS_MIN_AREA),
     (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
     (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
@@ -216,8 +214,8 @@ FRONT_SCAN_EXCLUDE_CENTER_PX = 35
 FRONT_SCAN_EXCLUDE_CENTER2 = FRONT_SCAN_EXCLUDE_CENTER_PX * FRONT_SCAN_EXCLUDE_CENTER_PX
 FRONT_SCAN_Y_MAX = 150
 FRONT_SCAN_MIN_PIXELS = 150
-FRONT_SCAN_STABLE_FRAMES = 10
-FRONT_SCAN_MAX_FRAMES = 30
+FRONT_SCAN_STABLE_FRAMES = 1
+FRONT_SCAN_MAX_FRAMES = 3
 front_scan_last_current_id = 0
 front_scan_last_mask = -1
 front_scan_last_count = 0
@@ -437,13 +435,6 @@ def valid_color_blob(blob, color_id):
             return False
         if blob.density() < 0.35:
             return False
-    elif color_id == 4 or color_id == 5:
-        if w * 100 < h * 30 or w * 100 > h * 250:
-            return False
-        if w * h <= BEAR_MIN_BOX_AREA:
-            return False
-        if blob.pixels() < 120:
-            return False
     else:
         if w * 100 < h * 60 or w * 100 > h * 180:
             return False
@@ -473,7 +464,6 @@ def find_color_target(img, last_box):
             blobs = None
         if not blobs:
             continue
-        representative = None
         for blob in blobs:
             if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
                 if blob.cy() < dynamic_cut_left_y + CUT_BLOB_DELTA:
@@ -493,16 +483,15 @@ def find_color_target(img, last_box):
                         best_blob = blob
                         best_color_id = color_id
                         best_score = score
-            elif (representative is None or
-                  (blob.cx(), blob.x(), -blob.pixels()) <
-                  (representative.cx(), representative.x(), -representative.pixels())):
-                representative = blob
-        if not tracking and representative is not None:
-            distance = 240 - (representative.y() + representative.h())
-            if best_blob is None or distance < best_distance:
-                best_blob = representative
-                best_color_id = color_id
-                best_distance = distance
+            else:
+                distance = 240 - (blob.y() + blob.h())
+                if (best_blob is None or distance < best_distance or
+                        (distance == best_distance and
+                         (blob.x(), -blob.pixels()) <
+                         (best_blob.x(), -best_blob.pixels()))):
+                    best_blob = blob
+                    best_color_id = color_id
+                    best_distance = distance
     if best_blob is not None:
         return (best_color_id, best_blob)
     return None

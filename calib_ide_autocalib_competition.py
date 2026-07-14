@@ -29,7 +29,7 @@ L_TARGET        = 40.0    # 测光目标 L 均值(宁欠勿过, 过曝会压掉�
 L_TOL           = 5.0     # 收敛容差
 STEP_MIN        = 0.80    # 单轮曝光调整下限
 STEP_MAX        = 1.1    # 单轮曝光调整上限
-EXPOSURE_INIT   = 1200
+EXPOSURE_INIT   = 1400
 EXPOSURE_MIN    = 100
 EXPOSURE_MAX    = 4500
 METER_FULL      = True    # True=全画面测光; False=用 METER_ROI 测光
