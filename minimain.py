@@ -193,6 +193,28 @@ front_scan_last_count = 0
 front_scan_stable_count = 0
 front_scan_total_count = 0
 
+# ======================================================================
+# 回库横向黄线检测参数
+# ======================================================================
+RETURN_YELLOW_PACKET_ID = 0xC8
+RETURN_YELLOW_THRESHOLD = [(51, 91, -32, 36, 1, 118)]
+RETURN_YELLOW_ROI_LEFT = (0, 80, 70, 160)
+RETURN_YELLOW_ROI_RIGHT = (250, 80, 70, 160)
+RETURN_YELLOW_MIN_PIXELS = 30
+RETURN_YELLOW_MIN_AREA = 30
+RETURN_YELLOW_MIN_ASPECT_X100 = 200
+RETURN_YELLOW_MAX_Y_DIFF = 10
+RETURN_YELLOW_STABLE_FRAMES = 2
+RETURN_YELLOW_STABLE_DELTA = 3
+return_yellow_last_y = -1
+return_yellow_stable_count = 0
+return_yellow_detected = False
+return_yellow_y = 0
+
+MODE_SEARCH = 0
+MODE_RETURN = 3
+openart_mode = MODE_SEARCH
+
 def reset_target_tracking_state():
     """清空上一轮搬运留下的目标锁定状态，下一帧从全局重新找场地中央目标。"""
     global lost_frame_count
@@ -206,6 +228,14 @@ def reset_target_tracking_state():
     color_track_box = None
     color_track_color_id = 0
     color_lost_count = 0
+
+def reset_return_yellow_state():
+    global return_yellow_last_y, return_yellow_stable_count
+    global return_yellow_detected, return_yellow_y
+    return_yellow_last_y = -1
+    return_yellow_stable_count = 0
+    return_yellow_detected = False
+    return_yellow_y = 0
 
 # ======================================================================
 # 单应性变换 (逆透视)
@@ -345,6 +375,11 @@ def valid_color_blob(blob, color_id):
             return False
         if blob.density() < 0.35:
             return False
+    elif color_id == 4 or color_id == 5:
+        if w * 100 < h * 30 or w * 100 > h * 250:
+            return False
+        if blob.density() < 0.25:
+            return False
     else:
         if w * 100 < h * 60 or w * 100 > h * 180:
             return False
@@ -473,6 +508,25 @@ def send_front_scan_result(current_id, mask, count):
     data[6] = (data[2] + data[3] + data[4] + data[5]) & 0xFF
     uart.write(data)
 
+_tx_return_yellow_buf = bytearray(7)
+_tx_return_yellow_buf[0] = 0xAA
+_tx_return_yellow_buf[1] = 0x55
+_tx_return_yellow_buf[2] = RETURN_YELLOW_PACKET_ID
+
+def send_return_yellow_result(valid, y):
+    """发送 AA 55 C8 status y_lo y_hi checksum。"""
+    data = _tx_return_yellow_buf
+    if valid:
+        y = clamp_int(int(y), 0, 239)
+        data[3] = 0x01
+    else:
+        y = 0
+        data[3] = 0x00
+    data[4] = y & 0xFF
+    data[5] = (y >> 8) & 0xFF
+    data[6] = (data[2] + data[3] + data[4] + data[5]) & 0xFF
+    uart.write(data)
+
 def reset_front_scan_state():
     global front_scan_last_current_id, front_scan_last_mask
     global front_scan_last_count, front_scan_stable_count, front_scan_total_count
@@ -505,6 +559,71 @@ def process_front_scan_request(img):
         front_scan_requested = False
         reset_front_scan_state()
     return True
+
+def valid_return_yellow_blob(blob):
+    w = blob.w()
+    h = blob.h()
+    if w <= 0 or h <= 0:
+        return False
+    return w * 100 >= h * RETURN_YELLOW_MIN_ASPECT_X100
+
+def detect_return_yellow_y(img):
+    try:
+        left_blobs = img.find_blobs(
+            RETURN_YELLOW_THRESHOLD, roi=RETURN_YELLOW_ROI_LEFT,
+            pixels_threshold=RETURN_YELLOW_MIN_PIXELS,
+            area_threshold=RETURN_YELLOW_MIN_AREA, merge=True)
+        right_blobs = img.find_blobs(
+            RETURN_YELLOW_THRESHOLD, roi=RETURN_YELLOW_ROI_RIGHT,
+            pixels_threshold=RETURN_YELLOW_MIN_PIXELS,
+            area_threshold=RETURN_YELLOW_MIN_AREA, merge=True)
+    except Exception:
+        return None
+    if not left_blobs or not right_blobs:
+        return None
+
+    best_y = None
+    best_pixels = -1
+    for left_blob in left_blobs:
+        if not valid_return_yellow_blob(left_blob):
+            continue
+        for right_blob in right_blobs:
+            if not valid_return_yellow_blob(right_blob):
+                continue
+            if abs(left_blob.cy() - right_blob.cy()) > RETURN_YELLOW_MAX_Y_DIFF:
+                continue
+            y = (left_blob.cy() + right_blob.cy()) // 2
+            pixels = left_blob.pixels() + right_blob.pixels()
+            if (best_y is None or y > best_y or
+                    (y == best_y and pixels > best_pixels)):
+                best_y = y
+                best_pixels = pixels
+    return best_y
+
+def process_return_yellow(img):
+    global return_yellow_last_y, return_yellow_stable_count
+    global return_yellow_detected, return_yellow_y
+    y = detect_return_yellow_y(img)
+    if y is None:
+        reset_return_yellow_state()
+        send_return_yellow_result(False, 0)
+        return
+
+    if (return_yellow_last_y >= 0 and
+            abs(y - return_yellow_last_y) <= RETURN_YELLOW_STABLE_DELTA):
+        return_yellow_stable_count += 1
+    else:
+        return_yellow_stable_count = 1
+    return_yellow_last_y = y
+
+    if return_yellow_stable_count >= RETURN_YELLOW_STABLE_FRAMES:
+        return_yellow_detected = True
+        return_yellow_y = y
+        send_return_yellow_result(True, y)
+    else:
+        return_yellow_detected = False
+        return_yellow_y = 0
+        send_return_yellow_result(False, 0)
 # 由 d040b74 的四点比赛标定参数预计算。
 H_PIX2WORLD = (
     0.5835117773019284, -0.0026766595289079054, -92.13597430406873,
@@ -585,7 +704,7 @@ def send_world_no_target():
 
 def receive_command_from_host():
     """接收RT1021主机命令"""
-    global lost_frame_count
+    global lost_frame_count, openart_mode
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
     global _cmd_rx_buf, front_scan_requested
@@ -641,17 +760,27 @@ def receive_command_from_host():
                 color_track_box = None
                 color_track_color_id = 0
                 color_lost_count = 0
-        elif command == 0x01:  # 搬运模式由主摄像头处理，从机只消费命令。
-            pass
+        elif command == 0x01:  # 搬运模式由主摄像头处理，从机退出回库视觉。
+            openart_mode = MODE_SEARCH
+            reset_return_yellow_state()
         elif command == 0x04:  # Crossline angle correction removed on slave runtime.
             pass
-        elif command == 0x05:  # Return mode is master-only; consume and ignore broadcasts.
+        elif command == 0x05:  # 旧回库信标命令已停用，仅消费该命令。
             pass
         elif command == 0x06:  # 搬运前扫描其它颜色ID
+            openart_mode = MODE_SEARCH
+            reset_return_yellow_state()
             reset_front_scan_state()
             front_scan_requested = True
+        elif command == 0x07:  # 进入回库横向黄线跟踪。
+            openart_mode = MODE_RETURN
+            front_scan_requested = False
+            reset_front_scan_state()
+            reset_return_yellow_state()
         elif command == 0x00 or command == 0x02:  # 回到寻找模式/右转完成/重置
+            openart_mode = MODE_SEARCH
             reset_target_tracking_state()
+            reset_return_yellow_state()
         return
 
 # ======================================================================
@@ -666,6 +795,11 @@ while True:
     receive_command_from_host()
 
     img = snapshot_frame()
+
+    # ===== 回库横向黄线 =====
+    if openart_mode == MODE_RETURN:
+        process_return_yellow(img)
+        continue
 
     # ===== Dynamic cut update =====
     update_dynamic_cut(img, frame_count)

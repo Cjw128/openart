@@ -205,7 +205,6 @@ color_track_active = False
 color_track_box = None
 color_track_color_id = 0
 color_lost_count = 0
-carry_target_color_id = 0
 _cmd_rx_buf = bytearray()
 front_scan_requested = False
 FRONT_SCAN_PACKET_ID = 0xC7
@@ -225,24 +224,35 @@ front_scan_total_count = 0
 # Yellow line detection parameters
 # ======================================================================
 yellow_threshold = [(51, 91, -32, 36, 1, 118)]    # Yellow LAB threshold
+RETURN_YELLOW_PACKET_ID = 0xC8
+RETURN_YELLOW_THRESHOLD = yellow_threshold
+RETURN_YELLOW_ROI_LEFT = (0, 80, 70, 160)
+RETURN_YELLOW_ROI_RIGHT = (250, 80, 70, 160)
+RETURN_YELLOW_MIN_PIXELS = 30
+RETURN_YELLOW_MIN_AREA = 30
+RETURN_YELLOW_MIN_ASPECT_X100 = 200
+RETURN_YELLOW_MAX_Y_DIFF = 10
+RETURN_YELLOW_STABLE_FRAMES = 2
+RETURN_YELLOW_STABLE_DELTA = 3
+return_yellow_last_y = -1
+return_yellow_stable_count = 0
+return_yellow_detected = False
+return_yellow_y = 0
+
 YELLOW_ROI_TOP = (0, 90, 320, 20)        # Horizontal strip centered near y=100
 YELLOW_ROI_BOTTOM = (0, 130, 320, 20)    # Horizontal strip centered near y=140
-TENNIS_YELLOW_ROI_TOP = (0, 70, 320, 50)    # Tennis carry: y=70..119
-TENNIS_YELLOW_ROI_BOTTOM = (0, 120, 320, 50) # Tennis carry: y=120..169
 YELLOW_DETECT_INTERVAL = 2              # Detect yellow line every N frames
-YELLOW_ENTER_PIXELS = 70               # Normal target: first yellow-line hit
-YELLOW_KEEP_PIXELS = 20                # Normal target: tracked yellow line
-TENNIS_YELLOW_ENTER_PIXELS = 7         # Tennis carry: first yellow-line hit
-TENNIS_YELLOW_KEEP_PIXELS = 5          # Tennis carry: tracked yellow line
+YELLOW_ENTER_PIXELS = 70                # Pixel threshold for first yellow-line hit
+YELLOW_KEEP_PIXELS = 20                 # Pixel threshold while tracking a yellow line
 YELLOW_CARRY_CONFIRM_FRAMES = 2         # Consecutive hits before carry mode treats yellow as confirmed
-YELLOW_BOTTOM_Y = 215                   # Arm disappearance detection before the line reaches the last image row
+YELLOW_BOTTOM_Y = 230                   # Arm disappearance detection after fitted-line bottom contact
+YELLOW_LOST_THRESHOLD = 2               # Consecutive misses required after bottom contact
 
 yellow_line_k = 0.0
 yellow_line_b = 0.0
 yellow_detected = False     # Whether yellow line is visible
 yellow_tracking = False      # Hysteresis state after first yellow-line hit
-yellow_lost_count = 0       # Consecutive yellow-line lost counter
-YELLOW_LOST_THRESHOLD = 2   # Consecutive per-frame misses after the line reaches a bottom corner
+yellow_lost_count = 0       # Consecutive yellow-line misses after bottom contact
 yellow_seen_in_carry = False # Whether yellow line was confirmed in carry mode
 yellow_bottom_reached_in_carry = False # Whether fitted yellow line has reached a bottom corner
 yellow_carry_confirm_count = 0 # Consecutive carry-mode yellow hits before confirmation
@@ -253,8 +263,9 @@ carry_start_frame = -1
 MODE_SEARCH = 0
 MODE_CARRY = 1
 MODE_WAIT_TURN = 2
+MODE_RETURN = 3
 
-openart_mode = MODE_SEARCH   # 0=search, 1=carry, 2=wait for turn
+openart_mode = MODE_SEARCH   # 0=search, 1=carry, 2=wait for turn, 3=return
 
 # Position flags
 POS_NO_BOUNDARY = 0x00
@@ -266,7 +277,6 @@ def reset_target_tracking_state():
     global lost_frame_count
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
-    global carry_target_color_id
 
     lost_frame_count = 0
     target_color_id = 0
@@ -275,7 +285,6 @@ def reset_target_tracking_state():
     color_track_box = None
     color_track_color_id = 0
     color_lost_count = 0
-    carry_target_color_id = 0
 
 def reset_yellow_state():
     """清空黄线状态，避免新一轮任务继承上一轮的边界/滞回。"""
@@ -291,6 +300,14 @@ def reset_yellow_state():
     yellow_detected = False
     yellow_line_k = 0.0
     yellow_line_b = 0.0
+
+def reset_return_yellow_state():
+    global return_yellow_last_y, return_yellow_stable_count
+    global return_yellow_detected, return_yellow_y
+    return_yellow_last_y = -1
+    return_yellow_stable_count = 0
+    return_yellow_detected = False
+    return_yellow_y = 0
 
 # ======================================================================
 # Homography transform for inverse perspective mapping
@@ -435,6 +452,11 @@ def valid_color_blob(blob, color_id):
             return False
         if blob.density() < 0.35:
             return False
+    elif color_id == 4 or color_id == 5:
+        if w * 100 < h * 30 or w * 100 > h * 250:
+            return False
+        if blob.density() < 0.25:
+            return False
     else:
         if w * 100 < h * 60 or w * 100 > h * 180:
             return False
@@ -562,6 +584,25 @@ def send_front_scan_result(current_id, mask, count):
     data[6] = (data[2] + data[3] + data[4] + data[5]) & 0xFF
     uart.write(data)
 
+_tx_return_yellow_buf = bytearray(7)
+_tx_return_yellow_buf[0] = 0xAA
+_tx_return_yellow_buf[1] = 0x55
+_tx_return_yellow_buf[2] = RETURN_YELLOW_PACKET_ID
+
+def send_return_yellow_result(valid, y):
+    """发送 AA 55 C8 status y_lo y_hi checksum。"""
+    data = _tx_return_yellow_buf
+    if valid:
+        y = clamp_int(int(y), 0, 239)
+        data[3] = 0x01
+    else:
+        y = 0
+        data[3] = 0x00
+    data[4] = y & 0xFF
+    data[5] = (y >> 8) & 0xFF
+    data[6] = (data[2] + data[3] + data[4] + data[5]) & 0xFF
+    uart.write(data)
+
 def reset_front_scan_state():
     global front_scan_last_current_id, front_scan_last_mask
     global front_scan_last_count, front_scan_stable_count, front_scan_total_count
@@ -594,6 +635,71 @@ def process_front_scan_request(img):
         front_scan_requested = False
         reset_front_scan_state()
     return True
+
+def valid_return_yellow_blob(blob):
+    w = blob.w()
+    h = blob.h()
+    if w <= 0 or h <= 0:
+        return False
+    return w * 100 >= h * RETURN_YELLOW_MIN_ASPECT_X100
+
+def detect_return_yellow_y(img):
+    try:
+        left_blobs = img.find_blobs(
+            RETURN_YELLOW_THRESHOLD, roi=RETURN_YELLOW_ROI_LEFT,
+            pixels_threshold=RETURN_YELLOW_MIN_PIXELS,
+            area_threshold=RETURN_YELLOW_MIN_AREA, merge=True)
+        right_blobs = img.find_blobs(
+            RETURN_YELLOW_THRESHOLD, roi=RETURN_YELLOW_ROI_RIGHT,
+            pixels_threshold=RETURN_YELLOW_MIN_PIXELS,
+            area_threshold=RETURN_YELLOW_MIN_AREA, merge=True)
+    except Exception:
+        return None
+    if not left_blobs or not right_blobs:
+        return None
+
+    best_y = None
+    best_pixels = -1
+    for left_blob in left_blobs:
+        if not valid_return_yellow_blob(left_blob):
+            continue
+        for right_blob in right_blobs:
+            if not valid_return_yellow_blob(right_blob):
+                continue
+            if abs(left_blob.cy() - right_blob.cy()) > RETURN_YELLOW_MAX_Y_DIFF:
+                continue
+            y = (left_blob.cy() + right_blob.cy()) // 2
+            pixels = left_blob.pixels() + right_blob.pixels()
+            if (best_y is None or y > best_y or
+                    (y == best_y and pixels > best_pixels)):
+                best_y = y
+                best_pixels = pixels
+    return best_y
+
+def process_return_yellow(img):
+    global return_yellow_last_y, return_yellow_stable_count
+    global return_yellow_detected, return_yellow_y
+    y = detect_return_yellow_y(img)
+    if y is None:
+        reset_return_yellow_state()
+        send_return_yellow_result(False, 0)
+        return
+
+    if (return_yellow_last_y >= 0 and
+            abs(y - return_yellow_last_y) <= RETURN_YELLOW_STABLE_DELTA):
+        return_yellow_stable_count += 1
+    else:
+        return_yellow_stable_count = 1
+    return_yellow_last_y = y
+
+    if return_yellow_stable_count >= RETURN_YELLOW_STABLE_FRAMES:
+        return_yellow_detected = True
+        return_yellow_y = y
+        send_return_yellow_result(True, y)
+    else:
+        return_yellow_detected = False
+        return_yellow_y = 0
+        send_return_yellow_result(False, 0)
 
 # Precomputed from the d040b74 four-point competition calibration.
 H_PIX2WORLD = (
@@ -688,7 +794,6 @@ def receive_command_from_host():
     global lost_frame_count, openart_mode, carry_start_frame
     global target_color_id, host_color_id_received
     global color_track_active, color_track_box, color_track_color_id, color_lost_count
-    global carry_target_color_id
     global _cmd_rx_buf, front_scan_requested
 
     available = uart.any()
@@ -742,27 +847,33 @@ def receive_command_from_host():
                 color_track_box = None
                 color_track_color_id = 0
                 color_lost_count = 0
-                carry_target_color_id = 0
         elif command == 0x01:  # Enter carry mode
-            # 仅在主控锁色与当前本地跟踪结果一致时，确认本轮实际搬运颜色。
-            if color_track_active and color_track_color_id == target_color_id:
-                carry_target_color_id = color_track_color_id
-            else:
-                carry_target_color_id = 0
+            front_scan_requested = False
+            reset_front_scan_state()
+            reset_return_yellow_state()
             openart_mode = MODE_CARRY
             carry_start_frame = frame_count
             reset_yellow_state()
         elif command == 0x04:  # Cross-line angle correction is disabled in competition runtime.
             pass
-        elif command == 0x05:  # Return vision is disabled; consume and ignore broadcasts.
+        elif command == 0x05:  # Legacy return-beacon command is disabled; consume it only.
             pass
         elif command == 0x06:  # Pre-carry front scan for other color IDs
+            openart_mode = MODE_SEARCH
+            reset_return_yellow_state()
             reset_front_scan_state()
             front_scan_requested = True
+        elif command == 0x07:  # Enter return-mode horizontal yellow-line tracking.
+            openart_mode = MODE_RETURN
+            front_scan_requested = False
+            reset_front_scan_state()
+            reset_yellow_state()
+            reset_return_yellow_state()
         elif command == 0x00 or command == 0x02:  # Reset to search mode or turn completed
             openart_mode = MODE_SEARCH
             reset_target_tracking_state()
             reset_yellow_state()
+            reset_return_yellow_state()
         return
 
 def pick_largest_blob(blobs):
@@ -789,10 +900,6 @@ def current_pos_flag(frame_count):
     global yellow_lost_count, yellow_seen_in_carry, yellow_bottom_reached_in_carry
     global yellow_carry_confirm_count, openart_mode
     if openart_mode == MODE_CARRY:
-        # 网球搬运时，黄线拟合成功即视为已越线，不再等待触底和丢线状态机确认。
-        if carry_target_color_id == 3 and yellow_detected:
-            openart_mode = MODE_WAIT_TURN
-            return POS_CROSSED
         if carry_start_frame >= 0 and frame_count - carry_start_frame < YELLOW_CARRY_IGNORE_FRAMES:
             yellow_lost_count = 0
             return POS_NO_BOUNDARY
@@ -829,16 +936,10 @@ def update_yellow_detection(img, frame_count):
     if not detect_every_frame and frame_count % YELLOW_DETECT_INTERVAL != 0:
         return
 
-    if openart_mode == MODE_CARRY and carry_target_color_id == 3:
-        top_roi = TENNIS_YELLOW_ROI_TOP
-        bottom_roi = TENNIS_YELLOW_ROI_BOTTOM
-        yellow_pixels_threshold = (TENNIS_YELLOW_KEEP_PIXELS if yellow_tracking
-                                   else TENNIS_YELLOW_ENTER_PIXELS)
-    else:
-        top_roi = YELLOW_ROI_TOP
-        bottom_roi = YELLOW_ROI_BOTTOM
-        yellow_pixels_threshold = (YELLOW_KEEP_PIXELS if yellow_tracking
-                                   else YELLOW_ENTER_PIXELS)
+    top_roi = YELLOW_ROI_TOP
+    bottom_roi = YELLOW_ROI_BOTTOM
+    yellow_pixels_threshold = (YELLOW_KEEP_PIXELS if yellow_tracking
+                               else YELLOW_ENTER_PIXELS)
 
     top_blobs = img.find_blobs(yellow_threshold, roi=top_roi,
                                pixels_threshold=yellow_pixels_threshold,
@@ -889,6 +990,14 @@ while True:
     receive_command_from_host()
 
     img = snapshot_frame()
+
+    # ===== Return-mode horizontal yellow line =====
+    if openart_mode == MODE_RETURN:
+        process_return_yellow(img)
+        if frame_count % 10 == 0:
+            gc.collect()
+        feed_watchdog()
+        continue
 
     # ===== Dynamic cut update =====
     update_dynamic_cut(img, frame_count)
