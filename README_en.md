@@ -17,7 +17,7 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 - Current competition/offline deployment uses the single-file layout. `main.py` and `minimain.py` keep the complete master-role and slave-role logic.
 - The multi-file runtime modules have been removed. The deployment no longer uses `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, or `openart_calibration.py`.
-- White-bear target handling now uses LAB color blobs like the other targets. Color target detection, yellow-line state, UART protocol, IPM, and the main loop live inside the corresponding single-file runtime; neither car currently performs vision-based return-to-depot handling.
+- White-bear handling uses LAB color blobs like the other targets. Color detection, yellow-line state, UART protocol, IPM, and the main loop live inside each single-file runtime. The legacy `0x05` return-beacon path remains disabled, but both cars support `0x07` horizontal return-line detection and report `0xC8`; only the master runs the carry-crossing state machine.
 - Calibration, threshold tuning, and pre-carry color-scan checks remain standalone IDE / test scripts, not official offline entrypoints.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
 - Keep all structure notes and iteration records in `README_ch.md` / `README_en.md`, and update both languages together.
@@ -25,6 +25,46 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-16 - v0.10.0 - Model-guided field calibration and stable runtime recognition
+
+Scope: `calib_ide_autocalib_competition.py`, `main.py`, `minimain.py`, `front_obstacle_scan_test.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changed:
+
+- Upgraded the competition calibration script into a continuous five-target workflow, currently identified as build `2026-07-15 red-bag-bear-core-v21`. The model is loaded from `/sd/dataset_25000_exposure.tflite` only by the IDE calibration script; the deployed master and slave runtimes remain LAB-blob based and do not require the model.
+- Lowered the full-frame exposure target from `L=40` to `L=38`, tightened convergence to `±1`, and moved upper-quartile highlight protection to `Luq=92`, reducing chroma loss on white bears and other bright surfaces.
+- The selected exposure now updates the `exposure_us` row in the official file immediately while preserving existing ground and five-color rows. Exposure therefore changes even if a later target fails calibration, so a known-good file should be backed up before recalibration.
+- Reworked near `ground` and far `ground2` collection into tiled sampling. Tiles intersecting model boxes are excluded and LAB-median outliers are rejected before each six-value ground box is produced, reducing contamination from targets, hands, and isolated highlights.
+- Replaced fixed model-box expansion with multi-ray LAB edge scans on all four sides. Each ray searches from an internal core and confirms the boundary backward from continuous ground or stable background; unreliable sides fall back to conservative class-specific bear / ball / bag expansion.
+- The tennis ball now uses a compact central core plus an optional inset lower strip. The strip is excluded when it matches ground, has excessive IQR, or differs too much from the core A/B medians, preserving dark ball edges without absorbing blue floor.
+- Bag thresholds use a core for ground-conflict decisions and merge edge strips only after LAB consistency checks. Tennis, bag, brown-bear, and white-bear A/B span limits are independently set to `75 / 60 / 75 / 60`.
+- Bear expansion is limited below the object and the bottom of the statistical ROI is removed. The brown-bear L lower bound cannot fall more than `14` below its body median, preventing a large floor shadow from entering the brown threshold.
+- Enforced the collection order `either bag -> the other bag -> tennis ball -> brown bear -> white bear`. Because the model exposes only a generic bear class, the two bears are assigned by phase. A completed object must leave the view for eight consecutive clear frames before the next slot can collect.
+- Each target requires ten accepted samples. Brown bear, white bear, and red bag now require stable model boxes; when the red bag moves to another location, three stable frames at the new location automatically rebase and restart its samples instead of remaining locked to the old box.
+- Added a ten-frame model/blob recheck for every generated threshold. It checks missing blobs, disjoint boxes, center distance, overlap, relative area, side coverage, and frame-to-frame center/size/area jumps. Three consecutive bad frames, four bad frames in total, or two severe jumps invalidate the threshold and immediately restart collection.
+- After both bears finish, their thresholds are forcibly separated on the LAB channel with the greatest median difference. The medians must differ by at least `8`, with a `2`-unit margin on each side of the cut; a final audit requires zero overlap and each median to remain inside its own threshold. Both bear slots are discarded if the audit fails.
+- Only five complete, audited slots replace `/sd/color_thr.txt`; incomplete output goes to `/sd/color_thr_partial.txt`. A runtime adopts file-based exposure, colors, and ground only when the official file contains all slots `1..5`.
+- Both runtimes now parse `ground` and `ground2` and integer-average all six LAB bounds coordinate by coordinate for dynamic blue-ground detection, falling back to the available single row. When white-bear A/B genuinely overlaps the averaged ground box, L is used to lift the white threshold away from ground.
+- The master dynamic cut uses five distributed vertical strips, requires at least three valid strips spanning `180 px`, and adds ground-gap bridging, robust vertical selection, bounded per-frame movement, and EMA. Target search begins `10 px` above the detected boundary, while targets crossing the boundary remain eligible.
+- The slave now averages the valid tops of five strips when at least two are available and applies EMA. It is not the left/right interpolated sloped line documented by v0.9.9, and the current documentation now reflects the actual implementation.
+- Reworked all-color acquisition into one non-merging `find_blobs()` pass. Multi-bit codes caused by overlapping thresholds are treated as ambiguous instead of defaulting to the lowest color ID; locked targets continue through local-ROI, IoU, center-distance, and area-continuity checks.
+- Brown and white bear fragments use `12 px` and `10 px` merge margins. White-bear output boxes are smoothed with `2/3` old and `1/3` new coordinates to stop monitor-box size oscillation, while severe relocations switch directly to the new box.
+- Added tennis-shadow relationship filtering. A brown candidate below the ball, overlapping at least `60%` horizontally and no larger than `55%` of the ball box, is rejected as a contact shadow; a brown-bear lock also scans the tennis threshold for the reference ball.
+- Replaced board-side 8x8 homography solving and four-corner averaging with a precomputed matrix and the target's bottom-center contact point. X is limited to `±250 cm` and Y to `0..300 cm`, avoiding firmware tuple/type arithmetic failures and horizon-induced sign flips.
+- Reduced the `0x06` pre-carry scan threshold to `60` pixels. Matching `(current_id, mask, count)` results return early after six consecutive frames; observation stops at twelve frames and sends that frame's current result if it never stabilized. The carried target remains excluded by IoU or center distance, and the reply remains the seven-byte `0xC7` packet.
+- Synchronized `front_obstacle_scan_test.py` with current color pixel/area limits, one-pass multicolor scanning, horizontal dynamic ROI, and bottommost carried-target exclusion so candidates and masks can be inspected without the controller.
+- Retuned the master carry-yellow LAB threshold to `(62, 100, -57, 13, -8, 127)`. Candidates substantially overlapping the tracked object, near-vertical fits, and slopes beyond `±45°` are rejected; the accepted fit is drawn in the debug view.
+- Kept the existing dual-car `0x07` horizontal return-line flow and documented the full seven-byte `0xC7` and `0xC8` layouts in the root README. Master and slave retain independent return-yellow LAB thresholds.
+- Added OpenART firmware guards: explicit scalar/integer loops replace generator-sensitive parsing, calibration values are formatted field by field and read back after writing, LAB medians are unwrapped and validated before arithmetic, unsupported `find_blobs(..., margin=...)` calls fall back automatically, and invalid world/display data or a single color-detection error no longer terminates the main loop.
+
+Deployment and verification:
+
+- Run the calibration script in the OpenART IDE, complete all five targets, and confirm `[bear] PASS ... overlap=0`. A partial file must never be renamed and deployed as the official calibration.
+- Deploy `main.py` to the master and `minimain.py` to the slave, each as `/sd/main.py`, and use the `/sd/color_thr.txt` generated by that specific camera.
+- `python -m py_compile calib_ide_autocalib_competition.py main.py minimain.py front_obstacle_scan_test.py` passed.
+- OpenART `mpy-cross` compilation passed for all four changed scripts, and `git diff --check` passed.
+- Desktop checks cannot reproduce camera APIs, field lighting, or MicroPython firmware behavior. Both OpenART Plus boards still require field validation of all five targets, bear separation, tennis-shadow rejection, dynamic cropping, the six-frame `0x06` result, `0x07/0xC8` return-line reporting, and long-running stability.
 
 ### 2026-07-14 - v0.9.9 - Tennis carry yellow-line special case and slave cut-line fix
 

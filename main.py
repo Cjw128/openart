@@ -81,10 +81,42 @@ all_color_thresholds = [
     (21, 52, -77, 25, 6, 99),        # Color 4: brown teddy bear; tune on field
     (51, 100, -5, 5, -38, 18)      # Color 5: white teddy bear
 ]
+WHT_BEAR_GND_L_GAP = 2
+
+def _average_ground_threshold(ground_rows):
+    ground = ground_rows.get('ground')
+    ground2 = ground_rows.get('ground2')
+    if ground and ground2:
+        averaged = []
+        for i in range(6):
+            averaged.append((ground[i] + ground2[i]) // 2)
+        return tuple(averaged)
+    return ground if ground else ground2
+
+def _separate_white_bear_from_ground(threshold, ground):
+    if not threshold or not ground:
+        return threshold
+    a_overlap = not (threshold[3] < ground[2] or ground[3] < threshold[2])
+    b_overlap = not (threshold[5] < ground[4] or ground[5] < threshold[4])
+    if not (a_overlap and b_overlap):
+        return threshold
+    if (threshold[0] + threshold[1]) <= (ground[0] + ground[1]):
+        return threshold
+    l0 = max(threshold[0], min(ground[1] + WHT_BEAR_GND_L_GAP,
+                               threshold[1]))
+    return (l0, threshold[1], threshold[2], threshold[3],
+            threshold[4], threshold[5])
+
+def _parse_int_values(parts):
+    values = []
+    for part in parts:
+        values.append(int(part))
+    return tuple(values)
 
 def _load_calibrated_params(path='/sd/color_thr.txt'):
     try:
         rows = {}
+        ground_rows = {}
         exposure = None
         with open(path, 'r') as f:
             for line in f:
@@ -98,35 +130,46 @@ def _load_calibrated_params(path='/sd/color_thr.txt'):
                         exposure = None
                     continue
                 if line.startswith('ground=') or line.startswith('ground2='):
+                    try:
+                        name, raw_values = line.split('=', 1)
+                        values = _parse_int_values(raw_values.split(','))
+                        if len(values) == 6:
+                            ground_rows[name] = values
+                    except Exception:
+                        pass
                     continue
                 parts = line.split(',')
                 if len(parts) == 7:
                     slot = int(parts[0])
-                    values = tuple(int(p) for p in parts[1:])
+                    values = _parse_int_values(parts[1:])
                 elif len(parts) == 6:
                     slot = len(rows) + 1
-                    values = tuple(int(p) for p in parts)
+                    values = _parse_int_values(parts)
                 else:
                     continue
                 if 1 <= slot <= 5 and len(values) == 6:
                     rows[slot] = values
         if len(rows) == 5:
-            return [rows[i] for i in range(1, 6)], exposure
-        return None, None
+            loaded_rows = []
+            for slot in range(1, 6):
+                loaded_rows.append(rows[slot])
+            return (loaded_rows, exposure, _average_ground_threshold(ground_rows))
+        return None, None, None
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
-_loaded, _loaded_exposure = _load_calibrated_params()
+_loaded, _loaded_exposure, _loaded_ground_threshold = _load_calibrated_params()
 if _loaded:
     all_color_thresholds = _loaded
+    all_color_thresholds[4] = _separate_white_bear_from_ground(
+        all_color_thresholds[4], _loaded_ground_threshold)
     if _loaded_exposure is not None:
         sensor.set_auto_exposure(False, exposure_us=_loaded_exposure)
 
-_color_threshold_groups = [[threshold] for threshold in all_color_thresholds]
-
-COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
-_single_color_ids = [[color_id] for color_id in COLOR_SEARCH_ORDER]
+_color_threshold_groups = []
+for threshold in all_color_thresholds:
+    _color_threshold_groups.append([threshold])
 
 COLOR_LOST_FRAMES = 5
 COLOR_TRACK_MARGIN = 45
@@ -134,6 +177,8 @@ COLOR_MIN_PIXELS = 70
 COLOR_MIN_AREA = 100
 TENNIS_MIN_PIXELS = 80
 TENNIS_MIN_AREA = 80
+NEAR_NOISE_Y_MIN = 170
+NEAR_NOISE_BOX_AREA = 400
 _color_blob_limits = (
     (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
     (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
@@ -141,6 +186,8 @@ _color_blob_limits = (
     (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
     (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
 )
+MULTICOLOR_MIN_PIXELS = min(COLOR_MIN_PIXELS, TENNIS_MIN_PIXELS)
+MULTICOLOR_MIN_AREA = min(COLOR_MIN_AREA, TENNIS_MIN_AREA)
 TARGET_BOX_COLORS = (
     (0, 170, 255), (255, 0, 0), (0, 255, 0),
     (160, 96, 32), (255, 255, 255),
@@ -159,20 +206,27 @@ MAX_LOST_FRAMES = 30                    # Maximum lost frames, about 0.5s at 60 
 # ======================================================================
 DETECT_Y_MIN = 8           # Ignore image rows above this Y value
 DETECT_ROI = (0, DETECT_Y_MIN, 320, 240 - DETECT_Y_MIN)
+COLOR_DETECT_Y_MAX = 230   # Color targets ignore image rows y=230..239.
 
 # ======================================================================
-# Dynamic cut line (based on blue-ground strips on left/right)
+# Dynamic cut line (kept in sync with the competition calibration preview)
 # ======================================================================
 ENABLE_DYNAMIC_CUT = True
-# 深蓝赛道地面 LAB 阈值（B 通道必须为负=偏蓝）。上场后用 IDE 阈值编辑器实测微调：
-# 重点看 B_max（约 -15 ~ -25）和 L 范围（深蓝偏暗，L 上限别太高）。
-BLUE_GROUND_THRESHOLD = [(0, 55, -30, 45, -90, -7)]
-CUT_BLOB_MIN_H = 12          # 条带内蓝色块最小高度，滤掉零星蓝色噪点/浅蓝沙包边缘
-CUT_BLOB_BOTTOM_MARGIN = 25  # 蓝色块底部须延伸到条带底部附近，才认为是连续的赛道地面
-CUT_GAP_BRIDGE = 10          # 向上桥接的最大间隙(px)：黄线横穿会把蓝地面切成上下两段，跨过它继续延伸
-# 多条竖直采样带横跨画面，使用所有有效蓝布上界的平均值生成水平裁切线。
+# 动态裁切使用 ground/ground2 六个 LAB 边界的逐项平均；缺失时使用单组或兜底值。
+BLUE_GROUND_THRESHOLD = ([_loaded_ground_threshold]
+                         if _loaded_ground_threshold
+                         else [(25, 62, -3, 57, -96, 127)])
+CUT_BLOB_MIN_H = 12
+CUT_BLOB_BOTTOM_MARGIN = 25
+CUT_GAP_BRIDGE = 10
+# 多条竖直采样带横跨画面，以横向分布和稳健分位数生成水平裁切线。
 CUT_STRIP_XS = (10, 85, 160, 235, 310)
-CUT_MIN_VALID_STRIPS = 2   # 至少几条带看到蓝地面才认为裁切线有效
+CUT_MIN_VALID_STRIPS = 3
+CUT_SINGLE_STRIP_MAX_LEAD = 40
+CUT_MIN_VALID_X_SPAN = 180
+CUT_BAFFLE_SPREAD_PX = 30
+CUT_MAX_STEP_UP = 5
+CUT_MAX_STEP_DOWN = 16
 CUT_STRIP_HALF_W = 2
 CUT_SCAN_Y_MIN = 0
 CUT_SCAN_Y_MAX = 140
@@ -194,6 +248,15 @@ TRACK_MAX_JUMP_PX = 90
 TRACK_MAX_JUMP2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
 TRACK_AREA_CHANGE_MAX_PERCENT = 60
 TRACK_MIN_IOU = 0.05
+BRN_BEAR_MERGE_MARGIN = 12
+BRN_BEAR_BALL_SHADOW_MAX_AREA_PERCENT = 55
+BRN_BEAR_BALL_SHADOW_X_OVERLAP_PERCENT = 60
+BRN_BEAR_BALL_SHADOW_Y_MARGIN = 6
+WHT_BEAR_MERGE_MARGIN = 10
+WHT_BEAR_BOX_EMA_NEW_NUM = 1
+WHT_BEAR_BOX_EMA_DEN = 3
+WHT_BEAR_SMOOTH_MAX_JUMP_PX = 55
+WHT_BEAR_SMOOTH_MAX_JUMP2 = WHT_BEAR_SMOOTH_MAX_JUMP_PX * WHT_BEAR_SMOOTH_MAX_JUMP_PX
 
 dynamic_cut_left_y = DETECT_Y_MIN
 dynamic_cut_valid = False
@@ -212,9 +275,9 @@ FRONT_SCAN_EXCLUDE_IOU = 0.20
 FRONT_SCAN_EXCLUDE_CENTER_PX = 35
 FRONT_SCAN_EXCLUDE_CENTER2 = FRONT_SCAN_EXCLUDE_CENTER_PX * FRONT_SCAN_EXCLUDE_CENTER_PX
 FRONT_SCAN_Y_MAX = 150
-FRONT_SCAN_MIN_PIXELS = 150
-FRONT_SCAN_STABLE_FRAMES = 1
-FRONT_SCAN_MAX_FRAMES = 3
+FRONT_SCAN_MIN_PIXELS = 60
+FRONT_SCAN_STABLE_FRAMES = 6
+FRONT_SCAN_MAX_FRAMES = 12
 front_scan_last_current_id = 0
 front_scan_last_mask = -1
 front_scan_last_count = 0
@@ -223,7 +286,7 @@ front_scan_total_count = 0
 # ======================================================================
 # Yellow line detection parameters
 # ======================================================================
-yellow_threshold = [(51, 91, -32, 36, 1, 118)]    # Yellow LAB threshold
+yellow_threshold = [(62, 100, -57, 13, -8, 127)]    # Yellow LAB threshold
 RETURN_YELLOW_PACKET_ID = 0xC8
 RETURN_YELLOW_THRESHOLD = yellow_threshold
 RETURN_YELLOW_ROI_LEFT = (0, 80, 70, 160)
@@ -245,7 +308,10 @@ YELLOW_DETECT_INTERVAL = 2              # Detect yellow line every N frames
 YELLOW_ENTER_PIXELS = 70                # Pixel threshold for first yellow-line hit
 YELLOW_KEEP_PIXELS = 20                 # Pixel threshold while tracking a yellow line
 YELLOW_CARRY_CONFIRM_FRAMES = 2         # Consecutive hits before carry mode treats yellow as confirmed
-YELLOW_BOTTOM_Y = 230                   # Arm disappearance detection after fitted-line bottom contact
+YELLOW_MIN_FIT_DX = 30                  # Reject near-vertical fits commonly formed by the carried object
+YELLOW_MAX_FIT_SLOPE_X100 = 100         # Yellow boundary must stay within +/-45 degrees
+YELLOW_TARGET_OVERLAP_PERCENT = 60      # Reject yellow blobs mostly contained by the tracked target
+YELLOW_BOTTOM_Y = 240                   # Arm disappearance detection after fitted-line bottom contact
 YELLOW_LOST_THRESHOLD = 2               # Consecutive misses required after bottom contact
 
 yellow_line_k = 0.0
@@ -324,10 +390,6 @@ def clamp_int(v, lo, hi):
     return v
 
 def pick_top_y_from_strip(blobs):
-    # 在竖条带内找"从底部向上连续延伸的深蓝地面"的最高点。
-    # 1) 种子段：色块够高且底部贴近扫描区下沿，避免场外零星蓝色把裁切线误抬高；
-    # 2) 桥接：黄线横穿条带会把蓝地面切成上下两段，允许跨过 <=CUT_GAP_BRIDGE 的
-    #    间隙继续向上延伸，使裁切线走到赛道真正的远边缘而不是吸附在黄线上。
     if not blobs:
         return None
     top_y = None
@@ -340,8 +402,7 @@ def pick_top_y_from_strip(blobs):
             top_y = b.y()
     if top_y is None:
         return None
-    # 只桥接一次（黄线只横穿一次），且上方接续段本身也要够高；
-    # 否则零星蓝色噪点会被迭代桥接一级级把裁切线爬高。
+    # 黄线可能把地面分成上下两段，只向上桥接一次小间隙。
     bridged_top = None
     for b in blobs:
         if b.h() < CUT_BLOB_MIN_H:
@@ -361,26 +422,46 @@ def update_dynamic_cut(img, frame_count):
     if (not ENABLE_DYNAMIC_CUT) or (frame_count % CUT_UPDATE_INTERVAL != 0):
         return
 
-    top_y_sum = 0
-    valid_strips = 0
-    for roi in CUT_STRIP_ROIS:
+    top_ys = []
+    strip_xs = []
+    for i in range(len(CUT_STRIP_ROIS)):
+        roi = CUT_STRIP_ROIS[i]
         blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=roi,
                                pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
         ty = pick_top_y_from_strip(blobs)
         if ty is not None:
-            valid_strips += 1
-            top_y_sum += ty
+            top_ys.append(ty)
+            strip_xs.append(CUT_STRIP_XS[i])
+
+    valid_strips = len(top_ys)
+    if valid_strips >= CUT_MIN_VALID_STRIPS:
+        if max(strip_xs) - min(strip_xs) < CUT_MIN_VALID_X_SPAN:
+            valid_strips = 0
+
+    top_y_pick = None
+    if valid_strips >= 1:
+        top_ys.sort()
+        pick_i = (valid_strips - 1) * 2 // 3
+        top_y_pick = top_ys[pick_i]
+        if valid_strips >= 3 and top_ys[pick_i] - top_ys[0] > CUT_BAFFLE_SPREAD_PX:
+            top_y_pick = top_ys[pick_i]
+        elif valid_strips >= 2 and top_ys[1] - top_ys[0] > CUT_SINGLE_STRIP_MAX_LEAD:
+            top_y_pick = top_ys[1]
 
     if valid_strips >= CUT_MIN_VALID_STRIPS:
-        top_y_average = top_y_sum // valid_strips
         dynamic_cut_miss_count = 0
         if not dynamic_cut_valid:
-            dynamic_cut_left_y = top_y_average
+            dynamic_cut_left_y = top_y_pick
             dynamic_cut_valid = True
         else:
-            # 双向对称 EMA：单帧噪声不会瞬间把线顶高（棘轮效应），转弯时也能平滑跟随
             a = CUT_EMA_ALPHA
-            dynamic_cut_left_y = int(a * top_y_average + (1.0 - a) * dynamic_cut_left_y)
+            delta = top_y_pick - dynamic_cut_left_y
+            if delta < -CUT_MAX_STEP_UP:
+                top_y_pick = dynamic_cut_left_y - CUT_MAX_STEP_UP
+            elif delta > CUT_MAX_STEP_DOWN:
+                top_y_pick = dynamic_cut_left_y + CUT_MAX_STEP_DOWN
+            dynamic_cut_left_y = int(
+                a * top_y_pick + (1.0 - a) * dynamic_cut_left_y)
 
         dynamic_cut_left_y = clamp_int(dynamic_cut_left_y, DETECT_Y_MIN, CUT_SCAN_Y_MAX)
     else:
@@ -431,21 +512,51 @@ def box_area_change_percent(a, b):
         return 1000
     return abs(area_a - area_b) * 100 // area_b
 
+def stabilize_target_box(previous, current, color_id):
+    if color_id != 5 or previous is None:
+        return current
+    if (center_dist2(previous, current) > WHT_BEAR_SMOOTH_MAX_JUMP2
+            and box_iou(previous, current) < TRACK_MIN_IOU):
+        return current
+    old_num = WHT_BEAR_BOX_EMA_DEN - WHT_BEAR_BOX_EMA_NEW_NUM
+    values = []
+    for i in range(4):
+        value = (previous[i] * old_num
+                 + current[i] * WHT_BEAR_BOX_EMA_NEW_NUM
+                 + WHT_BEAR_BOX_EMA_DEN // 2) // WHT_BEAR_BOX_EMA_DEN
+        values.append(value)
+    x = clamp_int(values[0], 0, 319)
+    y = clamp_int(values[1], 0, 239)
+    w = clamp_int(values[2], 1, 320 - x)
+    h = clamp_int(values[3], 1, 240 - y)
+    return (x, y, w, h)
+
 def make_roi_from_box(box):
     if not box:
-        return dynamic_detect_roi
+        x, y, w, h = dynamic_detect_roi
+        y1 = min(y + h, COLOR_DETECT_Y_MAX)
+        return (x, y, w, max(1, y1 - y))
     x, y, w, h = box
     y_floor = dynamic_detect_roi[1] if ENABLE_DYNAMIC_CUT and dynamic_cut_valid else DETECT_Y_MIN
+    y_floor = clamp_int(y_floor, DETECT_Y_MIN, COLOR_DETECT_Y_MAX - 1)
     x0 = clamp_int(x - COLOR_TRACK_MARGIN, 0, 319)
-    y0 = clamp_int(y - COLOR_TRACK_MARGIN, y_floor, 239)
+    y0 = clamp_int(y - COLOR_TRACK_MARGIN, y_floor, COLOR_DETECT_Y_MAX - 1)
     x1 = clamp_int(x + w + COLOR_TRACK_MARGIN, x0 + 1, 320)
-    y1 = clamp_int(y + h + COLOR_TRACK_MARGIN, y0 + 1, 240)
+    y1 = clamp_int(y + h + COLOR_TRACK_MARGIN, y0 + 1, COLOR_DETECT_Y_MAX)
     return (x0, y0, x1 - x0, y1 - y0)
 
-def valid_color_blob(blob, color_id):
+def valid_color_blob(blob, color_id, pixels_threshold_override=0):
     w = blob.w()
     h = blob.h()
     if w <= 0 or h <= 0:
+        return False
+    box_area = w * h
+    if blob.y() > NEAR_NOISE_Y_MIN and box_area < NEAR_NOISE_BOX_AREA:
+        return False
+    pixels_threshold, area_threshold = _color_blob_limits[color_id - 1]
+    if pixels_threshold_override > 0:
+        pixels_threshold = pixels_threshold_override
+    if blob.pixels() < pixels_threshold or box_area < area_threshold:
         return False
     if color_id == 3:
         if w * 100 < h * 45 or w * 100 > h * 185:
@@ -464,56 +575,178 @@ def valid_color_blob(blob, color_id):
             return False
     return True
 
+def color_id_from_blob_code(code):
+    # Overlapping thresholds are ambiguous; never resolve them by lower ID.
+    if code <= 0 or code & (code - 1):
+        return 0
+    color_id = 1
+    while code > 1:
+        code >>= 1
+        color_id += 1
+    if color_id > len(all_color_thresholds):
+        return 0
+    return color_id
+
+def find_color_blobs_once(img, roi, fixed_color_id=0, pixels_threshold_override=0):
+    if fixed_color_id > 0:
+        thresholds = _color_threshold_groups[fixed_color_id - 1]
+        pixels_threshold, area_threshold = _color_blob_limits[fixed_color_id - 1]
+        merge = True
+    else:
+        thresholds = all_color_thresholds
+        pixels_threshold = MULTICOLOR_MIN_PIXELS
+        area_threshold = MULTICOLOR_MIN_AREA
+        # Do not merge connected regions belonging to different color codes.
+        merge = False
+    if pixels_threshold_override > 0:
+        pixels_threshold = pixels_threshold_override
+    try:
+        if fixed_color_id == 4 or fixed_color_id == 5:
+            margin = (BRN_BEAR_MERGE_MARGIN if fixed_color_id == 4
+                      else WHT_BEAR_MERGE_MARGIN)
+            try:
+                return img.find_blobs(thresholds, roi=roi,
+                                      pixels_threshold=pixels_threshold,
+                                      area_threshold=area_threshold, merge=True,
+                                      margin=margin)
+            except TypeError:
+                pass
+        return img.find_blobs(thresholds, roi=roi,
+                              pixels_threshold=pixels_threshold,
+                              area_threshold=area_threshold, merge=merge)
+    except Exception:
+        return None
+
+def find_merged_bear_blobs(img, roi, color_id):
+    if color_id not in (4, 5) or len(_color_threshold_groups) < color_id:
+        return None
+    index = color_id - 1
+    pixels_threshold, area_threshold = _color_blob_limits[index]
+    margin = (BRN_BEAR_MERGE_MARGIN if color_id == 4
+              else WHT_BEAR_MERGE_MARGIN)
+    try:
+        try:
+            return img.find_blobs(_color_threshold_groups[index], roi=roi,
+                                  pixels_threshold=pixels_threshold,
+                                  area_threshold=area_threshold, merge=True,
+                                  margin=margin)
+        except TypeError:
+            return img.find_blobs(_color_threshold_groups[index], roi=roi,
+                                  pixels_threshold=pixels_threshold,
+                                  area_threshold=area_threshold, merge=True)
+    except Exception:
+        return None
+
+def brown_blob_is_ball_shadow(brown, ball_blobs):
+    bx0 = brown.x()
+    bx1 = bx0 + brown.w()
+    brown_area = brown.w() * brown.h()
+    for ball in ball_blobs:
+        ball_area = ball.w() * ball.h()
+        if brown_area * 100 > ball_area * BRN_BEAR_BALL_SHADOW_MAX_AREA_PERCENT:
+            continue
+        overlap_x = min(bx1, ball.x() + ball.w()) - max(bx0, ball.x())
+        if overlap_x <= 0:
+            continue
+        if (overlap_x * 100
+                < min(brown.w(), ball.w()) * BRN_BEAR_BALL_SHADOW_X_OVERLAP_PERCENT):
+            continue
+        if brown.y() < ball.cy():
+            continue
+        if brown.y() > ball.y() + ball.h() + BRN_BEAR_BALL_SHADOW_Y_MARGIN:
+            continue
+        return True
+    return False
+
 def find_color_target(img, last_box):
-    color_ids = (_single_color_ids[target_color_id - 1]
-                 if target_color_id > 0 else COLOR_SEARCH_ORDER)
-    roi = make_roi_from_box(last_box)
-    tracking = last_box is not None
+    tracking = last_box is not None and target_color_id > 0
+    roi = make_roi_from_box(last_box if tracking else None)
+    fixed_color_id = target_color_id if target_color_id > 0 else 0
+    blobs = find_color_blobs_once(img, roi, fixed_color_id)
+    scan_brown = (fixed_color_id == 0 and color_track_active
+                  and color_track_color_id == 4)
+    scan_white = (fixed_color_id == 0 and color_track_active
+                  and color_track_color_id == 5)
+    if fixed_color_id == 0 and blobs:
+        for blob in blobs:
+            if blob.code() & (1 << 3):
+                scan_brown = True
+            if blob.code() & (1 << 4):
+                scan_white = True
+    brown_roi = (make_roi_from_box(last_box)
+                 if scan_brown and last_box is not None
+                 and color_track_active and color_track_color_id == 4 else roi)
+    white_roi = (make_roi_from_box(last_box)
+                  if scan_white and last_box is not None
+                  and color_track_active and color_track_color_id == 5 else roi)
+    brown_blobs = (find_merged_bear_blobs(img, brown_roi, 4)
+                   if scan_brown else None)
+    white_blobs = (find_merged_bear_blobs(img, white_roi, 5)
+                   if scan_white else None)
+    if not blobs and not brown_blobs and not white_blobs:
+        return None
+    candidates = []
+    if blobs:
+        for blob in blobs:
+            color_id = (fixed_color_id if fixed_color_id > 0
+                        else color_id_from_blob_code(blob.code()))
+            if color_id <= 0:
+                continue
+            if ((color_id == 4 and brown_blobs)
+                    or (color_id == 5 and white_blobs)):
+                continue
+            candidates.append((color_id, blob))
+    if brown_blobs:
+        for blob in brown_blobs:
+            candidates.append((4, blob))
+    if white_blobs:
+        for blob in white_blobs:
+            candidates.append((5, blob))
+    ball_shadow_refs = []
+    for color_id, blob in candidates:
+        if color_id == 3 and valid_color_blob(blob, 3):
+            ball_shadow_refs.append(blob)
+    if fixed_color_id == 4:
+        fixed_ball_blobs = find_color_blobs_once(img, roi, 3)
+        if fixed_ball_blobs:
+            for blob in fixed_ball_blobs:
+                if valid_color_blob(blob, 3):
+                    ball_shadow_refs.append(blob)
     best_blob = None
     best_color_id = 0
     best_score = None
     best_distance = None
-    for color_id in color_ids:
-        if tracking and color_track_color_id > 0 and color_id != color_track_color_id:
-            continue
-        pixels_threshold, area_threshold = _color_blob_limits[color_id - 1]
-        try:
-            blobs = img.find_blobs(_color_threshold_groups[color_id - 1], roi=roi,
-                                   pixels_threshold=pixels_threshold,
-                                   area_threshold=area_threshold,
-                                   merge=True)
-        except Exception:
-            blobs = None
-        if not blobs:
-            continue
-        for blob in blobs:
-            if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-                if blob.cy() < dynamic_cut_left_y + CUT_BLOB_DELTA:
-                    continue
-            if not valid_color_blob(blob, color_id):
+    for color_id, blob in candidates:
+        if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
+            # Keep targets that straddle the boundary; reject only blobs wholly above it.
+            if blob.y() + blob.h() < dynamic_cut_left_y + CUT_BLOB_DELTA:
                 continue
-            if tracking:
-                b_box = (blob.x(), blob.y(), blob.w(), blob.h())
-                dist2 = center_dist2(b_box, last_box)
-                iou = box_iou(b_box, last_box)
-                area_change = box_area_change_percent(b_box, last_box)
-                if area_change > TRACK_AREA_CHANGE_MAX_PERCENT:
-                    continue
-                if dist2 <= TRACK_MAX_JUMP2 or iou >= TRACK_MIN_IOU:
-                    score = int(iou * 100000) - dist2 + blob.pixels() // 8
-                    if best_blob is None or score > best_score:
-                        best_blob = blob
-                        best_color_id = color_id
-                        best_score = score
-            else:
-                distance = 240 - (blob.y() + blob.h())
-                if (best_blob is None or distance < best_distance or
-                        (distance == best_distance and
-                         (blob.x(), -blob.pixels()) <
-                         (best_blob.x(), -best_blob.pixels()))):
+        if not valid_color_blob(blob, color_id):
+            continue
+        if color_id == 4 and brown_blob_is_ball_shadow(blob, ball_shadow_refs):
+            continue
+        if tracking:
+            b_box = (blob.x(), blob.y(), blob.w(), blob.h())
+            dist2 = center_dist2(b_box, last_box)
+            iou = box_iou(b_box, last_box)
+            area_change = box_area_change_percent(b_box, last_box)
+            if area_change > TRACK_AREA_CHANGE_MAX_PERCENT:
+                continue
+            if dist2 <= TRACK_MAX_JUMP2 or iou >= TRACK_MIN_IOU:
+                score = int(iou * 100000) - dist2 + blob.pixels() // 8
+                if best_blob is None or score > best_score:
                     best_blob = blob
                     best_color_id = color_id
-                    best_distance = distance
+                    best_score = score
+        else:
+            distance = 240 - (blob.y() + blob.h())
+            if (best_blob is None or distance < best_distance or
+                    (distance == best_distance and
+                     (blob.x(), -blob.pixels()) <
+                     (best_blob.x(), -best_blob.pixels()))):
+                best_blob = blob
+                best_color_id = color_id
+                best_distance = distance
     if best_blob is not None:
         return (best_color_id, best_blob)
     return None
@@ -545,32 +778,27 @@ def scan_front_other_color_ids(img):
     roi = front_scan_roi()
     if roi is None:
         return current_id, mask, count
-    for color_id in COLOR_SEARCH_ORDER:
-        if color_id < 1 or color_id > len(all_color_thresholds):
+    blobs = find_color_blobs_once(img, roi, 0, FRONT_SCAN_MIN_PIXELS)
+    if not blobs:
+        return current_id, mask, count
+    for blob in blobs:
+        color_id = color_id_from_blob_code(blob.code())
+        if color_id <= 0:
             continue
-        pixels_threshold, area_threshold = _color_blob_limits[color_id - 1]
-        try:
-            blobs = img.find_blobs(_color_threshold_groups[color_id - 1], roi=roi,
-                                   pixels_threshold=pixels_threshold,
-                                   area_threshold=area_threshold,
-                                   merge=True)
-        except Exception:
-            blobs = None
-        if not blobs:
+        color_bit = 1 << (color_id - 1)
+        if mask & color_bit:
             continue
-        for blob in blobs:
-            if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-                if blob.cy() < dynamic_cut_left_y + CUT_BLOB_DELTA:
-                    continue
-            if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
+        if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
+            if blob.y() + blob.h() < dynamic_cut_left_y + CUT_BLOB_DELTA:
                 continue
-            if not valid_color_blob(blob, color_id):
-                continue
-            if front_scan_blob_is_current(blob, current_box):
-                continue
-            mask |= 1 << (color_id - 1)
-            count += 1
-            break
+        if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
+            continue
+        if not valid_color_blob(blob, color_id, FRONT_SCAN_MIN_PIXELS + 1):
+            continue
+        if front_scan_blob_is_current(blob, current_box):
+            continue
+        mask |= color_bit
+        count += 1
     return current_id, mask, count
 
 def send_front_scan_result(current_id, mask, count):
@@ -876,12 +1104,29 @@ def receive_command_from_host():
             reset_return_yellow_state()
         return
 
-def pick_largest_blob(blobs):
+def yellow_blob_overlaps_tracked_target(blob):
+    if (openart_mode != MODE_CARRY or not color_track_active
+            or color_track_box is None):
+        return False
+    tx, ty, tw, th = color_track_box
+    bx, by, bw, bh = blob.x(), blob.y(), blob.w(), blob.h()
+    ix0 = max(tx, bx)
+    iy0 = max(ty, by)
+    ix1 = min(tx + tw, bx + bw)
+    iy1 = min(ty + th, by + bh)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return False
+    overlap_area = (ix1 - ix0) * (iy1 - iy0)
+    return overlap_area * 100 >= bw * bh * YELLOW_TARGET_OVERLAP_PERCENT
+
+def pick_largest_blob(blobs, reject_tracked_target=False):
     if not blobs:
         return None
-    best = blobs[0]
+    best = None
     for b in blobs:
-        if b.pixels() > best.pixels():
+        if reject_tracked_target and yellow_blob_overlaps_tracked_target(b):
+            continue
+        if best is None or b.pixels() > best.pixels():
             best = b
     return best
 
@@ -895,6 +1140,30 @@ def yellow_line_reaches_bottom_corner():
         return False
     return (yellow_line_y_at_x(0) >= YELLOW_BOTTOM_Y or
             yellow_line_y_at_x(319) >= YELLOW_BOTTOM_Y)
+
+def draw_carry_yellow_line(img):
+    if openart_mode != MODE_CARRY or not yellow_detected:
+        return
+    points = []
+    for x in (0, 319):
+        y = yellow_line_k * x + yellow_line_b
+        if 0 <= y <= 239:
+            points.append((x, int(y)))
+    if abs(yellow_line_k) > 0.0001:
+        for y in (0, 239):
+            x = (y - yellow_line_b) / yellow_line_k
+            if 0 <= x <= 319:
+                point = (int(x), y)
+                duplicate = False
+                for old_point in points:
+                    if old_point == point:
+                        duplicate = True
+                        break
+                if not duplicate:
+                    points.append(point)
+    if len(points) >= 2:
+        img.draw_line(points[0][0], points[0][1],
+                      points[1][0], points[1][1], color=(255, 255, 0))
 
 def current_pos_flag(frame_count):
     global yellow_lost_count, yellow_seen_in_carry, yellow_bottom_reached_in_carry
@@ -947,10 +1216,17 @@ def update_yellow_detection(img, frame_count):
     bottom_blobs = img.find_blobs(yellow_threshold, roi=bottom_roi,
                                   pixels_threshold=yellow_pixels_threshold,
                                   area_threshold=20, merge=True)
-    top_blob = pick_largest_blob(top_blobs)
-    bottom_blob = pick_largest_blob(bottom_blobs)
+    reject_target = openart_mode == MODE_CARRY
+    top_blob = pick_largest_blob(top_blobs, reject_target)
+    bottom_blob = pick_largest_blob(bottom_blobs, reject_target)
 
-    raw_yellow_seen = top_blob and bottom_blob
+    raw_yellow_seen = top_blob is not None and bottom_blob is not None
+    if raw_yellow_seen:
+        fit_dx = bottom_blob.cx() - top_blob.cx()
+        fit_dy = bottom_blob.cy() - top_blob.cy()
+        if (abs(fit_dx) < YELLOW_MIN_FIT_DX
+                or abs(fit_dy) * 100 > abs(fit_dx) * YELLOW_MAX_FIT_SLOPE_X100):
+            raw_yellow_seen = False
 
     # Use a higher threshold for initial detection, then a lower hold threshold.
     if raw_yellow_seen:
@@ -1003,6 +1279,7 @@ while True:
     update_dynamic_cut(img, frame_count)
     update_yellow_detection(img, frame_count)
     pos_flag = current_pos_flag(frame_count)
+    draw_carry_yellow_line(img)
     if process_front_scan_request(img):
         if frame_count % 10 == 0:
             gc.collect()
@@ -1013,14 +1290,21 @@ while True:
     has_target = False
     send_color_id = 0
     last_box = color_track_box if color_track_active else None
-    found = find_color_target(img, last_box)
+    try:
+        found = find_color_target(img, last_box)
+    except Exception as error:
+        found = None
+        if frame_count % 30 == 1:
+            print("[color] find_color_target error: " + str(error))
 
     if found:
         send_color_id, blob = found
-        x1 = blob.x()
-        y1 = blob.y()
-        w = blob.w()
-        h = blob.h()
+        raw_box = (blob.x(), blob.y(), blob.w(), blob.h())
+        previous_box = (color_track_box
+                        if color_track_active
+                        and color_track_color_id == send_color_id else None)
+        x1, y1, w, h = stabilize_target_box(
+            previous_box, raw_box, send_color_id)
         has_target = True
         color_track_active = True
         color_track_box = (x1, y1, w, h)

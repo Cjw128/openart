@@ -10,7 +10,7 @@
 #   only blobs with pixels > FRONT_SCAN_MIN_PIXELS are reported
 # ======================================================================
 
-import sensor, image, time
+import sensor, time
 
 CALIBRATION_FILE = '/sd/color_thr.txt'
 
@@ -21,11 +21,11 @@ EXPOSURE_US = 1200
 
 COLOR_SEARCH_ORDER = [1, 2, 3, 4, 5]
 all_color_thresholds = [
-    (15,100,-20,2,-52,-26),
-    (30,47,26,86,-8,52),
+    (34, 100, -41, 4, -72, -22),
+    (10, 80, 22, 122, -17, 93),
     (50, 100, -128, -27, 20, 127),
     (21, 52, -77, 25, 6, 99),
-    (53, 100, -10, 11, -11, 8),
+    (51, 100, -5, 5, -38, 18),
 ]
 
 DRAW_COLORS = {
@@ -39,21 +39,28 @@ DRAW_COLORS = {
 DETECT_Y_MIN = 8
 DETECT_Y_MAX = 150
 DETECT_ROI = (0, DETECT_Y_MIN, 320, DETECT_Y_MAX - DETECT_Y_MIN)
-COLOR_MIN_PIXELS = 100
+COLOR_MIN_PIXELS = 70
 COLOR_MIN_AREA = 100
-TENNIS_COLOR_ID = 3
-TENNIS_MIN_PIXELS = 45
-TENNIS_MIN_AREA = 45
-BEAR_MIN_BOX_AREA = 400
-FRONT_SCAN_MIN_PIXELS = 150
+TENNIS_MIN_PIXELS = 80
+TENNIS_MIN_AREA = 80
+NEAR_NOISE_Y_MIN = 170
+NEAR_NOISE_BOX_AREA = 400
+COLOR_BLOB_LIMITS = (
+    (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
+    (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
+    (TENNIS_MIN_PIXELS, TENNIS_MIN_AREA),
+    (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
+    (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
+)
+MULTICOLOR_MIN_PIXELS = min(COLOR_MIN_PIXELS, TENNIS_MIN_PIXELS)
+MULTICOLOR_MIN_AREA = min(COLOR_MIN_AREA, TENNIS_MIN_AREA)
+FRONT_SCAN_MIN_PIXELS = 60
 IGNORE_BOTTOMMOST_CARRY_BLOB = True
 SEARCH_ROI_DRAW_COLOR = (255, 255, 0)
 
 ENABLE_DYNAMIC_CUT = True
 BLUE_GROUND_THRESHOLD = [(0, 55, -30, 45, -90, -7)]
-CUT_BLOB_MIN_H = 12
-CUT_BLOB_BOTTOM_MARGIN = 25
-CUT_GAP_BRIDGE = 10
+CUT_BLOB_MIN_H = 12  # Top-down: first continuous dark-blue run must be at least 12 px high.
 CUT_LEFT_X = 0
 CUT_RIGHT_X = 320
 CUT_STRIP_XS = (10, 85, 160, 235, 310)
@@ -61,10 +68,15 @@ CUT_MIN_VALID_STRIPS = 2
 CUT_STRIP_HALF_W = 2
 CUT_SCAN_Y_MIN = 0
 CUT_SCAN_Y_MAX = 140
+CUT_STRIP_ROIS = [
+    (x - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN,
+     CUT_STRIP_HALF_W * 2 + 1, CUT_SCAN_Y_MAX - CUT_SCAN_Y_MIN)
+    for x in CUT_STRIP_XS
+]
 CUT_UPDATE_INTERVAL = 2
 CUT_MIN_PIXELS = 8
 CUT_MIN_AREA = 8
-CUT_Y_MARGIN = 6
+CUT_ROI_Y_OFFSET = -10
 CUT_EMA_ALPHA = 0.35
 CUT_MAX_MISS = 10
 CUT_BLOB_DELTA = 2
@@ -130,28 +142,15 @@ def snapshot_frame(apply_lens_corr=False):
 
 
 def pick_top_y_from_strip(blobs):
+    # Pick the smallest valid y, equivalent to scanning each strip from top to bottom.
     if not blobs:
         return None
     top_y = None
     for b in blobs:
         if b.h() < CUT_BLOB_MIN_H:
             continue
-        if b.y() + b.h() < CUT_SCAN_Y_MAX - CUT_BLOB_BOTTOM_MARGIN:
-            continue
         if top_y is None or b.y() < top_y:
             top_y = b.y()
-    if top_y is None:
-        return None
-    bridged_top = None
-    for b in blobs:
-        if b.h() < CUT_BLOB_MIN_H:
-            continue
-        by2 = b.y() + b.h()
-        if by2 <= top_y and top_y - by2 <= CUT_GAP_BRIDGE and b.y() < top_y:
-            if bridged_top is None or b.y() < bridged_top:
-                bridged_top = b.y()
-    if bridged_top is not None:
-        top_y = bridged_top
     return top_y
 
 
@@ -162,11 +161,9 @@ def update_dynamic_cut(img, frame_count):
     if (not ENABLE_DYNAMIC_CUT) or (frame_count % CUT_UPDATE_INTERVAL != 0):
         return
 
-    strip_h = CUT_SCAN_Y_MAX - CUT_SCAN_Y_MIN
-    top_y_min = None
+    top_y_sum = 0
     valid_strips = 0
-    for sx in CUT_STRIP_XS:
-        roi = (sx - CUT_STRIP_HALF_W, CUT_SCAN_Y_MIN, CUT_STRIP_HALF_W * 2 + 1, strip_h)
+    for roi in CUT_STRIP_ROIS:
         try:
             blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=roi,
                                    pixels_threshold=CUT_MIN_PIXELS,
@@ -176,17 +173,17 @@ def update_dynamic_cut(img, frame_count):
         ty = pick_top_y_from_strip(blobs)
         if ty is not None:
             valid_strips += 1
-            if top_y_min is None or ty < top_y_min:
-                top_y_min = ty
+            top_y_sum += ty
 
     if valid_strips >= CUT_MIN_VALID_STRIPS:
+        top_y_average = top_y_sum // valid_strips
         dynamic_cut_miss_count = 0
         if not dynamic_cut_valid:
-            dynamic_cut_left_y = top_y_min
+            dynamic_cut_left_y = top_y_average
             dynamic_cut_valid = True
         else:
             a = CUT_EMA_ALPHA
-            dynamic_cut_left_y = int(a * top_y_min + (1.0 - a) * dynamic_cut_left_y)
+            dynamic_cut_left_y = int(a * top_y_average + (1.0 - a) * dynamic_cut_left_y)
         dynamic_cut_left_y = clamp_int(dynamic_cut_left_y, DETECT_Y_MIN, CUT_SCAN_Y_MAX)
         dynamic_cut_right_y = dynamic_cut_left_y
     else:
@@ -197,7 +194,8 @@ def update_dynamic_cut(img, frame_count):
             dynamic_cut_right_y = DETECT_Y_MIN
 
     if dynamic_cut_valid:
-        y_base = clamp_int(dynamic_cut_left_y - CUT_Y_MARGIN, DETECT_Y_MIN, DETECT_Y_MAX - 1)
+        y_base = clamp_int(dynamic_cut_left_y + CUT_ROI_Y_OFFSET,
+                           DETECT_Y_MIN, DETECT_Y_MAX - 1)
     else:
         y_base = DETECT_Y_MIN
     dynamic_detect_roi = (0, y_base, 320, DETECT_Y_MAX - y_base)
@@ -207,61 +205,70 @@ def cut_line_y_at_x(x):
     return dynamic_cut_left_y
 
 
-def color_blob_thresholds(color_id):
-    if color_id == TENNIS_COLOR_ID:
-        return (TENNIS_MIN_PIXELS, TENNIS_MIN_AREA)
-    return (COLOR_MIN_PIXELS, COLOR_MIN_AREA)
-
-
-def valid_color_blob(blob, color_id):
+def valid_color_blob(blob, color_id, pixels_threshold_override=0):
     w = blob.w()
     h = blob.h()
     if w <= 0 or h <= 0:
         return False
-    aspect = w / h
+    box_area = w * h
+    if blob.y() > NEAR_NOISE_Y_MIN and box_area < NEAR_NOISE_BOX_AREA:
+        return False
+    pixels_threshold, area_threshold = COLOR_BLOB_LIMITS[color_id - 1]
+    if pixels_threshold_override > 0:
+        pixels_threshold = pixels_threshold_override
+    if blob.pixels() < pixels_threshold or box_area < area_threshold:
+        return False
     if color_id == 3:
-        if aspect < 0.45 or aspect > 1.85:
+        if w * 100 < h * 45 or w * 100 > h * 185:
             return False
         if blob.density() < 0.35:
             return False
     elif color_id == 4 or color_id == 5:
-        if aspect < 0.30 or aspect > 2.50:
+        if w * 100 < h * 30 or w * 100 > h * 250:
             return False
-        if w * h <= BEAR_MIN_BOX_AREA:
-            return False
-        if blob.pixels() < 120:
+        if blob.density() < 0.25:
             return False
     else:
-        if aspect < 0.50 or aspect > 2.00:
+        if w * 100 < h * 60 or w * 100 > h * 180:
             return False
         if blob.density() < 0.40:
             return False
     return True
 
 
+def color_id_from_blob_code(code):
+    if code <= 0 or code & (code - 1):
+        return 0
+    color_id = 1
+    while code > 1:
+        code >>= 1
+        color_id += 1
+    return color_id if color_id <= len(all_color_thresholds) else 0
+
+
 def find_front_obstacles(img):
     candidates = []
     mask = 0
     roi = dynamic_detect_roi
-    for color_id in COLOR_SEARCH_ORDER:
-        threshold = all_color_thresholds[color_id - 1]
-        pixels_threshold, area_threshold = color_blob_thresholds(color_id)
-        try:
-            blobs = img.find_blobs([threshold], roi=roi,
-                                   pixels_threshold=pixels_threshold,
-                                   area_threshold=area_threshold,
-                                   merge=True)
-        except Exception:
-            blobs = None
-        if not blobs:
-            continue
+    try:
+        blobs = img.find_blobs(all_color_thresholds, roi=roi,
+                               pixels_threshold=FRONT_SCAN_MIN_PIXELS,
+                               area_threshold=MULTICOLOR_MIN_AREA,
+                               merge=False)
+    except Exception:
+        blobs = None
+    if blobs:
         for b in blobs:
+            color_id = color_id_from_blob_code(b.code())
+            if color_id <= 0:
+                continue
             if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-                if b.cy() < cut_line_y_at_x(b.cx()) + CUT_BLOB_DELTA:
+                # A target may cross the red line; discard it only when fully above.
+                if b.y() + b.h() < cut_line_y_at_x(b.cx()) + CUT_BLOB_DELTA:
                     continue
             if b.pixels() <= FRONT_SCAN_MIN_PIXELS:
                 continue
-            if not valid_color_blob(b, color_id):
+            if not valid_color_blob(b, color_id, FRONT_SCAN_MIN_PIXELS + 1):
                 continue
             candidates.append((color_id, b))
 
