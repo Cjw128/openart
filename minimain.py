@@ -215,6 +215,8 @@ TRACK_MAX_JUMP2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
 TRACK_AREA_CHANGE_MAX_PERCENT = 60
 TRACK_MIN_IOU = 0.05
 BRN_BEAR_MERGE_MARGIN = 12
+BRN_BEAR_FRAGMENT_MIN_PIXELS = 20
+BRN_BEAR_FRAGMENT_MIN_AREA = 20
 BRN_BEAR_BALL_SHADOW_MAX_AREA_PERCENT = 55
 BRN_BEAR_BALL_SHADOW_X_OVERLAP_PERCENT = 60
 BRN_BEAR_BALL_SHADOW_Y_MARGIN = 6
@@ -255,18 +257,26 @@ front_scan_total_count = 0
 # ======================================================================
 RETURN_YELLOW_PACKET_ID = 0xC8
 RETURN_YELLOW_THRESHOLD = [(51, 91, -32, 36, 1, 118)]
-RETURN_YELLOW_ROI_LEFT = (0, 80, 70, 160)
-RETURN_YELLOW_ROI_RIGHT = (250, 80, 70, 160)
-RETURN_YELLOW_MIN_PIXELS = 30
-RETURN_YELLOW_MIN_AREA = 30
-RETURN_YELLOW_MIN_ASPECT_X100 = 200
-RETURN_YELLOW_MAX_Y_DIFF = 10
-RETURN_YELLOW_STABLE_FRAMES = 2
+RETURN_YELLOW_ROI = (150, 30, 20, 210)
+RETURN_YELLOW_MIN_PIXELS = 5
+RETURN_YELLOW_MIN_AREA = 5
+RETURN_YELLOW_STABLE_FRAMES = 1
 RETURN_YELLOW_STABLE_DELTA = 3
+RETURN_STOP_ROI = (0, 200, 320, 20)
+RETURN_STOP_X_THRESHOLD = 200
+RETURN_STOP_MIN_PIXELS = 5
+RETURN_STOP_MIN_AREA = 5
+RETURN_STOP_HORIZONTAL_GUARD = 3
+RETURN_STOP_MIN_BLOB_H = 8
+RETURN_STOP_MAX_WIDTH_HEIGHT_X100 = 300
+RETURN_STATUS_Y_VALID = 0x01
+RETURN_STATUS_STOP = 0x02
 return_yellow_last_y = -1
 return_yellow_stable_count = 0
 return_yellow_detected = False
 return_yellow_y = 0
+return_stop_x = -1
+return_stop_requested = False
 
 MODE_SEARCH = 0
 MODE_RETURN = 3
@@ -289,10 +299,13 @@ def reset_target_tracking_state():
 def reset_return_yellow_state():
     global return_yellow_last_y, return_yellow_stable_count
     global return_yellow_detected, return_yellow_y
+    global return_stop_x, return_stop_requested
     return_yellow_last_y = -1
     return_yellow_stable_count = 0
     return_yellow_detected = False
     return_yellow_y = 0
+    return_stop_x = -1
+    return_stop_requested = False
 
 # ======================================================================
 # 单应性变换 (逆透视)
@@ -473,6 +486,80 @@ def color_id_from_blob_code(code):
         return 0
     return color_id
 
+class _MergedColorBlob:
+    """Minimal blob-compatible box used when firmware lacks margin merging."""
+    def __init__(self, blob):
+        self._x = int(blob.x())
+        self._y = int(blob.y())
+        self._w = int(blob.w())
+        self._h = int(blob.h())
+        self._pixels = int(blob.pixels())
+
+    def x(self):
+        return self._x
+
+    def y(self):
+        return self._y
+
+    def w(self):
+        return self._w
+
+    def h(self):
+        return self._h
+
+    def cx(self):
+        return self._x + self._w // 2
+
+    def cy(self):
+        return self._y + self._h // 2
+
+    def pixels(self):
+        return self._pixels
+
+    def density(self):
+        area = self._w * self._h
+        return self._pixels / float(area) if area > 0 else 0.0
+
+    def rect(self):
+        return (self._x, self._y, self._w, self._h)
+
+    def absorb(self, other):
+        x0 = min(self._x, other._x)
+        y0 = min(self._y, other._y)
+        x1 = max(self._x + self._w, other._x + other._w)
+        y1 = max(self._y + self._h, other._y + other._h)
+        self._x = x0
+        self._y = y0
+        self._w = x1 - x0
+        self._h = y1 - y0
+        self._pixels += other._pixels
+
+def _blob_boxes_near(a, b, margin):
+    return not (a.x() + a.w() + margin < b.x()
+                or b.x() + b.w() + margin < a.x()
+                or a.y() + a.h() + margin < b.y()
+                or b.y() + b.h() + margin < a.y())
+
+def _merge_nearby_color_blobs(blobs, margin):
+    groups = []
+    if not blobs:
+        return groups
+    for blob in blobs:
+        merged = _MergedColorBlob(blob)
+        changed = True
+        while changed:
+            changed = False
+            i = 0
+            while i < len(groups):
+                if _blob_boxes_near(merged, groups[i], margin):
+                    merged.absorb(groups[i])
+                    del groups[i]
+                    changed = True
+                else:
+                    i += 1
+        groups.append(merged)
+    return groups
+
 def find_color_blobs_once(img, roi, fixed_color_id=0, pixels_threshold_override=0):
     if fixed_color_id > 0:
         thresholds = _color_threshold_groups[fixed_color_id - 1]
@@ -508,6 +595,9 @@ def find_merged_bear_blobs(img, roi, color_id):
         return None
     index = color_id - 1
     pixels_threshold, area_threshold = _color_blob_limits[index]
+    if color_id == 4:
+        pixels_threshold = BRN_BEAR_FRAGMENT_MIN_PIXELS
+        area_threshold = BRN_BEAR_FRAGMENT_MIN_AREA
     margin = (BRN_BEAR_MERGE_MARGIN if color_id == 4
               else WHT_BEAR_MERGE_MARGIN)
     try:
@@ -517,6 +607,12 @@ def find_merged_bear_blobs(img, roi, color_id):
                                   area_threshold=area_threshold, merge=True,
                                   margin=margin)
         except TypeError:
+            if color_id == 4:
+                raw_blobs = img.find_blobs(
+                    _color_threshold_groups[index], roi=roi,
+                    pixels_threshold=pixels_threshold,
+                    area_threshold=area_threshold, merge=False)
+                return _merge_nearby_color_blobs(raw_blobs, margin)
             return img.find_blobs(_color_threshold_groups[index], roi=roi,
                                   pixels_threshold=pixels_threshold,
                                   area_threshold=area_threshold, merge=True)
@@ -548,15 +644,15 @@ def find_color_target(img, last_box):
     tracking = last_box is not None and target_color_id > 0
     roi = make_roi_from_box(last_box if tracking else None)
     fixed_color_id = target_color_id if target_color_id > 0 else 0
-    blobs = find_color_blobs_once(img, roi, fixed_color_id)
-    scan_brown = (fixed_color_id == 0 and color_track_active
-                  and color_track_color_id == 4)
+    # Brown bear always uses its dedicated fragment-merging pass. Skipping the
+    # normal fixed-color pass avoids doing the same LAB scan twice when locked.
+    blobs = (None if fixed_color_id == 4
+             else find_color_blobs_once(img, roi, fixed_color_id))
+    scan_brown = fixed_color_id == 0 or fixed_color_id == 4
     scan_white = (fixed_color_id == 0 and color_track_active
                   and color_track_color_id == 5)
     if fixed_color_id == 0 and blobs:
         for blob in blobs:
-            if blob.code() & (1 << 3):
-                scan_brown = True
             if blob.code() & (1 << 4):
                 scan_white = True
     brown_roi = (make_roi_from_box(last_box)
@@ -704,15 +800,16 @@ _tx_return_yellow_buf[0] = 0xAA
 _tx_return_yellow_buf[1] = 0x55
 _tx_return_yellow_buf[2] = RETURN_YELLOW_PACKET_ID
 
-def send_return_yellow_result(valid, y):
+def send_return_yellow_result(valid, y, stop_requested):
     """发送 AA 55 C8 status y_lo y_hi checksum。"""
     data = _tx_return_yellow_buf
+    status = RETURN_STATUS_STOP if stop_requested else 0x00
     if valid:
         y = clamp_int(int(y), 0, 239)
-        data[3] = 0x01
+        status |= RETURN_STATUS_Y_VALID
     else:
         y = 0
-        data[3] = 0x00
+    data[3] = status
     data[4] = y & 0xFF
     data[5] = (y >> 8) & 0xFF
     data[6] = (data[2] + data[3] + data[4] + data[5]) & 0xFF
@@ -751,53 +848,87 @@ def process_front_scan_request(img):
         reset_front_scan_state()
     return True
 
-def valid_return_yellow_blob(blob):
-    w = blob.w()
-    h = blob.h()
-    if w <= 0 or h <= 0:
+def return_line_overlaps_stop_roi(y):
+    if y is None:
         return False
-    return w * 100 >= h * RETURN_YELLOW_MIN_ASPECT_X100
+    roi_y = RETURN_STOP_ROI[1]
+    roi_bottom = roi_y + RETURN_STOP_ROI[3] - 1
+    return (y >= roi_y - RETURN_STOP_HORIZONTAL_GUARD and
+            y <= roi_bottom + RETURN_STOP_HORIZONTAL_GUARD)
+
+def detect_return_stop_x(img, return_y=None):
+    if return_line_overlaps_stop_roi(return_y):
+        return None
+    try:
+        blobs = img.find_blobs(
+            RETURN_YELLOW_THRESHOLD, roi=RETURN_STOP_ROI,
+            pixels_threshold=RETURN_STOP_MIN_PIXELS,
+            area_threshold=RETURN_STOP_MIN_AREA, merge=True)
+    except Exception:
+        return None
+    if not blobs:
+        return None
+
+    # 横向 ROI 从右向左搜索，始终取最右侧的有效候选。
+    best_x = None
+    best_pixels = -1
+    for blob in blobs:
+        w = blob.w()
+        h = blob.h()
+        if (h < RETURN_STOP_MIN_BLOB_H or
+                w * 100 > h * RETURN_STOP_MAX_WIDTH_HEIGHT_X100):
+            continue
+        x = blob.cx()
+        pixels = blob.pixels()
+        if (best_x is None or x > best_x or
+                (x == best_x and pixels > best_pixels)):
+            best_x = x
+            best_pixels = pixels
+    return best_x
 
 def detect_return_yellow_y(img):
     try:
-        left_blobs = img.find_blobs(
-            RETURN_YELLOW_THRESHOLD, roi=RETURN_YELLOW_ROI_LEFT,
-            pixels_threshold=RETURN_YELLOW_MIN_PIXELS,
-            area_threshold=RETURN_YELLOW_MIN_AREA, merge=True)
-        right_blobs = img.find_blobs(
-            RETURN_YELLOW_THRESHOLD, roi=RETURN_YELLOW_ROI_RIGHT,
+        blobs = img.find_blobs(
+            RETURN_YELLOW_THRESHOLD, roi=RETURN_YELLOW_ROI,
             pixels_threshold=RETURN_YELLOW_MIN_PIXELS,
             area_threshold=RETURN_YELLOW_MIN_AREA, merge=True)
     except Exception:
         return None
-    if not left_blobs or not right_blobs:
+    if not blobs:
         return None
 
+    # 纵向窄条从上往下扫描，发现第一个黄色 blob 就记录。
     best_y = None
+    best_top = 241
     best_pixels = -1
-    for left_blob in left_blobs:
-        if not valid_return_yellow_blob(left_blob):
-            continue
-        for right_blob in right_blobs:
-            if not valid_return_yellow_blob(right_blob):
-                continue
-            if abs(left_blob.cy() - right_blob.cy()) > RETURN_YELLOW_MAX_Y_DIFF:
-                continue
-            y = (left_blob.cy() + right_blob.cy()) // 2
-            pixels = left_blob.pixels() + right_blob.pixels()
-            if (best_y is None or y > best_y or
-                    (y == best_y and pixels > best_pixels)):
-                best_y = y
-                best_pixels = pixels
+    for blob in blobs:
+        top = blob.y()
+        y = blob.cy()
+        pixels = blob.pixels()
+        if (best_y is None or top < best_top or
+                (top == best_top and pixels > best_pixels)):
+            best_y = y
+            best_top = top
+            best_pixels = pixels
     return best_y
 
 def process_return_yellow(img):
     global return_yellow_last_y, return_yellow_stable_count
     global return_yellow_detected, return_yellow_y
+    global return_stop_x, return_stop_requested
+
     y = detect_return_yellow_y(img)
+    stop_x = detect_return_stop_x(img, y)
+    return_stop_x = stop_x if stop_x is not None else -1
+    if stop_x is not None and stop_x > RETURN_STOP_X_THRESHOLD:
+        return_stop_requested = True
+
     if y is None:
-        reset_return_yellow_state()
-        send_return_yellow_result(False, 0)
+        return_yellow_last_y = -1
+        return_yellow_stable_count = 0
+        return_yellow_detected = False
+        return_yellow_y = 0
+        send_return_yellow_result(False, 0, return_stop_requested)
         return
 
     if (return_yellow_last_y >= 0 and
@@ -810,11 +941,11 @@ def process_return_yellow(img):
     if return_yellow_stable_count >= RETURN_YELLOW_STABLE_FRAMES:
         return_yellow_detected = True
         return_yellow_y = y
-        send_return_yellow_result(True, y)
+        send_return_yellow_result(True, y, return_stop_requested)
     else:
         return_yellow_detected = False
         return_yellow_y = 0
-        send_return_yellow_result(False, 0)
+        send_return_yellow_result(False, 0, return_stop_requested)
 # 由 d040b74 的四点比赛标定参数预计算。
 H_PIX2WORLD = (
     0.5835117773019284, -0.0026766595289079054, -92.13597430406873,
