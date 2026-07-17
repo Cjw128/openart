@@ -1917,6 +1917,19 @@ def threshold_boxes_overlap(t1, t2):
     return True
 
 
+def threshold_ranges_valid(threshold):
+    for channel in range(3):
+        lo_i = channel * 2
+        if threshold[lo_i] > threshold[lo_i + 1]:
+            return False
+    return True
+
+
+def threshold_channel_contains(threshold, channel, value):
+    lo_i = channel * 2
+    return threshold[lo_i] <= value <= threshold[lo_i + 1]
+
+
 def separate_bear_thresholds():
     if 4 not in thresholds or 5 not in thresholds:
         return
@@ -1932,13 +1945,36 @@ def separate_bear_thresholds():
         del thresholds[5]
         return
 
-    split_channel = 0
-    split_gap = abs(brown_med[0] - white_med[0])
-    for channel in range(1, 3):
+    if not threshold_boxes_overlap(thresholds[4], thresholds[5]):
+        print("[bear] PASS 阈值已经分离 brn=" + str(thresholds[4])
+              + " wht=" + str(thresholds[5]) + " overlap=0")
+        return
+
+    # 棕熊 A/B 阈值来自躯干核心，但 slot_meds 的 A/B 来自更宽取样区。
+    # 只允许中位数已落在各自阈值内的通道参与切分，避免用受阴影污染的
+    # 宽区 A/B 中位数切坏已经通过 10 帧色块复检的核心阈值。
+    split_channel = -1
+    split_gap = -1
+    for channel in range(3):
+        if not threshold_channel_contains(
+                thresholds[4], channel, brown_med[channel]):
+            continue
+        if not threshold_channel_contains(
+                thresholds[5], channel, white_med[channel]):
+            continue
         gap = abs(brown_med[channel] - white_med[channel])
-        if gap > split_gap:
+        if split_channel < 0 or gap > split_gap:
             split_channel = channel
             split_gap = gap
+    if split_channel < 0:
+        print("[bear] !! 没有可安全切分的 LAB 通道，两个阈值均不写入")
+        print("[bear] brn=" + str(thresholds[4])
+              + " med=" + str(tuple(brown_med)))
+        print("[bear] wht=" + str(thresholds[5])
+              + " med=" + str(tuple(white_med)))
+        del thresholds[4]
+        del thresholds[5]
+        return
     if split_gap < BEAR_SEPARATION_MIN_GAP:
         print("[bear] !! 棕白熊 LAB 中位数过近 gap=%d，两个阈值均不写入" % int(split_gap))
         del thresholds[4]
@@ -1962,15 +1998,30 @@ def separate_bear_thresholds():
 
     brown_med_box = (brown_med[0], brown_med[1], brown_med[2])
     white_med_box = (white_med[0], white_med[1], white_med[2])
-    valid = (lower_threshold[lo_i] <= lower_threshold[hi_i]
-             and higher_threshold[lo_i] <= higher_threshold[hi_i]
-             and in_box(brown_med_box, thresholds[4])
-             and in_box(white_med_box, thresholds[5])
-             and not threshold_boxes_overlap(thresholds[4], thresholds[5]))
+    ranges_ok = (threshold_ranges_valid(thresholds[4])
+                 and threshold_ranges_valid(thresholds[5]))
+    split_meds_ok = (threshold_channel_contains(
+                         thresholds[4], split_channel,
+                         brown_med[split_channel])
+                     and threshold_channel_contains(
+                         thresholds[5], split_channel,
+                         white_med[split_channel]))
+    disjoint_ok = not threshold_boxes_overlap(thresholds[4], thresholds[5])
+    # 仅作诊断，不作为失败条件：宽取样区 A/B 中位数可能合理地落在按
+    # 躯干核心收紧后的棕熊阈值之外，实际覆盖已由逐槽 10 帧复检确认。
+    full_meds_hint = (in_box(brown_med_box, thresholds[4])
+                      and in_box(white_med_box, thresholds[5]))
+    valid = ranges_ok and split_meds_ok and disjoint_ok
     print("[bear] 强制分离 channel=%s cut=%d gap=%d brown_med=(%d,%d,%d) white_med=(%d,%d,%d)" % (
         "LAB"[split_channel], cut, int(split_gap),
         int(brown_med[0]), int(brown_med[1]), int(brown_med[2]),
         int(white_med[0]), int(white_med[1]), int(white_med[2])))
+    print("[bear] audit ranges=" + str(1 if ranges_ok else 0)
+          + " split_meds=" + str(1 if split_meds_ok else 0)
+          + " disjoint=" + str(1 if disjoint_ok else 0)
+          + " full_meds_hint=" + str(1 if full_meds_hint else 0))
+    print("[bear] final brn=" + str(thresholds[4])
+          + " wht=" + str(thresholds[5]))
     if not valid:
         print("[bear] !! 分离后审计失败，两个阈值均不写入")
         del thresholds[4]

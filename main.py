@@ -251,6 +251,12 @@ TRACK_MIN_IOU = 0.05
 BRN_BEAR_MERGE_MARGIN = 12
 BRN_BEAR_FRAGMENT_MIN_PIXELS = 20
 BRN_BEAR_FRAGMENT_MIN_AREA = 20
+BEAR_ACQUIRE_MIN_PIXELS = 120
+BEAR_ACQUIRE_MIN_AREA = 300
+BEAR_ACQUIRE_CONFIRM_FRAMES = 3
+BEAR_ACQUIRE_MAX_JUMP_PX = 45
+BEAR_ACQUIRE_MAX_JUMP2 = BEAR_ACQUIRE_MAX_JUMP_PX * BEAR_ACQUIRE_MAX_JUMP_PX
+BEAR_ACQUIRE_MAX_AREA_CHANGE_PERCENT = 80
 BRN_BEAR_BALL_SHADOW_MAX_AREA_PERCENT = 55
 BRN_BEAR_BALL_SHADOW_X_OVERLAP_PERCENT = 60
 BRN_BEAR_BALL_SHADOW_Y_MARGIN = 6
@@ -270,6 +276,10 @@ color_track_active = False
 color_track_box = None
 color_track_color_id = 0
 color_lost_count = 0
+bear_acquire_color_id = 0
+bear_acquire_box = None
+bear_acquire_count = 0
+bear_acquire_last_frame = -1
 _cmd_rx_buf = bytearray()
 front_scan_requested = False
 FRONT_SCAN_PACKET_ID = 0xC7
@@ -288,7 +298,8 @@ front_scan_total_count = 0
 # ======================================================================
 # Yellow line detection parameters
 # ======================================================================
-yellow_threshold = [(62, 100, -57, 13, -8, 127)]    # Yellow LAB threshold
+yellow_threshold = [(62, 100, -59, 10, 26, 127)]    # Yellow LAB threshold
+ENABLE_YELLOW_DRAW = True
 RETURN_YELLOW_PACKET_ID = 0xC8
 RETURN_YELLOW_THRESHOLD = yellow_threshold
 RETURN_YELLOW_ROI = (150, 30, 20, 210)
@@ -321,8 +332,8 @@ YELLOW_CARRY_CONFIRM_FRAMES = 2         # Consecutive hits before carry mode tre
 YELLOW_MIN_FIT_DX = 30                  # Reject near-vertical fits commonly formed by the carried object
 YELLOW_MAX_FIT_SLOPE_X100 = 100         # Yellow boundary must stay within +/-45 degrees
 YELLOW_TARGET_OVERLAP_PERCENT = 60      # Reject yellow blobs mostly contained by the tracked target
-YELLOW_BOTTOM_Y = 240                   # Arm disappearance detection after fitted-line bottom contact
-YELLOW_LOST_THRESHOLD = 2               # Consecutive misses required after bottom contact
+YELLOW_BOTTOM_Y = 220                   # Arm disappearance detection near the image bottom
+YELLOW_LOST_THRESHOLD = 1               # Consecutive misses required after bottom contact
 
 yellow_line_k = 0.0
 yellow_line_b = 0.0
@@ -361,6 +372,7 @@ def reset_target_tracking_state():
     color_track_box = None
     color_track_color_id = 0
     color_lost_count = 0
+    reset_bear_acquire_state()
 
 def reset_yellow_state():
     """清空黄线状态，避免新一轮任务继承上一轮的边界/滞回。"""
@@ -524,6 +536,57 @@ def box_area_change_percent(a, b):
     if area_a <= 0 or area_b <= 0:
         return 1000
     return abs(area_a - area_b) * 100 // area_b
+
+def reset_bear_acquire_state():
+    global bear_acquire_color_id, bear_acquire_box
+    global bear_acquire_count, bear_acquire_last_frame
+    bear_acquire_color_id = 0
+    bear_acquire_box = None
+    bear_acquire_count = 0
+    bear_acquire_last_frame = -1
+
+def valid_bear_acquire_blob(blob):
+    return (blob.pixels() >= BEAR_ACQUIRE_MIN_PIXELS and
+            blob.w() * blob.h() >= BEAR_ACQUIRE_MIN_AREA)
+
+def confirm_new_bear_target(found):
+    global bear_acquire_color_id, bear_acquire_box
+    global bear_acquire_count, bear_acquire_last_frame
+
+    if not found:
+        reset_bear_acquire_state()
+        return None
+
+    color_id, blob = found
+    if color_id != 4 and color_id != 5:
+        reset_bear_acquire_state()
+        return found
+    if color_track_active and color_track_color_id == color_id:
+        reset_bear_acquire_state()
+        return found
+    if not valid_bear_acquire_blob(blob):
+        reset_bear_acquire_state()
+        return None
+
+    box = (blob.x(), blob.y(), blob.w(), blob.h())
+    consecutive = (bear_acquire_color_id == color_id and
+                   bear_acquire_box is not None and
+                   bear_acquire_last_frame == frame_count - 1 and
+                   center_dist2(box, bear_acquire_box) <= BEAR_ACQUIRE_MAX_JUMP2 and
+                   box_area_change_percent(box, bear_acquire_box)
+                   <= BEAR_ACQUIRE_MAX_AREA_CHANGE_PERCENT)
+    if consecutive:
+        bear_acquire_count += 1
+    else:
+        bear_acquire_count = 1
+    bear_acquire_color_id = color_id
+    bear_acquire_box = box
+    bear_acquire_last_frame = frame_count
+
+    if bear_acquire_count < BEAR_ACQUIRE_CONFIRM_FRAMES:
+        return None
+    reset_bear_acquire_state()
+    return found
 
 def stabilize_target_box(previous, current, color_id):
     if color_id != 5 or previous is None:
@@ -819,6 +882,10 @@ def find_color_target(img, last_box):
                 continue
         if not valid_color_blob(blob, color_id):
             continue
+        if ((color_id == 4 or color_id == 5) and
+                (not color_track_active or color_track_color_id != color_id) and
+                not valid_bear_acquire_blob(blob)):
+            continue
         if color_id == 4 and brown_blob_is_ball_shadow(blob, ball_shadow_refs):
             continue
         if tracking:
@@ -1060,6 +1127,26 @@ def process_return_yellow(img):
         return_yellow_y = 0
         send_return_yellow_result(False, 0, return_stop_requested)
 
+def draw_return_yellow_lines(img):
+    if not ENABLE_YELLOW_DRAW or openart_mode != MODE_RETURN:
+        return
+
+    img.draw_rectangle(RETURN_YELLOW_ROI, color=(0, 255, 255), thickness=1)
+    img.draw_rectangle(RETURN_STOP_ROI, color=(255, 0, 255), thickness=1)
+    img.draw_line(RETURN_STOP_X_THRESHOLD, 0,
+                  RETURN_STOP_X_THRESHOLD, 239,
+                  color=(255, 0, 0), thickness=1)
+
+    if return_yellow_detected:
+        img.draw_line(0, return_yellow_y, 319, return_yellow_y,
+                      color=(255, 255, 0), thickness=2)
+    if return_stop_x >= 0:
+        stop_color = ((255, 0, 0)
+                      if return_stop_x > RETURN_STOP_X_THRESHOLD
+                      else (0, 128, 255))
+        img.draw_line(return_stop_x, 0, return_stop_x, 239,
+                      color=stop_color, thickness=2)
+
 # Precomputed from the d040b74 four-point competition calibration.
 H_PIX2WORLD = (
     -0.789473684210523, 0.020532099479467793, 127.59861191440086,
@@ -1273,7 +1360,9 @@ def yellow_line_reaches_bottom_corner():
             yellow_line_y_at_x(319) >= YELLOW_BOTTOM_Y)
 
 def draw_carry_yellow_line(img):
-    if openart_mode != MODE_CARRY or not yellow_detected:
+    if (not ENABLE_YELLOW_DRAW or
+            (openart_mode != MODE_SEARCH and openart_mode != MODE_CARRY) or
+            not yellow_detected):
         return
     points = []
     for x in (0, 319):
@@ -1401,6 +1490,7 @@ while True:
     # ===== Return-mode horizontal yellow line =====
     if openart_mode == MODE_RETURN:
         process_return_yellow(img)
+        draw_return_yellow_lines(img)
         if frame_count % 10 == 0:
             gc.collect()
         feed_watchdog()
@@ -1427,6 +1517,7 @@ while True:
         found = None
         if frame_count % 30 == 1:
             print("[color] find_color_target error: " + str(error))
+    found = confirm_new_bear_target(found)
 
     if found:
         send_color_id, blob = found
