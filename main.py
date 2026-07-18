@@ -182,6 +182,7 @@ COLOR_MIN_PIXELS = 70
 COLOR_MIN_AREA = 100
 TENNIS_MIN_PIXELS = 80
 TENNIS_MIN_AREA = 80
+# RED_BAG_MAX_WIDTH_HEIGHT_X100 = 170  # 已停用：红沙包恢复通用沙袋形状规则
 NEAR_NOISE_Y_MIN = 170
 NEAR_NOISE_BOX_AREA = 400
 _color_blob_limits = (
@@ -236,7 +237,7 @@ TRACK_MAX_JUMP2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
 TRACK_MIN_IOU = 0.05
 BRN_BEAR_MERGE_MARGIN = 12
 WHT_BEAR_MERGE_MARGIN = 10
-MODEL_PATH = '/sd/80lite0.5_new.tflite'
+MODEL_PATH = '/sd/80lite0.5Re.tflite'
 MODEL_COLOR_IDS = ((4, 5), (3,), (1, 2))
 MODEL_CONTACT_OFF_X = (-1, -1, -1)
 MODEL_CONTACT_OFF_Y = (0, 0, 0)
@@ -341,6 +342,7 @@ dynamic_cut_miss_count = 0
 dynamic_detect_roi = DETECT_ROI
 target_color_id = 0
 host_color_id_received = False
+completed_color_mask = 0
 color_track_active = False
 color_track_box = None
 color_track_coordinate_box = None
@@ -361,7 +363,7 @@ front_scan_last_mask = -1
 front_scan_last_count = 0
 front_scan_stable_count = 0
 front_scan_total_count = 0
-yellow_threshold = [(62, 100, -59, 10, 26, 127)]
+yellow_threshold = [(27, 100, -55, 16, 21, 105)]
 ENABLE_YELLOW_DRAW = True
 TENNIS_LINE_THRESHOLD = yellow_threshold
 RETURN_YELLOW_PACKET_ID = 0xC8
@@ -416,6 +418,21 @@ openart_mode = MODE_SEARCH
 POS_NO_BOUNDARY = 0x00
 POS_RIGHT_SIDE  = 0x01
 POS_CROSSED     = 0x02
+def color_id_completed(color_id):
+    return (1 <= color_id <= len(all_color_thresholds) and
+            bool(completed_color_mask & (1 << (color_id - 1))))
+def mark_color_completed(color_id):
+    global completed_color_mask
+    if 1 <= color_id <= len(all_color_thresholds):
+        completed_color_mask |= 1 << (color_id - 1)
+def active_selected_color_id():
+    if host_color_id_received and 1 <= target_color_id <= len(all_color_thresholds):
+        return target_color_id
+    if color_track_active and 1 <= color_track_color_id <= len(all_color_thresholds):
+        return color_track_color_id
+    if 1 <= model_color[0] <= len(all_color_thresholds):
+        return model_color[0]
+    return 0
 def reset_target_tracking_state():
     global lost_frame_count
     global target_color_id, host_color_id_received
@@ -563,6 +580,9 @@ def center_dist2(a, b):
     dx = acx - bcx
     dy = acy - bcy
     return dx * dx + dy * dy
+# def red_bag_aspect_valid(width, height):
+#     return (width > 0 and height > 0 and
+#             width * 100 <= height * RED_BAG_MAX_WIDTH_HEIGHT_X100)
 def valid_color_blob(blob, color_id, pixels_threshold_override=0):
     w = blob.w()
     h = blob.h()
@@ -589,12 +609,35 @@ def valid_color_blob(blob, color_id, pixels_threshold_override=0):
             return False
         if blob.density() < 0.25:
             return False
+    # elif color_id == 2:  # 红沙包专用长宽比过滤已停用
+    #     if w * 100 < h * 60 or not red_bag_aspect_valid(w, h):
+    #         return False
+    #     if blob.density() < 0.40:
+    #         return False
     else:
         if w * 100 < h * 60 or w * 100 > h * 180:
             return False
         if blob.density() < 0.40:
             return False
     return True
+def valid_front_scan_blob(blob, color_id, pixels_threshold_override=0):
+    # 0x06 reports colored obstacles, not only pickup-target shapes.
+    # Keep color/size/density checks, but deliberately skip aspect ratios.
+    w = blob.w()
+    h = blob.h()
+    if w <= 0 or h <= 0:
+        return False
+    box_area = w * h
+    if blob.y() > NEAR_NOISE_Y_MIN and box_area < NEAR_NOISE_BOX_AREA:
+        return False
+    pixels_threshold, area_threshold = _color_blob_limits[color_id - 1]
+    if pixels_threshold_override > 0:
+        pixels_threshold = pixels_threshold_override
+    if blob.pixels() < pixels_threshold or box_area < area_threshold:
+        return False
+    density_minimum = (0.25 if color_id == 3 or color_id == 4 or color_id == 5
+                       else 0.40)
+    return blob.density() >= density_minimum
 def color_id_from_blob_code(code):
     if code <= 0 or code & (code - 1):
         return 0
@@ -642,7 +685,7 @@ def color_id_to_model_label(color_id):
         return 0
     return -1
 def trusted_model_color_id(label):
-    if (model_color[0] > 0 and
+    if (model_color[0] > 0 and not color_id_completed(model_color[0]) and
             color_id_to_model_label(model_color[0]) == label):
         if (color_adapt_pending_count > 0 and
                 color_adapt_pending_id != model_color[0]):
@@ -650,7 +693,7 @@ def trusted_model_color_id(label):
         return model_color[0]
     if 0 <= label < len(MODEL_COLOR_IDS):
         candidates = MODEL_COLOR_IDS[label]
-        if len(candidates) == 1:
+        if len(candidates) == 1 and not color_id_completed(candidates[0]):
             return candidates[0]
     return 0
 def output_model_color_id(label):
@@ -808,15 +851,27 @@ def model_high_score_minimum(box):
 def model_acquire_rank(box, score):
     return (box[1] + box[3], int(score * 100000), box[2] * box[3])
 def model_candidate_matches_requested_color(img, label, box):
-    if not host_color_id_received or target_color_id <= 0:
-        return True
     candidates = MODEL_COLOR_IDS[label]
-    if target_color_id not in candidates:
+    if host_color_id_received and target_color_id > 0:
+        if color_id_completed(target_color_id) or target_color_id not in candidates:
+            return False
+        if len(candidates) == 1:
+            return True
+        sampled_id, _ = sample_model_color(img, label, box)
+        return sampled_id == target_color_id
+    any_completed = False
+    all_completed = True
+    for color_id in candidates:
+        if color_id_completed(color_id):
+            any_completed = True
+        else:
+            all_completed = False
+    if all_completed:
         return False
-    if len(candidates) == 1:
+    if not any_completed:
         return True
     sampled_id, _ = sample_model_color(img, label, box)
-    return sampled_id == target_color_id
+    return sampled_id > 0 and not color_id_completed(sampled_id)
 
 def tennis_candidate_is_yellow_line(img, box):
     x, y, w, h = box
@@ -1084,11 +1139,16 @@ def sample_model_color(img, label, box):
     color_id = sample_color_id(label, sample[6:9])
     if color_id <= 0:
         return 0, None
+    if color_id_completed(color_id):
+        return 0, None
+    # if color_id == 2 and not red_bag_aspect_valid(box[2], box[3]):
+    #     return 0, None
     return color_id, build_dynamic_threshold(color_id, sample)
 def confirm_model_color(observed_id, observed_threshold):
     global color_adapt_pending_id, color_adapt_pending_threshold
     global color_adapt_pending_count
-    if observed_id <= 0 or observed_threshold is None:
+    if (observed_id <= 0 or observed_threshold is None or
+            color_id_completed(observed_id)):
         reset_color_adaptation_pending()
         return False
     if (observed_id == color_adapt_pending_id and
@@ -1540,7 +1600,8 @@ def scan_front_other_color_ids(img):
                 continue
         if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
             continue
-        if not valid_color_blob(blob, color_id, FRONT_SCAN_MIN_PIXELS + 1):
+        if not valid_front_scan_blob(
+                blob, color_id, FRONT_SCAN_MIN_PIXELS + 1):
             continue
         if front_scan_blob_is_current(blob, current_box):
             continue
@@ -1784,12 +1845,15 @@ def receive_command_from_host():
             continue
         _cmd_rx_buf = _cmd_rx_buf[frame_size:]
         if command == 0x03 and 1 <= param <= len(all_color_thresholds):
-            same_target = host_color_id_received and target_color_id == param
-            target_color_id = param
-            host_color_id_received = True
-            lost_frame_count = 0
-            if not same_target:
-                apply_host_hybrid_color(param)
+            if color_id_completed(param):
+                reset_target_tracking_state()
+            else:
+                same_target = host_color_id_received and target_color_id == param
+                target_color_id = param
+                host_color_id_received = True
+                lost_frame_count = 0
+                if not same_target:
+                    apply_host_hybrid_color(param)
         elif command == 0x01:
             front_scan_requested = False
             reset_front_scan_state()
@@ -1875,6 +1939,7 @@ def current_pos_flag(frame_index):
         if yellow_bottom_reached_in_carry:
             yellow_lost_count += 1
             if yellow_lost_count >= YELLOW_LOST_THRESHOLD:
+                mark_color_completed(active_selected_color_id())
                 openart_mode = MODE_WAIT_TURN
                 return POS_CROSSED
         return POS_NO_BOUNDARY

@@ -205,7 +205,8 @@ def cut_line_y_at_x(x):
     return dynamic_cut_left_y
 
 
-def valid_color_blob(blob, color_id, pixels_threshold_override=0):
+def valid_front_scan_blob(blob, color_id, pixels_threshold_override=0):
+    # Match 0x06: colored obstacles are valid regardless of target aspect ratio.
     w = blob.w()
     h = blob.h()
     if w <= 0 or h <= 0:
@@ -218,22 +219,9 @@ def valid_color_blob(blob, color_id, pixels_threshold_override=0):
         pixels_threshold = pixels_threshold_override
     if blob.pixels() < pixels_threshold or box_area < area_threshold:
         return False
-    if color_id == 3:
-        if w * 100 < h * 45 or w * 100 > h * 185:
-            return False
-        if blob.density() < 0.35:
-            return False
-    elif color_id == 4 or color_id == 5:
-        if w * 100 < h * 30 or w * 100 > h * 250:
-            return False
-        if blob.density() < 0.25:
-            return False
-    else:
-        if w * 100 < h * 60 or w * 100 > h * 180:
-            return False
-        if blob.density() < 0.40:
-            return False
-    return True
+    density_minimum = (0.25 if color_id == 3 or color_id == 4 or color_id == 5
+                       else 0.40)
+    return blob.density() >= density_minimum
 
 
 def color_id_from_blob_code(code):
@@ -268,7 +256,8 @@ def find_front_obstacles(img):
                     continue
             if b.pixels() <= FRONT_SCAN_MIN_PIXELS:
                 continue
-            if not valid_color_blob(b, color_id, FRONT_SCAN_MIN_PIXELS + 1):
+            if not valid_front_scan_blob(
+                    b, color_id, FRONT_SCAN_MIN_PIXELS + 1):
                 continue
             candidates.append((color_id, b))
 

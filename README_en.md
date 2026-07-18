@@ -26,6 +26,41 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
 
+### 2026-07-19 - v0.10.3 - Disable the red-bag-specific aspect filter
+
+Scope: `main.py`, `minimain.py`, `main_autocalib_test.py`, `calib_ide_autocalib_competition.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changes:
+
+- Commented out the color-ID2-specific `width / height <= 1.70` filter and its equivalent model-box color-sampling check. The code remains commented for easy field restoration.
+- Red bags again use the original generic bag limits, `0.60 <= width / height <= 1.80` with density `>= 0.40`, preventing valid red bags from being rejected by the dedicated ceiling.
+- Synchronized the ten-frame calibration verification, calibration runtime preview, and host-command test entrypoint. `0x06` already skipped target aspect ratios and is unchanged.
+- `python -m py_compile main.py minimain.py main_autocalib_test.py calib_ide_autocalib_competition.py` passed, and `git diff --check` passed.
+
+### 2026-07-19 - v0.10.2 - One successful carry per color ID
+
+Scope: `main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changes:
+
+- Added an ID1..ID5 completion bit mask. The master records the current ID only when carry mode confirms a yellow-line crossing and emits `POS_CROSSED` for the first time; ordinary detection, merely seeing the line, and search resets do not count as completion.
+- The slave has no carry yellow-line state machine and no longer depends on an `0x02` that may be skipped by the automatic flow. It only latches the current ID on `0x01`, then commits it when the next post-carry/search-reset `0x00` or `0x02` arrives. An ordinary `0x00` records nothing when no carry is pending.
+- Completed IDs are excluded from normal model candidates, model-guided color sampling, and final coordinate output. A repeated `0x03,id` clears target state instead of locking again. When a model class still contains an unfinished color—for example, ID1 is complete but ID2 is not—the runtime samples LAB before accepting the candidate.
+- `0x06` continues to return every valid color-blob ID and does not apply the completion mask. Completion and the slave's pending-carry ID are RAM-only and clear when OpenART restarts.
+- `python -m py_compile main.py minimain.py` passed, and `git diff --check` passed.
+
+### 2026-07-19 - v0.10.1 - Red-bag and field-brick shape separation
+
+Scope: `main.py`, `minimain.py`, `main_autocalib_test.py`, `calib_ide_autocalib_competition.py`, `front_obstacle_scan_test.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changes:
+
+- Added a dedicated horizontal aspect-ratio ceiling for color ID2 red bags: a candidate must satisfy `width / height <= 1.70`. This relaxes the initial `1.50` limit to tolerate perspective and fragmented normal-bag blobs; the existing `width / height >= 0.60`, density, and pixel limits remain unchanged, while ID1 blue bags retain `0.60..1.80`.
+- Applied the rule to normal target LAB candidates and model-guided color sampling in the master and slave runtimes, preventing the model fallback from accepting an obviously wide, flat red field brick as a pickup target.
+- Preserved the `0x06` “all valid color IDs” semantics with a target-shape-independent scan validator: every other ID passing color, pixel/area, density, and valid-region checks is accumulated into the mask, so a horizontal red brick is still returned as ID2. The tracked target remains reported separately through `current_id`.
+- Synchronized the front all-color scan test, ten-frame field-calibration verification, calibration runtime preview, and host-command auto-calibration test so each entrypoint keeps the intended semantics.
+- `python -m py_compile main.py minimain.py main_autocalib_test.py calib_ide_autocalib_competition.py front_obstacle_scan_test.py` passed.
+
 ### 2026-07-16 - v0.10.0 - Model-guided field calibration and stable runtime recognition
 
 Scope: `calib_ide_autocalib_competition.py`, `main.py`, `minimain.py`, `front_obstacle_scan_test.py`, `README.md`, `README_ch.md`, `README_en.md`

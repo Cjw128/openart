@@ -267,6 +267,7 @@ EDGE_CROPPED_MIN_DENSITY = 0.35
 SMALL_BLOB_SHAPE_SKIP_W = 20
 BEAR_BLOB_SHAPE_SKIP_W = 28
 BRN_BEAR_BLOB_SHAPE_SKIP_W = 90
+# RED_BAG_MAX_WIDTH_HEIGHT_X100 = 170  # 已停用
 BAG_SMALL_MIN_W = 8
 BAG_SMALL_MIN_H = 8
 BALL_SMALL_MIN_W = 8
@@ -379,6 +380,8 @@ def valid_color_blob(blob, cid):
         return False
     if blue_bag_bottom_shadow_blob(blob, cid):
         return False
+    # if cid == 2 and w * 100 > h * RED_BAG_MAX_WIDTH_HEIGHT_X100:
+    #     return False
     # 接近全画面宽的 blob 只可能是赛道布/背景, 物体不可能这么宽
     if w >= 280:
         return False
@@ -674,6 +677,9 @@ def blob_reject_reason(img, b, cid):
         return 'gnd'
     if blue_bag_bottom_shadow_blob(b, cid):
         return 'gnd'
+    # if (cid == 2 and
+    #         b.w() * 100 > b.h() * RED_BAG_MAX_WIDTH_HEIGHT_X100):
+    #     return 'size'
     if tiny_blob_outside_cut(b):
         return 'gnd'
     if cut_valid and b.cy() < cut_line_y_at_x(b.cx()) + cut_delta_for_blob(b):

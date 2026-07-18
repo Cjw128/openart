@@ -15,7 +15,7 @@
 import sensor, time, tf
 
 SCRIPT_TITLE = "IDE auto-calib competition preview"
-SCRIPT_BUILD = "2026-07-15 red-bag-bear-core-v21"
+SCRIPT_BUILD = "2026-07-19 red-bag-filter-off-v23"
 SCRIPT_TARGET = "xuezhang/shijue/main_autocalib_competition.py"
 SCRIPT_RUNTIME = "auto_calib tuned runtime filters"
 RUN_PROFILE = "debug"      # "debug"=full draw/model/cmp; "run"=minimal preview for FPS
@@ -145,6 +145,7 @@ VERIFY_BAD_STREAK_LIMIT = 3
 VERIFY_BAD_TOTAL_LIMIT = 4
 VERIFY_JUMP_LIMIT = 2
 VERIFY_BLOB_LIMITS = ((70, 100), (70, 100), (80, 80), (70, 100), (70, 100))
+# RED_BAG_MAX_WIDTH_HEIGHT_X100 = 170  # 已停用
 VERIFY_COLOR_Y_MAX = 230
 VERIFY_CENTER_MAX_PERCENT = 55
 VERIFY_MIN_AREA_PERCENT = 18
@@ -1491,6 +1492,10 @@ def verify_valid_color_blob(blob, slot):
     if slot == 4 or slot == 5:
         return (w * 100 >= h * 30 and w * 100 <= h * 250
                 and blob.density() >= 0.25)
+    # if slot == 2:  # 红沙包专用长宽比过滤已停用
+    #     return (w * 100 >= h * 60
+    #             and w * 100 <= h * RED_BAG_MAX_WIDTH_HEIGHT_X100
+    #             and blob.density() >= 0.40)
     return (w * 100 >= h * 60 and w * 100 <= h * 180
             and blob.density() >= 0.40)
 
@@ -2278,6 +2283,10 @@ def runtime_valid_color_blob(blob, color_id):
     if color_id == 4 or color_id == 5:
         return (w * 100 >= h * 30 and w * 100 <= h * 250
                 and blob.density() >= 0.25)
+    # if color_id == 2:  # 红沙包专用长宽比过滤已停用
+    #     return (w * 100 >= h * 60
+    #             and w * 100 <= h * RED_BAG_MAX_WIDTH_HEIGHT_X100
+    #             and blob.density() >= 0.40)
     return (w * 100 >= h * 60 and w * 100 <= h * 180
             and blob.density() >= 0.40)
 

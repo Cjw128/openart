@@ -26,6 +26,41 @@
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
 
+### 2026-07-19 - v0.10.3 - 停用红沙包专用长宽比过滤
+
+范围：`main.py`, `minimain.py`, `main_autocalib_test.py`, `calib_ide_autocalib_competition.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+
+- 注释掉颜色 ID2 的 `宽/高 <= 1.70` 专用过滤，以及模型框颜色采样中的同款检查；代码保留为注释，便于现场需要时恢复。
+- 红沙包重新使用原有通用沙袋规则 `0.60 <= 宽/高 <= 1.80` 和密度 `>= 0.40`，避免正常红沙包被专用上限误杀。
+- 标定十帧复检、标定运行预览和带主控命令的测试入口同步停用专用上限；`0x06` 本来就不检查目标长宽比，行为不变。
+- `python -m py_compile main.py minimain.py main_autocalib_test.py calib_ide_autocalib_competition.py` 通过，`git diff --check` 通过。
+
+### 2026-07-19 - v0.10.2 - 每个颜色 ID 只有效搬运一次
+
+范围：`main.py`, `minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+
+- 新增 ID1..ID5 完成 bit mask。主车只在搬运模式首次确认黄线穿越并产生 `POS_CROSSED` 时记录当前 ID；普通识别、黄线出现但未越过以及搜索重置均不会计为完成。
+- 从车没有搬运黄线状态机，也不依赖自动流程中可能不会到达的 `0x02`：收到 `0x01` 时仅锁存本轮 ID，下一次 `0x00` 或 `0x02` 搬运结束/搜索复位时才提交完成。没有待确认搬运时，普通 `0x00` 不会记录任何 ID。
+- 已完成 ID 从正常模型候选、模型引导颜色采样和最终坐标输出中排除；重复的 `0x03,id` 会清空目标状态而不会再次锁定。若同一模型大类还有未完成颜色，例如 ID1 已完成但 ID2 未完成，运行时会先取 LAB 颜色再决定是否接受候选。
+- `0x06` 继续返回所有有效色块 ID，不使用完成 mask 过滤；完成状态与从车待确认 ID 仅保存在 RAM，重启 OpenART 后清零。
+- `python -m py_compile main.py minimain.py` 通过，`git diff --check` 通过。
+
+### 2026-07-19 - v0.10.1 - 红沙包与场地红砖形状分离
+
+范围：`main.py`, `minimain.py`, `main_autocalib_test.py`, `calib_ide_autocalib_competition.py`, `front_obstacle_scan_test.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+
+- 为颜色 ID2 红沙包增加独立横向长宽比上限：候选框必须满足 `宽/高 <= 1.70`。该值由初版 `1.50` 放宽，以容纳正常沙包的透视和色块破碎；原有 `宽/高 >= 0.60`、密度和像素门槛保持不变，ID1 蓝沙包仍使用 `0.60..1.80`。
+- 主车和从车在正常目标 LAB 候选与模型引导颜色采样阶段执行该规则，防止模型检测兜底重新接受明显横向扁长的红砖。
+- `0x06` 保持“全部有效色块 ID”语义，使用独立于目标形状的扫描校验：通过颜色阈值、像素/面积、密度和有效区域检查的所有其它 ID 都写入 mask，横向红砖仍作为 ID2 返回；当前跟踪目标由 `current_id` 单独返回。
+- 同步更新前方全色扫描测试、现场自动标定十帧复检、标定运行预览和带主控命令的自动标定测试，保证各入口语义一致。
+- `python -m py_compile main.py minimain.py main_autocalib_test.py calib_ide_autocalib_competition.py front_obstacle_scan_test.py` 通过。
+
 ### 2026-07-16 - v0.10.0 - 模型引导现场标定与运行识别稳定化
 
 范围：`calib_ide_autocalib_competition.py`, `main.py`, `minimain.py`, `front_obstacle_scan_test.py`, `README.md`, `README_ch.md`, `README_en.md`
