@@ -5,11 +5,9 @@
 # detector in main.py/minimain.py and draws the selected lines on the frame.
 #
 # Overlay:
-#   cyan box         center vertical ROI (searched top to bottom)
-#   magenta box      lower horizontal ROI (searched right to left)
-#   thin red line    stop threshold x=200
-#   orange/green     selected horizontal return line (pending/valid)
-#   blue/red line    selected vertical stop line (before/after threshold)
+#   cyan box         center vertical ROI (searched bottom to top)
+#   thin red line    stop threshold y=200
+#   orange/green/red selected return line (pending/valid/stop)
 #   blue strips      blue-cloth boundary sampling ROIs
 #   yellow line      active blue-cloth cut line
 #
@@ -40,13 +38,7 @@ RETURN_YELLOW_MIN_AREA = 5
 RETURN_YELLOW_STABLE_FRAMES = 1
 RETURN_YELLOW_STABLE_DELTA = 3
 
-RETURN_STOP_ROI = (0, 200, 320, 20)
-RETURN_STOP_X_THRESHOLD = 200
-RETURN_STOP_MIN_PIXELS = 5
-RETURN_STOP_MIN_AREA = 5
-RETURN_STOP_HORIZONTAL_GUARD = 3
-RETURN_STOP_MIN_BLOB_H = 8
-RETURN_STOP_MAX_WIDTH_HEIGHT_X100 = 300
+RETURN_STOP_Y_THRESHOLD = 200
 
 ENABLE_DYNAMIC_CUT = True
 CUT_BLOB_MIN_H = 12
@@ -78,11 +70,9 @@ RETURN_STATUS_Y_VALID = 0x01
 RETURN_STATUS_STOP = 0x02
 
 ROI_Y_COLOR = (0, 255, 255)
-ROI_STOP_COLOR = (255, 0, 255)
 THRESHOLD_COLOR = (255, 0, 0)
 PENDING_LINE_COLOR = (255, 128, 0)
 VALID_LINE_COLOR = (0, 255, 0)
-TRACK_STOP_COLOR = (0, 128, 255)
 TRIGGER_STOP_COLOR = (255, 0, 0)
 TEXT_COLOR = (255, 255, 255)
 CUT_SAMPLE_COLOR = (0, 0, 255)
@@ -98,7 +88,7 @@ return_yellow_last_y = -1
 return_yellow_stable_count = 0
 return_yellow_detected = False
 return_yellow_y = 0
-return_stop_x = -1
+return_stop_y = -1
 return_stop_requested = False
 dynamic_cut_y = 0
 dynamic_cut_valid = False
@@ -267,78 +257,34 @@ def detect_return_yellow_line(img):
     if not blobs:
         return None, None
 
-    # Top-to-bottom search: record the first yellow blob without shape checks.
+    # Bottom-to-top search: prefer the yellow blob with the lowest bottom edge.
     best_y = None
-    best_top = 241
+    best_bottom = -1
     best_pixels = -1
     best_blob = None
     for blob in blobs:
         if not yellow_blob_below_cut(blob):
             continue
-        top = blob.y()
+        bottom = blob.y() + blob.h()
         y = blob.cy()
         pixels = blob.pixels()
-        if (best_y is None or top < best_top or
-                (top == best_top and pixels > best_pixels)):
+        if (best_y is None or bottom > best_bottom or
+                (bottom == best_bottom and pixels > best_pixels)):
             best_y = y
-            best_top = top
+            best_bottom = bottom
             best_pixels = pixels
             best_blob = blob
     return best_y, best_blob
 
 
-def return_line_overlaps_stop_roi(y):
-    if y is None:
-        return False
-    roi_y = RETURN_STOP_ROI[1]
-    roi_bottom = roi_y + RETURN_STOP_ROI[3] - 1
-    return (y >= roi_y - RETURN_STOP_HORIZONTAL_GUARD and
-            y <= roi_bottom + RETURN_STOP_HORIZONTAL_GUARD)
-
-
-def detect_return_stop_line(img, return_y=None):
-    if return_line_overlaps_stop_roi(return_y):
-        return None, None
-    try:
-        blobs = img.find_blobs(
-            RETURN_YELLOW_THRESHOLD, roi=RETURN_STOP_ROI,
-            pixels_threshold=RETURN_STOP_MIN_PIXELS,
-            area_threshold=RETURN_STOP_MIN_AREA, merge=True)
-    except Exception:
-        return None, None
-    if not blobs:
-        return None, None
-
-    # Right-to-left search: record the first yellow blob without shape checks.
-    best_x = None
-    best_pixels = -1
-    best_blob = None
-    for blob in blobs:
-        if not yellow_blob_below_cut(blob):
-            continue
-        w = blob.w()
-        h = blob.h()
-        if (h < RETURN_STOP_MIN_BLOB_H or
-                w * 100 > h * RETURN_STOP_MAX_WIDTH_HEIGHT_X100):
-            continue
-        x = blob.cx()
-        pixels = blob.pixels()
-        if (best_x is None or x > best_x or
-                (x == best_x and pixels > best_pixels)):
-            best_x = x
-            best_pixels = pixels
-            best_blob = blob
-    return best_x, best_blob
-
-
-def update_return_state(raw_y, raw_stop_x):
+def update_return_state(raw_y):
     global return_yellow_last_y, return_yellow_stable_count
     global return_yellow_detected, return_yellow_y
-    global return_stop_x, return_stop_requested
+    global return_stop_y, return_stop_requested
 
-    return_stop_x = raw_stop_x if raw_stop_x is not None else -1
-    if raw_stop_x is not None and raw_stop_x > RETURN_STOP_X_THRESHOLD:
-        return_stop_requested = True
+    return_stop_y = raw_y if raw_y is not None else -1
+    return_stop_requested = (
+        raw_y is not None and raw_y > RETURN_STOP_Y_THRESHOLD)
 
     if raw_y is None:
         return_yellow_last_y = -1
@@ -384,49 +330,35 @@ def send_return_packet(status):
     uart.write(_tx_buf)
 
 
-def draw_detection(img, raw_y, y_blob, raw_stop_x, stop_blob, status):
+def draw_detection(img, raw_y, y_blob, status):
     for roi in CUT_STRIP_ROIS:
         img.draw_rectangle(roi, color=CUT_SAMPLE_COLOR, thickness=1)
     if dynamic_cut_valid:
         img.draw_line(0, dynamic_cut_y, 319, dynamic_cut_y,
                       color=CUT_LINE_COLOR, thickness=2)
     img.draw_rectangle(RETURN_YELLOW_ROI, color=ROI_Y_COLOR, thickness=1)
-    img.draw_rectangle(RETURN_STOP_ROI, color=ROI_STOP_COLOR, thickness=1)
-    img.draw_line(RETURN_STOP_X_THRESHOLD, 0, RETURN_STOP_X_THRESHOLD, 239,
+    img.draw_line(0, RETURN_STOP_Y_THRESHOLD, 319, RETURN_STOP_Y_THRESHOLD,
                   color=THRESHOLD_COLOR, thickness=1)
 
     if raw_y is not None:
-        line_color = (VALID_LINE_COLOR if status & RETURN_STATUS_Y_VALID
-                      else PENDING_LINE_COLOR)
+        line_color = (TRIGGER_STOP_COLOR if status & RETURN_STATUS_STOP else
+                      (VALID_LINE_COLOR if status & RETURN_STATUS_Y_VALID
+                       else PENDING_LINE_COLOR))
         img.draw_line(0, raw_y, 319, raw_y, color=line_color, thickness=2)
         if y_blob is not None:
             img.draw_rectangle(y_blob.rect(), color=line_color, thickness=2)
             img.draw_cross(y_blob.cx(), y_blob.cy(),
                            color=line_color, size=5, thickness=1)
 
-    if raw_stop_x is not None:
-        stop_color = (TRIGGER_STOP_COLOR
-                      if raw_stop_x > RETURN_STOP_X_THRESHOLD
-                      else TRACK_STOP_COLOR)
-        img.draw_line(raw_stop_x, 0, raw_stop_x, 239,
-                      color=stop_color, thickness=3)
-        if stop_blob is not None:
-            img.draw_rectangle(stop_blob.rect(), color=stop_color, thickness=2)
-            img.draw_cross(stop_blob.cx(), stop_blob.cy(),
-                           color=stop_color, size=5, thickness=1)
-
     y_text = "-" if raw_y is None else str(raw_y)
-    if return_line_overlaps_stop_roi(raw_y):
-        x_text = "guard"
-    else:
-        x_text = "-" if raw_stop_x is None else str(raw_stop_x)
     stable_display = return_yellow_stable_count
     if stable_display > RETURN_YELLOW_STABLE_FRAMES:
         stable_display = RETURN_YELLOW_STABLE_FRAMES
     img.draw_string(2, 2, "{} Y:{} {}/{}".format(
         CAMERA_ROLE, y_text, stable_display, RETURN_YELLOW_STABLE_FRAMES),
         color=TEXT_COLOR, scale=1)
-    img.draw_string(2, 14, "X:{} status:{:02X}".format(x_text, status),
+    img.draw_string(2, 14, "stop_y:{} status:{:02X}".format(
+        return_stop_y if return_stop_y >= 0 else "-", status),
                     color=TEXT_COLOR, scale=1)
     cut_text = str(dynamic_cut_y) if dynamic_cut_valid else "-"
     img.draw_string(2, 26, "cut:{}".format(cut_text),
@@ -474,10 +406,9 @@ print("[return_test] exposure_us={} source={}".format(
     exposure_us, exposure_source))
 print("[return_test] blue_ground={} source={}".format(
     BLUE_GROUND_THRESHOLD[0], ground_source))
-print("[return_test] vertical strip: top->bottom, x=150..169, y=30..239")
-print("[return_test] horizontal strip: right->left, y=200..219")
-print("[return_test] stop when cx>{}; uart={}".format(
-    RETURN_STOP_X_THRESHOLD, ENABLE_UART_OUTPUT))
+print("[return_test] vertical strip: bottom->top, x=150..169, y=30..239")
+print("[return_test] stop while cy>{}; uart={}".format(
+    RETURN_STOP_Y_THRESHOLD, ENABLE_UART_OUTPUT))
 
 while True:
     clock.tick()
@@ -486,18 +417,17 @@ while True:
     update_dynamic_cut(img, frame_count)
 
     raw_y, y_blob = detect_return_yellow_line(img)
-    raw_stop_x, stop_blob = detect_return_stop_line(img, raw_y)
-    status = update_return_state(raw_y, raw_stop_x)
+    status = update_return_state(raw_y)
     send_return_packet(status)
-    draw_detection(img, raw_y, y_blob, raw_stop_x, stop_blob, status)
+    draw_detection(img, raw_y, y_blob, status)
 
     now = time.ticks_ms()
     if time.ticks_diff(now, last_print) >= 500:
         last_print = now
-        print("[return_test] frame={} cut={} raw_y={} stable={}/{} y={} x={} stop={} status=0x{:02X} fps={:.1f}".format(
+        print("[return_test] frame={} cut={} raw_y={} stable={}/{} y={} stop={} status=0x{:02X} fps={:.1f}".format(
             frame_count, dynamic_cut_y if dynamic_cut_valid else None,
             raw_y, return_yellow_stable_count,
-            RETURN_YELLOW_STABLE_FRAMES, return_yellow_y, raw_stop_x,
+            RETURN_YELLOW_STABLE_FRAMES, return_yellow_y,
             return_stop_requested, status, clock.fps()))
 
     if frame_count % 10 == 0:

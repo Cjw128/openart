@@ -204,12 +204,12 @@ MODEL_MIN_BOX_SIDE = 4
 MODEL_MIN_BOX_AREA = 24
 MODEL_MATCH_CENTER2 = 130 * 130
 MODEL_PENDING_CENTER2 = 80 * 80
-FIRST_LOCK_SCORE_MIN = 0.25
-FIRST_LOCK_WINDOW_FRAMES = 5
-FIRST_LOCK_REQUIRED_HITS = 3
-FIRST_LOCK_MATCH_CENTER_PX = 30
+FIRST_LOCK_SCORE_MIN = 0.30
+FIRST_LOCK_WINDOW_FRAMES = 7
+FIRST_LOCK_REQUIRED_HITS = 5
+FIRST_LOCK_MATCH_CENTER_PX = 24
 FIRST_LOCK_MATCH_CENTER2 = FIRST_LOCK_MATCH_CENTER_PX * FIRST_LOCK_MATCH_CENTER_PX
-FIRST_LOCK_SIZE_DELTA_PERCENT = 45
+FIRST_LOCK_SIZE_DELTA_PERCENT = 35
 FIRST_LOCK_NEARER_MARGIN_CM = 0.0
 HOST_FORCED_FIRST_LOCK_SCORE_MIN = 0.25
 HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 5
@@ -356,15 +356,8 @@ def color_id_completed(color_id):
     return (1 <= color_id <= len(all_color_thresholds) and
             bool(completed_color_mask & (1 << (color_id - 1))))
 def color_id_available_for_search(color_id):
-    if (color_id < 1 or color_id > len(all_color_thresholds) or
-            color_id_completed(color_id)):
-        return False
-    if not color_id_completed(2):
-        return color_id == 2
-    if color_id == 1:
-        return (color_id_completed(3) and color_id_completed(4) and
-                color_id_completed(5))
-    return True
+    return (1 <= color_id <= len(all_color_thresholds) and
+            not color_id_completed(color_id))
 def host_forced_target_active():
     return (host_color_id_received and
             1 <= target_color_id <= len(all_color_thresholds) and

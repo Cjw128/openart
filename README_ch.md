@@ -8,6 +8,8 @@
 | --- | --- | --- |
 | `main.py` | OpenART Plus | Plus 单文件正式脱机主程序 |
 | `minimain.py` | OpenART Plus / 从车 | 从车单文件正式脱机主程序 |
+| `stable_confirm/main.py` | OpenART Plus | 主车严格近到远稳定首次锁定版 |
+| `stable_confirm/minimain.py` | OpenART Plus / 从车 | 从车严格近到远稳定首次锁定版 |
 | `main_autocalib_test.py` | OpenART Plus / 测试 | 带主控命令的现场自动标定测试主程序 |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
 | `calib_ide_tune.py` | OpenART Plus / IDE | 自动标定参数调试脚本 |
@@ -25,6 +27,30 @@
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-07-19 - v0.10.5 - 稳定首次锁定自动识别修复
+
+范围：`stable_confirm/main.py`, `stable_confirm/minimain.py`, `stable_confirm/README.md`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+
+- 删除稳定版必须先收到 `0x02` 并等待 `300 ms` 才运行首次模型识别的硬门控，修复 IDE 单跑或主控尚未发送 `0x02` 时始终无目标的问题。
+- 保留按世界距离选择最近候选、统一 `0.30` 首次门槛、`7` 个真实推理帧至少命中 `5` 帧以及高置信度不能单帧锁定的规则。
+- LAB 动态颜色确认恢复为根目录默认版的 `3` 帧；`0x02`、`0x00` 只负责清空当前目标并重新搜索，不再控制识别权限。同一阶段重复的 `0x02` 保留去抖，不会反复清空 `5/7` 计数。
+
+验证：主从脚本语法通过；代码中不再存在首次锁定 cycle/settle 门控引用，模型路径和预处理保持与根目录默认版一致。
+
+### 2026-07-19 - v0.10.4 - 通信清零与稳定首次锁定版
+
+范围：`main.py`, `minimain.py`, `stable_confirm/main.py`, `stable_confirm/minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+变更：
+
+- 新增下行 `0x08` 清零命令，四字节帧为 `AA 55 08 08`。四份代码收到后都清空 ID1..ID5 完成 mask、解除当前单色/模型锁并恢复全模型搜索；从车还会清空待提交搬运 ID。
+- 根目录保留原有快速版，`stable_confirm/` 提供可独立部署的主车/从车版本。稳定版把 `0x02` 作为就绪触发，等待 `300 ms` 后以统一 `0.30` 候选门槛严格按世界距离从近到远选择，并用 `7` 帧中的 `5` 帧完成首次锁定。
+- 稳定版取消高置信度单帧首次锁定；复检过程中出现更近候选时立即改为确认更近目标。若 `0x08` 到来时已经处于 `0x02` 周期，则重新执行停稳和复检。
+
+验证：四份脚本语法通过；模拟串口验证完成 mask、从车待提交 ID、目标锁和前扫状态均被正确清空；近处 `0.31` 候选优先于远处 `0.99` 候选。
 
 ### 2026-07-19 - v0.10.3 - 停用红沙包专用长宽比过滤
 

@@ -8,6 +8,8 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 | --- | --- | --- |
 | `main.py` | OpenART Plus | Plus single-file official offline runtime |
 | `minimain.py` | OpenART Plus / slave | Slave-role single-file official offline runtime |
+| `stable_confirm/main.py` | OpenART Plus | Master strict nearest-first initial-lock runtime |
+| `stable_confirm/minimain.py` | OpenART Plus / slave | Slave strict nearest-first initial-lock runtime |
 | `main_autocalib_test.py` | OpenART Plus / test | Field auto-calibration test runtime with host commands |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
 | `calib_ide_tune.py` | OpenART Plus / IDE | Auto-calibration parameter tuning script |
@@ -25,6 +27,30 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-19 - v0.10.5 - Stable initial-lock auto-detection fix
+
+Scope: `stable_confirm/main.py`, `stable_confirm/minimain.py`, `stable_confirm/README.md`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changes:
+
+- Removed the hard gate that required `0x02` followed by a `300 ms` wait before the stable runtime could run initial model detection. This fixes permanent no-target output during standalone IDE runs or before the host sends `0x02`.
+- Kept nearest-candidate ranking by world distance, the uniform `0.30` first-lock score floor, at least `5` matching hits in `7` real inference frames, and removal of the high-confidence one-frame lock shortcut.
+- Restored LAB dynamic-color confirmation to the root runtime's default `3` frames. `0x02` and `0x00` now only clear the current target and restart search; they no longer grant detection permission. Repeated `0x02` packets in one phase remain debounced and do not repeatedly erase the `5/7` count.
+
+Validation: both scripts passed syntax checks; no first-lock cycle/settle gate references remain, and the model path and preprocessing still match the root runtime.
+
+### 2026-07-19 - v0.10.4 - Communication reset and stable initial lock
+
+Scope: `main.py`, `minimain.py`, `stable_confirm/main.py`, `stable_confirm/minimain.py`, `README.md`, `README_ch.md`, `README_en.md`
+
+Changes:
+
+- Added the `0x08` host command with the four-byte frame `AA 55 08 08`. All four runtimes clear the ID1..ID5 completion mask, release the current color/model lock, and restore unrestricted model search. Slave runtimes also clear the pending carry ID.
+- Kept the root files as the original fast variant and added independently deployable master/slave runtimes under `stable_confirm/`. The stable variant treats `0x02` as the ready trigger, waits `300 ms`, admits first-lock candidates at a uniform `0.30` score floor, ranks them strictly by world distance, and requires `5` hits in a `7`-frame window.
+- The stable variant removes the high-confidence one-frame initial-lock shortcut. A nearer candidate appearing during confirmation replaces the farther pending candidate. If `0x08` arrives during an active `0x02` cycle, settling and confirmation restart.
+
+Validation: all four scripts passed syntax checks; simulated UART tests verified clearing of the completion mask, slave pending ID, target lock, and front-scan state; a near `0.31` candidate outranked a far `0.99` candidate.
 
 ### 2026-07-19 - v0.10.3 - Disable the red-bag-specific aspect filter
 

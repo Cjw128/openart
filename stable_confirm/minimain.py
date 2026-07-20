@@ -13,7 +13,7 @@ sensor.set_hmirror(False)
 sensor.set_vflip(True)
 def snapshot_frame():
     return sensor.snapshot().replace(hmirror=True)
-WB_GAINS = (101.00, 64.00, 97.00)
+WB_GAINS = (101.00, 64.00, 97.00)#
 sensor.set_auto_whitebal(False, rgb_gain_db=WB_GAINS)
 sensor.set_auto_gain(False, gain_db=0)
 EXPOSURE_INIT = 1400
@@ -180,7 +180,7 @@ TRACK_MAX_JUMP2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
 TRACK_MIN_IOU = 0.05
 BRN_BEAR_MERGE_MARGIN = 12
 WHT_BEAR_MERGE_MARGIN = 10
-MODEL_PATH = '/sd/80lite0.5NB.tflite'
+MODEL_PATH = '/sd/80lite0.5RP.tflite'
 MODEL_COLOR_IDS = ((4, 5), (3,), (1, 2))
 MODEL_CONTACT_OFF_X = (-1, -1, -1)
 MODEL_CONTACT_OFF_Y = (0, 0, 0)
@@ -340,20 +340,14 @@ RETURN_YELLOW_MIN_PIXELS = 5
 RETURN_YELLOW_MIN_AREA = 5
 RETURN_YELLOW_STABLE_FRAMES = 1
 RETURN_YELLOW_STABLE_DELTA = 3
-RETURN_STOP_ROI = (0, 200, 320, 20)
-RETURN_STOP_X_THRESHOLD = 200
-RETURN_STOP_MIN_PIXELS = 5
-RETURN_STOP_MIN_AREA = 5
-RETURN_STOP_HORIZONTAL_GUARD = 3
-RETURN_STOP_MIN_BLOB_H = 8
-RETURN_STOP_MAX_WIDTH_HEIGHT_X100 = 300
+RETURN_STOP_Y_THRESHOLD = 200
 RETURN_STATUS_Y_VALID = 0x01
 RETURN_STATUS_STOP = 0x02
 return_yellow_last_y = -1
 return_yellow_stable_count = 0
 return_yellow_detected = False
 return_yellow_y = 0
-return_stop_x = -1
+return_stop_y = -1
 return_stop_requested = False
 MODE_SEARCH = 0
 MODE_RETURN = 3
@@ -413,12 +407,12 @@ def reset_target_tracking_state():
 def reset_return_yellow_state():
     global return_yellow_last_y, return_yellow_stable_count
     global return_yellow_detected, return_yellow_y
-    global return_stop_x, return_stop_requested
+    global return_stop_y, return_stop_requested
     return_yellow_last_y = -1
     return_yellow_stable_count = 0
     return_yellow_detected = False
     return_yellow_y = 0
-    return_stop_x = -1
+    return_stop_y = -1
     return_stop_requested = False
 WORLD_X_LIMIT_CM = 250.0
 WORLD_Y_MAX_CM = 300.0
@@ -1686,36 +1680,6 @@ def process_front_scan_request(img):
         front_scan_requested = False
         reset_front_scan_state()
     return True
-def return_line_overlaps_stop_roi(y):
-    if y is None:
-        return False
-    top = RETURN_STOP_ROI[1]
-    bottom = top + RETURN_STOP_ROI[3] - 1
-    return top - RETURN_STOP_HORIZONTAL_GUARD <= y <= bottom + RETURN_STOP_HORIZONTAL_GUARD
-def detect_return_stop_x(img, return_y=None):
-    if return_line_overlaps_stop_roi(return_y):
-        return None
-    try:
-        blobs = img.find_blobs(
-            RETURN_YELLOW_THRESHOLD, roi=RETURN_STOP_ROI,
-            pixels_threshold=RETURN_STOP_MIN_PIXELS,
-            area_threshold=RETURN_STOP_MIN_AREA, merge=True)
-    except Exception:
-        return None
-    best_x = None
-    best_pixels = -1
-    if blobs:
-        for blob in blobs:
-            w = blob.w()
-            h = blob.h()
-            if (h < RETURN_STOP_MIN_BLOB_H or
-                    w * 100 > h * RETURN_STOP_MAX_WIDTH_HEIGHT_X100):
-                continue
-            x = blob.cx()
-            if best_x is None or x > best_x or (x == best_x and blob.pixels() > best_pixels):
-                best_x = x
-                best_pixels = blob.pixels()
-    return best_x
 def detect_return_yellow_y(img):
     try:
         blobs = img.find_blobs(
@@ -1725,26 +1689,25 @@ def detect_return_yellow_y(img):
     except Exception:
         return None
     best_y = None
-    best_top = 241
+    best_bottom = -1
     best_pixels = -1
     if blobs:
         for blob in blobs:
-            top = blob.y()
-            if (best_y is None or top < best_top or
-                    (top == best_top and blob.pixels() > best_pixels)):
+            bottom = blob.y() + blob.h()
+            if (best_y is None or bottom > best_bottom or
+                    (bottom == best_bottom and blob.pixels() > best_pixels)):
                 best_y = blob.cy()
-                best_top = top
+                best_bottom = bottom
                 best_pixels = blob.pixels()
     return best_y
 def process_return_yellow(img):
     global return_yellow_last_y, return_yellow_stable_count
     global return_yellow_detected, return_yellow_y
-    global return_stop_x, return_stop_requested
+    global return_stop_y, return_stop_requested
     y = detect_return_yellow_y(img)
-    stop_x = detect_return_stop_x(img, y)
-    return_stop_x = stop_x if stop_x is not None else -1
-    if stop_x is not None and stop_x > RETURN_STOP_X_THRESHOLD:
-        return_stop_requested = True
+    return_stop_y = y if y is not None else -1
+    return_stop_requested = (
+        y is not None and y > RETURN_STOP_Y_THRESHOLD)
     if y is None:
         return_yellow_last_y = -1
         return_yellow_stable_count = 0
