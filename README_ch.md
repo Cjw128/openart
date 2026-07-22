@@ -6,27 +6,65 @@
 
 | 文件 | 设备 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus | Plus 单文件正式脱机主程序 |
-| `minimain.py` | OpenART Plus / 从车 | 从车单文件正式脱机主程序 |
-| `stable_confirm/main.py` | OpenART Plus | 主车严格近到远稳定首次锁定版 |
-| `stable_confirm/minimain.py` | OpenART Plus / 从车 | 从车严格近到远稳定首次锁定版 |
-| `main_autocalib_test.py` | OpenART Plus / 测试 | 带主控命令的现场自动标定测试主程序 |
+| `main.py` | OpenART Plus / 主车 | 省赛 04 无优先级、多点世界坐标正式入口 |
+| `minimain.py` | OpenART Plus / 从车 | 省赛 04 无优先级、多点世界坐标正式入口 |
+| `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
+| `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点 |
+| `calibrate_ground_camera.py` | PC | 网格生成、校验和报告工具 |
+| `camera_ground_mesh_report.json` | PC | 当前网格质量报告 |
+| `raw_ground_projection_test.py` | OpenART Plus / IDE | 地面坐标采点和实地复核脚本 |
+| `test_ground_projection.py` | PC | 运行时投影回归测试 |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
-| `calib_ide_tune.py` | OpenART Plus / IDE | 自动标定参数调试脚本 |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
 
 ## 结构说明
 
-- 当前比赛/脱机部署使用单文件结构，`main.py` 和 `minimain.py` 分别维护主车与从车的完整主逻辑。
+- 当前部署继续使用单文件结构，`main.py` 和 `minimain.py` 分别维护主车与从车的完整主逻辑；两者启动时额外加载 `/sd/camera_ground_mesh.txt`。
 - 多文件运行模块已移除，不再使用 `openart_app.py`、`openart_config.py`、`openart_detectors.py`、`openart_trackers.py`、`openart_uart.py`、`openart_math.py`、`openart_camera.py`、`openart_calibration.py`。
-- 白熊与其它目标均由 LAB 色块识别；颜色检测、黄线状态、UART 协议、IPM 和主循环都在对应的单文件主程序内。旧 `0x05` 回库信标路径已停用，但主车和从车都支持 `0x07` 回库横向黄线检测并返回 `0xC8` 包；只有主车执行搬运过线状态机。
-- 标定、阈值调参和搬运前色块扫描验证保留为独立 IDE / 测试脚本，不作为正式脱机入口。
+- 颜色检测、黄线状态、UART 协议和主循环仍在单文件主程序内；地面网格生成和实地复核保留为独立工具。
+- `fast_blob_backup/`、`stable_confirm/`、`stable_no_priority/` 与 `mainbak` 仅作历史对照，不是当前入口。
 - 多文件版本曾导致 TFLite 检测卡死，原因和维护约束见 v0.4.0 日志；不要把 v0.3.0 的模块化结构重新作为比赛部署结构。
-- 以后所有结构说明和迭代记录都写入 `README_ch.md` / `README_en.md`，并保持中英文同步更新。
+- 根目录 `README.md` 只保留当前部署摘要，完整迭代记录写入 `README_ch.md` / `README_en.md`。
 
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-07-22 - v0.11.0 - 省赛 04 无优先级多点世界坐标版
+
+范围：`main.py`、`minimain.py`、`ground_mesh_24_points_template.csv`、`calibrate_ground_camera.py`、`camera_ground_mesh.txt`、`camera_ground_mesh_report.json`、`raw_ground_projection_test.py`、`test_ground_projection.py`、三份 README。
+
+基线与运行参数：
+
+- 正式主从入口改以实车烧录目录 `04_备用版_无优先级_5中7` 为基线，不按颜色 ID 或模型类别设置自动搜索优先级；候选统一按世界 Y 近到远选择，并保留 `7` 个真实推理帧至少命中 `5` 帧的首次锁定。
+- 主控 `0x03` 指定颜色仍是显式定向搜索，保留 04 版 `0.25` 门槛和 `3/5` 确认，不属于自动 ID 优先级。
+- 主从模型统一为 `/sd/80lite0.5SS.tflite`，固定白平衡 `(92.00, 64.00, 101.00)`，缺少板端曝光配置时使用省赛场地 `880 us`。`/sd/color_thr.txt` 中的 `exposure_us=` 仍可覆盖默认值。
+- 颜色识别、动态地面裁切、搬运状态、前方扫描、回库黄线以及主从 16 字节 UART 包结构保持省赛完成版行为。
+
+多点世界坐标重构：
+
+- 从历史提交 `fac7b92` 恢复多点坐标工具思路，以现有 `ground_mesh_24_points_template.csv` 重建；文件名虽保留 24，当前数据实际为 7 行 x 4 列共 28 个拟合点。
+- PC 生成器按近到远重排结构化行，输出 36 个三角形和 18 条带方向分类的外边界。网格内部使用重心插值，能够精确复现每个标定顶点。
+- 网格外部使用全部 28 点拟合的全局单应矩阵，并按最近网格边界补偿局部/全局偏差；远端限制为 `164 cm`，X 限制为 `-250..250 cm`。
+- 运行端严格检查网格 schema、角色、QVGA 尺寸、软件水平镜像、传感器垂直翻转、禁用 `lens_corr()`、Y 范围、三角形方向和回退矩阵。文件缺失或不合法时使用内置全局单应矩阵，不假装仍在使用局部网格。
+- 世界坐标接触点统一为目标可见底边中点 `(x + w/2, y + h - 0.5)`。内部以厘米计算，发送前四舍五入为毫米；保留省赛协议，不恢复历史 v1.0.0 的 `0.1 mm` 缩放。
+- 当前主从入口有意共用 `role=master` 网格。若从车安装几何不同，必须另采从车数据、生成 `role=slave` 网格并同步修改从车角色检查。
+
+生成结果与限制：
+
+- 标定 Y 范围 `6..164 cm`，网格覆盖 QVGA 画面的 `61.9%`，最小三角形角 `7.82 deg`。
+- 全局单应矩阵拟合 RMS / 最大误差为 `1.679 / 3.281 cm`；留一法诊断 RMS / 最大误差为 `1.994 / 4.056 cm`。
+- 当前 28 个点全部为 `split=fit`，没有独立 `verify` 点。生成器通过只证明结构和内部约束成立，最终精度仍需使用 `raw_ground_projection_test.py` 在两块相机上实测。
+
+仓库清理：
+
+- 删除不再使用的 `calib_ide_tune.py`、`capture_field_images.py`、`color_thr.txt`、`image.png`、`main_autocalib_test.py`、`match_field_capture_to_reference.py` 和 `return_yellow_test.py`；这些文件仍可从 Git 历史恢复。
+
+验证：
+
+- 网格生成器成功输出 28 点 / 36 三角形 / 18 边界，报告 QA 通过并明确提示缺少独立验证点。
+- `test_ground_projection.py` 共 5 项通过：主从投影代码一致、28 个顶点精确复现、全部 76,800 个 QVGA 像素均返回有界坐标、UART 毫米舍入正确、04 模型与曝光参数正确。
+- `python -m py_compile`、`git diff --check` 通过；MicroPython v1.27.0 `mpy-cross` 成功编译 `main.py`、`minimain.py` 与 `raw_ground_projection_test.py`。
 
 ### 2026-07-19 - v0.10.5 - 稳定首次锁定自动识别修复
 

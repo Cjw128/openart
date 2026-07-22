@@ -6,27 +6,65 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 | File | Device | Role |
 | --- | --- | --- |
-| `main.py` | OpenART Plus | Plus single-file official offline runtime |
-| `minimain.py` | OpenART Plus / slave | Slave-role single-file official offline runtime |
-| `stable_confirm/main.py` | OpenART Plus | Master strict nearest-first initial-lock runtime |
-| `stable_confirm/minimain.py` | OpenART Plus / slave | Slave strict nearest-first initial-lock runtime |
-| `main_autocalib_test.py` | OpenART Plus / test | Field auto-calibration test runtime with host commands |
+| `main.py` | OpenART Plus / master | Build-04 no-priority runtime with multi-point world coordinates |
+| `minimain.py` | OpenART Plus / slave | Build-04 no-priority runtime with multi-point world coordinates |
+| `camera_ground_mesh.txt` | OpenART Plus / both | Board-side 28-point, 36-triangle ground mesh |
+| `ground_mesh_24_points_template.csv` | PC | Current 28 pixel/world calibration points |
+| `calibrate_ground_camera.py` | PC | Mesh generation, validation, and reporting tool |
+| `camera_ground_mesh_report.json` | PC | Current mesh quality report |
+| `raw_ground_projection_test.py` | OpenART Plus / IDE | Ground-coordinate collection and field verification tool |
+| `test_ground_projection.py` | PC | Runtime projection regression tests |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
-| `calib_ide_tune.py` | OpenART Plus / IDE | Auto-calibration parameter tuning script |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | Pre-carry front color-blob scan preview script |
 
 ## Structure Notes
 
-- Current competition/offline deployment uses the single-file layout. `main.py` and `minimain.py` keep the complete master-role and slave-role logic.
+- Deployment keeps the single-file layout. `main.py` and `minimain.py` contain the complete master and slave logic and additionally load `/sd/camera_ground_mesh.txt` at startup.
 - The multi-file runtime modules have been removed. The deployment no longer uses `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, or `openart_calibration.py`.
-- White-bear handling uses LAB color blobs like the other targets. Color detection, yellow-line state, UART protocol, IPM, and the main loop live inside each single-file runtime. The legacy `0x05` return-beacon path remains disabled, but both cars support `0x07` horizontal return-line detection and report `0xC8`; only the master runs the carry-crossing state machine.
-- Calibration, threshold tuning, and pre-carry color-scan checks remain standalone IDE / test scripts, not official offline entrypoints.
+- Color detection, yellow-line state, the UART protocol, and the main loop remain in each single-file runtime. Ground-mesh generation and field verification remain standalone tools.
+- `fast_blob_backup/`, `stable_confirm/`, `stable_no_priority/`, and `mainbak` are historical references, not deployment entrypoints.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
-- Keep all structure notes and iteration records in `README_ch.md` / `README_en.md`, and update both languages together.
+- The root `README.md` stays as a concise deployment guide; detailed changes live in `README_ch.md` and `README_en.md`.
 
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-22 - v0.11.0 - Provincial build-04 no-priority multi-point world coordinates
+
+Scope: `main.py`, `minimain.py`, `ground_mesh_24_points_template.csv`, `calibrate_ground_camera.py`, `camera_ground_mesh.txt`, `camera_ground_mesh_report.json`, `raw_ground_projection_test.py`, `test_ground_projection.py`, and the three READMEs.
+
+Baseline and runtime settings:
+
+- Rebased both official entrypoints on the car-tested `04_备用版_无优先级_5中7` burn directory. Automatic acquisition has no color-ID or model-class priority: it ranks every eligible candidate by nearest world Y and keeps the first-lock rule of at least 5 matching hits in 7 real inference frames.
+- A host `0x03` color request remains explicit directed search with build 04's `0.25` threshold and `3/5` confirmation. This is not automatic ID priority.
+- Both runtimes use `/sd/80lite0.5SS.tflite`, fixed white balance `(92.00, 64.00, 101.00)`, and the field fallback exposure of `880 us`. An `exposure_us=` row in `/sd/color_thr.txt` can still override that default.
+- Color recognition, dynamic ground cropping, carry state, front scanning, return-line handling, and the master/slave 16-byte UART packet layout retain the completed provincial behavior.
+
+Multi-point world-coordinate rewrite:
+
+- Restored the multi-point tooling approach from historical commit `fac7b92` and rebuilt it around the existing `ground_mesh_24_points_template.csv`. The old filename is retained, but the current data contains 7 rows x 4 columns, or 28 fit points.
+- The PC generator orders structured rows from near to far and exports 36 triangles plus 18 direction-classified hull edges. Barycentric interpolation inside the mesh reproduces every calibration vertex exactly.
+- Pixels outside the mesh use a global homography fitted from all 28 points, corrected at the nearest mesh boundary for local/global continuity. Far Y is capped at `164 cm`, and X is bounded to `-250..250 cm`.
+- Runtime loading strictly checks the mesh schema, role, QVGA dimensions, software horizontal mirror, sensor vertical flip, disabled `lens_corr()`, Y range, triangle orientation, and fallback matrix. Missing or invalid files use only the embedded global homography and are never reported as a local mesh.
+- The visible bottom-center point `(x + w/2, y + h - 0.5)` is the shared ground contact point. Calculations use centimetres internally and round to millimetres before transmission, preserving the provincial protocol rather than restoring v1.0.0's historical `0.1 mm` scale.
+- The two entrypoints intentionally expect the same `role=master` mesh for now. A slave camera with different mounting geometry requires separate samples, a `role=slave` mesh, and the matching slave runtime role check.
+
+Generated result and limits:
+
+- Calibrated Y range is `6..164 cm`; the mesh covers `61.9%` of QVGA, with a minimum triangle angle of `7.82 deg`.
+- The global fallback homography fit has `1.679 / 3.281 cm` RMS / maximum error. Leave-one-out diagnostics report `1.994 / 4.056 cm` RMS / maximum error.
+- All 28 current rows are `split=fit`; there are no independent `verify` points. Generator QA therefore proves structural and internal constraints only. Final accuracy must be measured on both cameras with `raw_ground_projection_test.py`.
+
+Repository cleanup:
+
+- Removed unused `calib_ide_tune.py`, `capture_field_images.py`, `color_thr.txt`, `image.png`, `main_autocalib_test.py`, `match_field_capture_to_reference.py`, and `return_yellow_test.py`. They remain recoverable from Git history.
+
+Validation:
+
+- The generator exported 28 points, 36 triangles, and 18 boundaries; the report passed QA while explicitly warning that no independent verification points exist.
+- All five `test_ground_projection.py` tests passed: identical master/slave projection code, exact reproduction of 28 vertices, bounded coordinates for all 76,800 QVGA pixels, correct UART millimetre rounding, and correct build-04 model/exposure settings.
+- `python -m py_compile` and `git diff --check` passed. MicroPython v1.27.0 `mpy-cross` compiled `main.py`, `minimain.py`, and `raw_ground_projection_test.py` successfully.
 
 ### 2026-07-19 - v0.10.5 - Stable initial-lock auto-detection fix
 

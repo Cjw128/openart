@@ -1,4 +1,13 @@
-# Stable-confirm master: always-on nearest-first, confirm on 5 hits within 7 frames.
+# POST-PROVINCIAL BUILD 04 MASTER: no ID priority; nearest first; 5 hits in 7 inference frames.
+# ==================== QUICK MATCH SETTINGS ====================
+# Edit this block first when changing cameras, models, or SD files.
+WB_GAINS = (92.00, 64.00, 101.00)
+MODEL_PATH = '/sd/80lite0.5SS.tflite'
+COLOR_THR_PATH = '/sd/color_thr.txt'
+EXPOSURE_INIT = 880
+EXPOSURE_MIN = 100
+EXPOSURE_MAX = 4500
+# ================== END QUICK MATCH SETTINGS ==================
 import sensor, gc, time, math
 try:
     import tf
@@ -36,25 +45,19 @@ sensor.set_hmirror(False)
 sensor.set_vflip(True)
 def snapshot_frame():
     return sensor.snapshot().replace(hmirror=True)
-WB_GAINS = (101.00, 64.00, 97.00)
 sensor.set_auto_whitebal(False, rgb_gain_db=WB_GAINS)
 sensor.set_auto_gain(False, gain_db=0)
-EXPOSURE_INIT = 1400
-EXPOSURE_MIN = 100
-EXPOSURE_MAX = 4500
-def clamp_exposure(value):
-    if value < EXPOSURE_MIN:
-        return EXPOSURE_MIN
-    if value > EXPOSURE_MAX:
-        return EXPOSURE_MAX
+def validate_exposure(value):
+    if value < EXPOSURE_MIN or value > EXPOSURE_MAX:
+        raise ValueError('exposure_us out of range')
     return value
-def load_startup_exposure(path='/sd/color_thr.txt'):
+def load_startup_exposure(path=COLOR_THR_PATH):
     try:
         with open(path, 'r') as f:
             for line in f:
                 line = line.strip()
                 if line.startswith('exposure_us='):
-                    exposure = clamp_exposure(
+                    exposure = validate_exposure(
                         int(line.split('=', 1)[1].strip()))
                     print('[EXPOSURE] loaded %dus from %s' %
                           (exposure, path))
@@ -102,7 +105,7 @@ def _parse_int_values(parts):
     for part in parts:
         values.append(int(part))
     return tuple(values)
-def _load_calibrated_params(path='/sd/color_thr.txt'):
+def _load_calibrated_params(path=COLOR_THR_PATH):
     try:
         rows = {}
         ground_rows = {}
@@ -210,7 +213,6 @@ TRACK_MAX_JUMP2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
 TRACK_MIN_IOU = 0.05
 BRN_BEAR_MERGE_MARGIN = 12
 WHT_BEAR_MERGE_MARGIN = 10
-MODEL_PATH = '/sd/80lite0.5R.tflite'
 MODEL_COLOR_IDS = ((4, 5), (3,), (1, 2))
 MODEL_CONTACT_OFF_X = (-1, -1, -1)
 MODEL_CONTACT_OFF_Y = (0, 0, 0)
@@ -234,12 +236,12 @@ MODEL_MIN_BOX_SIDE = 4
 MODEL_MIN_BOX_AREA = 24
 MODEL_MATCH_CENTER2 = 130 * 130
 MODEL_PENDING_CENTER2 = 80 * 80
-FIRST_LOCK_SCORE_MIN = 0.25
-FIRST_LOCK_WINDOW_FRAMES = 5
-FIRST_LOCK_REQUIRED_HITS = 3
-FIRST_LOCK_MATCH_CENTER_PX = 30
+FIRST_LOCK_SCORE_MIN = 0.30
+FIRST_LOCK_WINDOW_FRAMES = 7
+FIRST_LOCK_REQUIRED_HITS = 5
+FIRST_LOCK_MATCH_CENTER_PX = 24
 FIRST_LOCK_MATCH_CENTER2 = FIRST_LOCK_MATCH_CENTER_PX * FIRST_LOCK_MATCH_CENTER_PX
-FIRST_LOCK_SIZE_DELTA_PERCENT = 45
+FIRST_LOCK_SIZE_DELTA_PERCENT = 35
 FIRST_LOCK_NEARER_MARGIN_CM = 0.0
 HOST_FORCED_FIRST_LOCK_SCORE_MIN = 0.25
 HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 5
@@ -324,6 +326,8 @@ first_lock_pending_hits = 0
 first_lock_pending_samples = 0
 first_lock_pending_boxes = []
 first_lock_pending_scores = []
+first_lock_pending_color_ids = []
+first_lock_pending_color_thresholds = []
 first_lock_pending_sample_time = 0
 adaptive_color_thresholds = [None, None, None, None, None]
 color_adapt_pending_id = 0
@@ -353,7 +357,7 @@ FRONT_SCAN_EXCLUDE_IOU = 0.20
 FRONT_SCAN_EXCLUDE_CENTER_PX = 35
 FRONT_SCAN_EXCLUDE_CENTER2 = FRONT_SCAN_EXCLUDE_CENTER_PX * FRONT_SCAN_EXCLUDE_CENTER_PX
 FRONT_SCAN_Y_MAX = 150
-FRONT_SCAN_MIN_PIXELS = 60
+FRONT_SCAN_SCORE_MIN = FIRST_LOCK_SCORE_MIN
 FRONT_SCAN_STABLE_FRAMES = 6
 FRONT_SCAN_MAX_FRAMES = 12
 front_scan_last_current_id = 0
@@ -383,14 +387,14 @@ return_stop_requested = False
 YELLOW_ROI_TOP = (0, 90, 320, 20)
 YELLOW_ROI_BOTTOM = (0, 130, 320, 20)
 YELLOW_DETECT_INTERVAL = 2
-YELLOW_ENTER_PIXELS = 55
-YELLOW_KEEP_PIXELS = 15
-YELLOW_CARRY_CONFIRM_FRAMES = 1
+YELLOW_ENTER_PIXELS = 70
+YELLOW_KEEP_PIXELS = 20
+YELLOW_CARRY_CONFIRM_FRAMES = 2
 YELLOW_MIN_FIT_DX = 30
 YELLOW_MAX_FIT_SLOPE_X100 = 100
 YELLOW_TARGET_OVERLAP_PERCENT = 60
-YELLOW_BOTTOM_Y = 210
-YELLOW_LOST_THRESHOLD = 1
+YELLOW_BOTTOM_Y = 220
+YELLOW_LOST_THRESHOLD = 2
 yellow_line_k = 0.0
 yellow_line_b = 0.0
 yellow_bottom_visible = False
@@ -400,7 +404,7 @@ yellow_lost_count = 0
 yellow_seen_in_carry = False
 yellow_bottom_reached_in_carry = False
 yellow_carry_confirm_count = 0
-YELLOW_CARRY_IGNORE_FRAMES = 2
+YELLOW_CARRY_IGNORE_FRAMES = 4
 carry_start_frame = -1
 MODE_SEARCH = 0
 MODE_CARRY = 1
@@ -414,15 +418,8 @@ def color_id_completed(color_id):
     return (1 <= color_id <= len(all_color_thresholds) and
             bool(completed_color_mask & (1 << (color_id - 1))))
 def color_id_available_for_search(color_id):
-    if (color_id < 1 or color_id > len(all_color_thresholds) or
-            color_id_completed(color_id)):
-        return False
-    if not color_id_completed(2):
-        return color_id == 2
-    if color_id == 1:
-        return (color_id_completed(3) and color_id_completed(4) and
-                color_id_completed(5))
-    return True
+    return (1 <= color_id <= len(all_color_thresholds) and
+            not color_id_completed(color_id))
 def host_forced_target_active():
     return (host_color_id_received and
             1 <= target_color_id <= len(all_color_thresholds) and
@@ -478,13 +475,376 @@ def reset_return_yellow_state():
     return_stop_y = -1
     return_stop_requested = False
 WORLD_X_LIMIT_CM = 250.0
-WORLD_Y_MAX_CM = 300.0
+WORLD_Y_MAX_CM = 164.0
+CAMERA_GROUND_MESH_PATH = '/sd/camera_ground_mesh.txt'
+CAMERA_GROUND_MESH_ROLE = 'master'
+GROUND_IMAGE_W = 320
+GROUND_IMAGE_H = 240
+GROUND_TRIANGLE_EPSILON = 1e-6
+GROUND_HOMOGRAPHY_EPSILON = 1e-6
+GROUND_OUTSIDE_DEADBAND_PX = 1.5
+GROUND_REQUIRED_NEAR_Y_CM = 6.0
+
+MESH_INVALID = 0
+MESH_VALID = 1
+MESH_TOO_NEAR = 2
+MESH_TOO_FAR = 3
+MESH_LEFT = 4
+MESH_RIGHT = 5
+BOUNDARY_TO_STATUS = {
+    1: MESH_TOO_NEAR,
+    2: MESH_TOO_FAR,
+    3: MESH_LEFT,
+    4: MESH_RIGHT,
+}
+
+# Generated from ground_mesh_24_points_template.csv. The SD mesh replaces
+# this global fallback with local 28-point triangle interpolation.
+DEFAULT_GROUND_FALLBACK_H = (
+    -17.7638385071, 0.28145619199, 2975.34856703,
+    0.177873489376, 11.811411406, -3947.19080263,
+    0.0130205434305, -0.715824718611, 1.0,
+)
+
+ground_mesh_triangles = ()
+ground_mesh_boundaries = ()
+ground_mesh_near_v_max = -1.0
+ground_fallback_h = DEFAULT_GROUND_FALLBACK_H
+
+def _parse_ground_float_list(text, count):
+    parts = text.split(',')
+    if len(parts) != count:
+        return None
+    values = []
+    for part in parts:
+        value = float(part.strip())
+        if value != value or value <= -1e9 or value >= 1e9:
+            return None
+        values.append(value)
+    return values
+
+def load_ground_projection(path=CAMERA_GROUND_MESH_PATH):
+    try:
+        rows = {}
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split('=', 1)
+                if len(parts) != 2:
+                    return None
+                key = parts[0].strip()
+                if key in rows:
+                    return None
+                rows[key] = parts[1].strip()
+
+        if int(rows.get('version', '0')) != 4:
+            return None
+        if rows.get('model') != 'triangle_mesh':
+            return None
+        if (rows.get('role') != CAMERA_GROUND_MESH_ROLE or
+                rows.get('units') != 'cm'):
+            return None
+        if (int(rows.get('image_w', '0')) != GROUND_IMAGE_W or
+                int(rows.get('image_h', '0')) != GROUND_IMAGE_H):
+            return None
+        if (int(rows.get('software_hmirror', '-1')) != 1 or
+                int(rows.get('sensor_vflip', '-1')) != 1 or
+                int(rows.get('lens_corr', '-1')) != 0):
+            return None
+
+        point_count = int(rows.get('point_count', '0'))
+        grid_rows = int(rows.get('grid_rows', '0'))
+        grid_columns = int(rows.get('grid_columns', '0'))
+        if (grid_rows < 4 or grid_rows > 16 or grid_columns != 4 or
+                point_count != grid_rows * grid_columns):
+            return None
+
+        max_x_cm = float(rows.get('max_x_cm', '0'))
+        max_y_cm = float(rows.get('max_y_cm', '0'))
+        if not (max_x_cm > 0.0 and max_x_cm <= WORLD_X_LIMIT_CM):
+            return None
+        if abs(max_y_cm - WORLD_Y_MAX_CM) > 1e-6:
+            return None
+        calibrated_y_min_cm = float(rows.get('calibrated_y_min_cm', '0'))
+        calibrated_y_max_cm = float(rows.get('calibrated_y_max_cm', '0'))
+        if not (0.0 < calibrated_y_min_cm < calibrated_y_max_cm):
+            return None
+        if calibrated_y_min_cm > GROUND_REQUIRED_NEAR_Y_CM + 1e-6:
+            return None
+        if abs(calibrated_y_max_cm - WORLD_Y_MAX_CM) > 1e-6:
+            return None
+
+        triangle_count = int(rows.get('triangle_count', '0'))
+        expected_triangle_count = (grid_rows - 1) * (grid_columns - 1) * 2
+        if triangle_count != expected_triangle_count or triangle_count > 96:
+            return None
+        triangles = []
+        orientation_sign = 0
+        for index in range(triangle_count):
+            values = _parse_ground_float_list(
+                rows.get('triangle{}'.format(index), ''), 12)
+            if values is None:
+                return None
+            u0, v0, x0, y0 = values[0], values[1], values[2], values[3]
+            u1, v1, x1, y1 = values[4], values[5], values[6], values[7]
+            u2, v2, x2, y2 = values[8], values[9], values[10], values[11]
+            if (u0 < 0.0 or u0 >= GROUND_IMAGE_W or
+                    v0 < 0.0 or v0 >= GROUND_IMAGE_H or
+                    u1 < 0.0 or u1 >= GROUND_IMAGE_W or
+                    v1 < 0.0 or v1 >= GROUND_IMAGE_H or
+                    u2 < 0.0 or u2 >= GROUND_IMAGE_W or
+                    v2 < 0.0 or v2 >= GROUND_IMAGE_H):
+                return None
+            if (abs(x0) > max_x_cm or abs(x1) > max_x_cm or
+                    abs(x2) > max_x_cm or
+                    y0 <= 0.0 or y0 > max_y_cm or
+                    y1 <= 0.0 or y1 > max_y_cm or
+                    y2 <= 0.0 or y2 > max_y_cm):
+                return None
+            denominator = ((v1 - v2) * (u0 - u2) +
+                           (u2 - u1) * (v0 - v2))
+            if not (denominator < -1.0 or denominator > 1.0):
+                return None
+            world_area2 = ((x1 - x0) * (y2 - y0) -
+                           (x2 - x0) * (y1 - y0))
+            if not (world_area2 < -1e-4 or world_area2 > 1e-4):
+                return None
+            sign = 1 if denominator * world_area2 > 0.0 else -1
+            if orientation_sign == 0:
+                orientation_sign = sign
+            elif sign != orientation_sign:
+                return None
+            triangles.append(tuple(values) + (1.0 / denominator,))
+
+        boundary_count = int(rows.get('boundary_count', '0'))
+        expected_boundary_count = (2 * (grid_rows - 1) +
+                                   2 * (grid_columns - 1))
+        if boundary_count != expected_boundary_count:
+            return None
+        boundaries = []
+        boundary_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+        near_v_max = -1.0
+        for index in range(boundary_count):
+            values = _parse_ground_float_list(
+                rows.get('boundary{}'.format(index), ''), 5)
+            if values is None:
+                return None
+            boundary_code = int(values[0])
+            if (values[0] != boundary_code or
+                    boundary_code not in BOUNDARY_TO_STATUS):
+                return None
+            u0, v0, u1, v1 = values[1], values[2], values[3], values[4]
+            if (u0 < 0.0 or u0 >= GROUND_IMAGE_W or
+                    v0 < 0.0 or v0 >= GROUND_IMAGE_H or
+                    u1 < 0.0 or u1 >= GROUND_IMAGE_W or
+                    v1 < 0.0 or v1 >= GROUND_IMAGE_H):
+                return None
+            du = u1 - u0
+            dv = v1 - v0
+            length2 = du * du + dv * dv
+            if length2 <= 1.0:
+                return None
+            boundaries.append((BOUNDARY_TO_STATUS[boundary_code],
+                               u0, v0, u1, v1, length2))
+            boundary_counts[boundary_code] += 1
+            if boundary_code == 1:
+                near_v_max = max(near_v_max, v0, v1)
+        if (boundary_counts[1] != grid_columns - 1 or
+                boundary_counts[2] != grid_columns - 1 or
+                boundary_counts[3] != grid_rows - 1 or
+                boundary_counts[4] != grid_rows - 1):
+            return None
+
+        if rows.get('fallback_model') != 'homography':
+            return None
+        fallback_h = _parse_ground_float_list(
+            rows.get('fallback_h', ''), 9)
+        if fallback_h is None:
+            return None
+        fallback_fit_max = float(rows.get('fallback_fit_max_cm', '1000'))
+        if fallback_fit_max < 0.0 or fallback_fit_max > 10.0:
+            return None
+        determinant = (
+            fallback_h[0] * (fallback_h[4] * fallback_h[8] -
+                             fallback_h[5] * fallback_h[7]) -
+            fallback_h[1] * (fallback_h[3] * fallback_h[8] -
+                             fallback_h[5] * fallback_h[6]) +
+            fallback_h[2] * (fallback_h[3] * fallback_h[7] -
+                             fallback_h[4] * fallback_h[6])
+        )
+        if (-GROUND_HOMOGRAPHY_EPSILON < determinant <
+                GROUND_HOMOGRAPHY_EPSILON):
+            return None
+        return (tuple(triangles), tuple(boundaries),
+                near_v_max, tuple(fallback_h))
+    except Exception:
+        return None
+
+def mesh_ground_pixel_to_world(px, py):
+    for triangle in ground_mesh_triangles:
+        u0, v0, x0, y0 = triangle[0], triangle[1], triangle[2], triangle[3]
+        u1, v1, x1, y1 = triangle[4], triangle[5], triangle[6], triangle[7]
+        u2, v2, x2, y2 = triangle[8], triangle[9], triangle[10], triangle[11]
+        inverse_denominator = triangle[12]
+        a = ((v1 - v2) * (px - u2) +
+             (u2 - u1) * (py - v2)) * inverse_denominator
+        b = ((v2 - v0) * (px - u2) +
+             (u0 - u2) * (py - v2)) * inverse_denominator
+        c = 1.0 - a - b
+        if (a >= -GROUND_TRIANGLE_EPSILON and
+                b >= -GROUND_TRIANGLE_EPSILON and
+                c >= -GROUND_TRIANGLE_EPSILON):
+            wx = a * x0 + b * x1 + c * x2
+            wy = a * y0 + b * y1 + c * y2
+            if wy > WORLD_Y_MAX_CM:
+                wy = WORLD_Y_MAX_CM
+            if wy <= 0.0:
+                return None
+            if wx != wx:
+                wx = 0.0
+            elif wx < -WORLD_X_LIMIT_CM:
+                wx = -WORLD_X_LIMIT_CM
+            elif wx > WORLD_X_LIMIT_CM:
+                wx = WORLD_X_LIMIT_CM
+            return (wx, wy)
+    return None
+
+def nearest_ground_boundary(u, v):
+    best_status = MESH_INVALID
+    best_u = 0.0
+    best_v = 0.0
+    best_distance2 = 1e30
+    for edge in ground_mesh_boundaries:
+        status, u0, v0, u1, v1, length2 = edge
+        du = u1 - u0
+        dv = v1 - v0
+        position = ((u - u0) * du + (v - v0) * dv) / length2
+        if position < 0.0:
+            position = 0.0
+        elif position > 1.0:
+            position = 1.0
+        nearest_u = u0 + position * du
+        nearest_v = v0 + position * dv
+        delta_u = u - nearest_u
+        delta_v = v - nearest_v
+        distance2 = delta_u * delta_u + delta_v * delta_v
+        if distance2 < best_distance2:
+            best_distance2 = distance2
+            best_status = status
+            best_u = nearest_u
+            best_v = nearest_v
+    return (best_status, best_u, best_v)
+
+def classify_ground_outside(u, v):
+    nearest = nearest_ground_boundary(u, v)
+    if v > ground_mesh_near_v_max + GROUND_OUTSIDE_DEADBAND_PX:
+        return (MESH_TOO_NEAR, nearest[1], nearest[2])
+    return nearest
+
+def ground_homography_pixel_to_world(h, px, py):
+    denominator = h[6] * px + h[7] * py + h[8]
+    if (-GROUND_HOMOGRAPHY_EPSILON < denominator <
+            GROUND_HOMOGRAPHY_EPSILON):
+        return None
+    wx = (h[0] * px + h[1] * py + h[2]) / denominator
+    wy = (h[3] * px + h[4] * py + h[5]) / denominator
+    if wx != wx or wy != wy:
+        return None
+    return (wx, wy)
+
+def ground_far_limit_x(h, px):
+    far_y = WORLD_Y_MAX_CM
+    v_denominator = h[4] - far_y * h[7]
+    if (-GROUND_HOMOGRAPHY_EPSILON < v_denominator <
+            GROUND_HOMOGRAPHY_EPSILON):
+        return None
+    far_v = (far_y * (h[6] * px + h[8]) -
+             (h[3] * px + h[5])) / v_denominator
+    projected = ground_homography_pixel_to_world(h, px, far_v)
+    return None if projected is None else projected[0]
+
+def fallback_ground_pixel_to_world(px, py, mesh_status,
+                                   boundary_u=None, boundary_v=None):
+    h = ground_fallback_h
+    correction_x = 0.0
+    correction_y = 0.0
+    boundary_world = None
+    if boundary_u is not None and boundary_v is not None:
+        boundary_world = mesh_ground_pixel_to_world(boundary_u, boundary_v)
+        boundary_h = ground_homography_pixel_to_world(h, boundary_u, boundary_v)
+        if boundary_world is not None and boundary_h is not None:
+            correction_x = boundary_world[0] - boundary_h[0]
+            correction_y = boundary_world[1] - boundary_h[1]
+
+    use_far_limit = mesh_status == MESH_TOO_FAR
+    projected = ground_homography_pixel_to_world(h, px, py)
+    if projected is not None:
+        wx = projected[0] + correction_x
+        wy = projected[1] + correction_y
+        if (mesh_status != MESH_TOO_FAR and
+                -WORLD_X_LIMIT_CM <= wx <= WORLD_X_LIMIT_CM and
+                0.0 < wy <= WORLD_Y_MAX_CM):
+            return (wx, wy)
+        if wy <= 0.0 or wy > WORLD_Y_MAX_CM:
+            use_far_limit = True
+
+    if mesh_status == MESH_TOO_NEAR or not use_far_limit:
+        return None
+    far_x = ground_far_limit_x(h, px)
+    if far_x is None:
+        return None
+    if boundary_world is not None and boundary_u is not None:
+        boundary_far_x = ground_far_limit_x(h, boundary_u)
+        if mesh_status == MESH_TOO_FAR and boundary_far_x is not None:
+            far_x += boundary_world[0] - boundary_far_x
+        else:
+            far_x += correction_x
+    if far_x < -WORLD_X_LIMIT_CM or far_x > WORLD_X_LIMIT_CM:
+        return None
+    return (far_x, WORLD_Y_MAX_CM)
+
+def ground_pixel_to_world(px, py):
+    px = float(px)
+    py = float(py)
+    if (px < 0.0 or px >= GROUND_IMAGE_W or
+            py < 0.0 or py >= GROUND_IMAGE_H):
+        return None
+    result = mesh_ground_pixel_to_world(px, py)
+    if result is not None:
+        return result
+    if ground_mesh_boundaries:
+        mesh_status, boundary_u, boundary_v = classify_ground_outside(px, py)
+    else:
+        mesh_status = MESH_INVALID
+        boundary_u = None
+        boundary_v = None
+    return fallback_ground_pixel_to_world(
+        px, py, mesh_status, boundary_u, boundary_v)
+
+_loaded_ground_projection = load_ground_projection()
+if _loaded_ground_projection is not None:
+    ground_mesh_triangles = _loaded_ground_projection[0]
+    ground_mesh_boundaries = _loaded_ground_projection[1]
+    ground_mesh_near_v_max = _loaded_ground_projection[2]
+    ground_fallback_h = _loaded_ground_projection[3]
+    print('[GROUND] loaded %d triangles from %s' %
+          (len(ground_mesh_triangles), CAMERA_GROUND_MESH_PATH))
+else:
+    print('[GROUND] mesh unavailable; using embedded 28-point homography fallback')
+del _loaded_ground_projection
+gc.collect()
+
 def clamp_int(v, lo, hi):
     if v < lo:
         return lo
     if v > hi:
         return hi
     return v
+def world_cm_to_mm(value_cm):
+    scaled = float(value_cm) * 10.0
+    return int(scaled + 0.5) if scaled >= 0.0 else int(scaled - 0.5)
 def pick_top_y_from_strip(blobs):
     if not blobs:
         return None
@@ -629,34 +989,6 @@ def valid_color_blob(blob, color_id, pixels_threshold_override=0):
         if blob.density() < 0.40:
             return False
     return True
-def valid_front_scan_blob(blob, color_id, pixels_threshold_override=0):
-    # 0x06 reports colored obstacles, not only pickup-target shapes.
-    # Keep color/size/density checks, but deliberately skip aspect ratios.
-    w = blob.w()
-    h = blob.h()
-    if w <= 0 or h <= 0:
-        return False
-    box_area = w * h
-    if blob.y() > NEAR_NOISE_Y_MIN and box_area < NEAR_NOISE_BOX_AREA:
-        return False
-    pixels_threshold, area_threshold = _color_blob_limits[color_id - 1]
-    if pixels_threshold_override > 0:
-        pixels_threshold = pixels_threshold_override
-    if blob.pixels() < pixels_threshold or box_area < area_threshold:
-        return False
-    density_minimum = (0.25 if color_id == 3 or color_id == 4 or color_id == 5
-                       else 0.40)
-    return blob.density() >= density_minimum
-def color_id_from_blob_code(code):
-    if code <= 0 or code & (code - 1):
-        return 0
-    color_id = 1
-    while code > 1:
-        code >>= 1
-        color_id += 1
-    if color_id > len(all_color_thresholds):
-        return 0
-    return color_id
 def find_color_blobs_once(img, roi, fixed_color_id=0, pixels_threshold_override=0):
     if fixed_color_id > 0:
         thresholds = _color_threshold_groups[fixed_color_id - 1]
@@ -751,6 +1083,8 @@ def reset_first_lock_pending():
     first_lock_pending_samples = 0
     first_lock_pending_boxes[:] = []
     first_lock_pending_scores[:] = []
+    first_lock_pending_color_ids[:] = []
+    first_lock_pending_color_thresholds[:] = []
     first_lock_pending_sample_time = 0
 def reset_hybrid_tracking():
     global model_last_frame, model_last_score
@@ -1030,7 +1364,13 @@ def run_model_best(img):
                 best = (label, box, score, confirm, sample_time)
                 best_rank = rank
         model_infer_error_count = 0
-        return best
+        if best is not None:
+            if locked:
+                return best + (0, None)
+            color_id, color_threshold = sample_model_color(
+                img, best[0], best[1])
+            return best + (color_id, color_threshold)
+        return None
     except Exception as error:
         model_infer_error_count += 1
         if model_infer_error_count >= 3:
@@ -1096,6 +1436,14 @@ def sample_color_id(label, lab, forced_color_id=0):
         if second_distance - best_distance < COLOR_CLASS_DISTANCE_MARGIN:
             return 0
     return best_id
+def sample_color_id_from_stats(label, sample, forced_color_id=0):
+    median_id = sample_color_id(label, sample[6:9], forced_color_id)
+    if label != 0 or median_id <= 0:
+        return median_id
+    # A bear is accepted only when its median and darker quartile agree.
+    lower_l_id = sample_color_id(
+        label, (sample[0], sample[7], sample[8]), forced_color_id)
+    return median_id if lower_l_id == median_id else 0
 def build_dynamic_channel(q_low, q_high, median_value, min_span, max_span,
                           margin, base_low, base_high, channel):
     iqr = max(1, q_high - q_low)
@@ -1175,7 +1523,8 @@ def sample_model_color(img, label, box):
     for channel in range(3):
         if sample[channel * 2 + 1] - sample[channel * 2] > max_iqr[channel]:
             return 0, None
-    color_id = sample_color_id(label, sample[6:9], forced_color_id)
+    color_id = sample_color_id_from_stats(
+        label, sample, forced_color_id)
     if color_id <= 0:
         return 0, None
     if not color_id_available_for_search(color_id):
@@ -1190,6 +1539,9 @@ def confirm_model_color(observed_id, observed_threshold):
             not color_id_available_for_search(observed_id)):
         reset_color_adaptation_pending()
         return False
+    if model_color[0] > 0 and model_color[0] != observed_id:
+        model_color[0] = 0
+        reset_color_blob_tracking()
     if (observed_id == color_adapt_pending_id and
             threshold_centers_close(
                 observed_threshold, color_adapt_pending_threshold)):
@@ -1479,22 +1831,55 @@ def first_lock_median_box():
         channel = sorted([box[index] for box in first_lock_pending_boxes])
         values.append(channel[middle])
     return tuple(values)
+def first_lock_color_consensus():
+    best_id = 0
+    best_count = 0
+    for color_id in range(1, len(all_color_thresholds) + 1):
+        count = 0
+        for observed_id in first_lock_pending_color_ids:
+            if observed_id == color_id:
+                count += 1
+        if count > best_count:
+            best_id = color_id
+            best_count = count
+    if (best_count < COLOR_CONFIRM_FRAMES or
+            not color_id_available_for_search(best_id)):
+        return 0, None
+    selected = []
+    for index in range(len(first_lock_pending_color_ids)):
+        if (first_lock_pending_color_ids[index] == best_id and
+                first_lock_pending_color_thresholds[index] is not None):
+            selected.append(first_lock_pending_color_thresholds[index])
+    if len(selected) < COLOR_CONFIRM_FRAMES:
+        return 0, None
+    values = []
+    middle = len(selected) // 2
+    for channel in range(6):
+        ordered = sorted([threshold[channel] for threshold in selected])
+        values.append(ordered[middle])
+    return best_id, tuple(values)
 def begin_first_lock_pending(candidate):
     global first_lock_pending_label, first_lock_pending_box
     global first_lock_pending_hits, first_lock_pending_samples
     global first_lock_pending_sample_time
-    label, box, score, _, sample_time = candidate
+    label, box, score, _, sample_time, color_id, color_threshold = candidate
+    if not host_forced_target_active():
+        model_color[:] = [0, 0, 0, False]
+        reset_color_adaptation_pending()
     first_lock_pending_label = label
     first_lock_pending_box = box
     first_lock_pending_hits = 1
     first_lock_pending_samples = 1
     first_lock_pending_boxes[:] = [box]
     first_lock_pending_scores[:] = [score]
+    first_lock_pending_color_ids[:] = [color_id]
+    first_lock_pending_color_thresholds[:] = [color_threshold]
     first_lock_pending_sample_time = sample_time
 def commit_first_lock():
     global model_last_score
     label = first_lock_pending_label
     box = first_lock_median_box()
+    color_id, color_threshold = first_lock_color_consensus()
     scores = sorted(first_lock_pending_scores)
     score = scores[len(scores) // 2]
     sample_time = first_lock_pending_sample_time
@@ -1506,6 +1891,15 @@ def commit_first_lock():
     if not observe_model_box(label, box, sample_time):
         model_lock[:] = [-1, None, -1, None, 0, 0]
         return False
+    if color_id > 0 and color_threshold is not None:
+        model_color[0] = color_id
+        existing = adaptive_color_thresholds[color_id - 1]
+        if existing is None:
+            adaptive_color_thresholds[color_id - 1] = color_threshold
+        else:
+            adaptive_color_thresholds[color_id - 1] = blend_threshold(
+                existing, color_threshold,
+                COLOR_DYNAMIC_UPDATE_ALPHA_X100)
     model_last_score = score
     return True
 def accept_first_lock_candidate(candidate):
@@ -1517,13 +1911,15 @@ def accept_first_lock_candidate(candidate):
         return False
     first_lock_pending_samples += 1
     if candidate is not None:
-        label, box, score, _, sample_time = candidate
+        label, box, score, _, sample_time, color_id, color_threshold = candidate
         if (label == first_lock_pending_label and
                 first_lock_boxes_match(box, first_lock_pending_box)):
             first_lock_pending_box = box
             first_lock_pending_hits += 1
             first_lock_pending_boxes.append(box)
             first_lock_pending_scores.append(score)
+            first_lock_pending_color_ids.append(color_id)
+            first_lock_pending_color_thresholds.append(color_threshold)
             first_lock_pending_sample_time = sample_time
         elif (model_box_distance(box) + FIRST_LOCK_NEARER_MARGIN_CM <
               model_box_distance(first_lock_pending_box)):
@@ -1548,7 +1944,7 @@ def accept_model_candidate(candidate):
         return accept_first_lock_candidate(candidate)
     if candidate is None:
         return False
-    label, box, score, _, sample_time = candidate
+    label, box, score, _, sample_time, _, _ = candidate
     if label != model_lock[0]:
         return False
     if not observe_model_box(label, box, sample_time):
@@ -1627,14 +2023,17 @@ def process_model_only_target(img, frame_index, run_model):
     observed = False
     if run_model:
         candidate = run_model_best(img)
+        acquiring = model_lock[1] is None
         observed = accept_model_candidate(candidate)
-        if observed and not host_forced_target_active():
+        color_confirmed = False
+        if (observed and not acquiring and
+                not host_forced_target_active()):
             color_confirmed = update_model_guided_color(
                 img, model_last_score)
-            if (color_confirmed and host_color_id_received and
-                    model_color[0] != target_color_id):
-                restore_host_hybrid_lock()
-                return None
+        if (color_confirmed and host_color_id_received and
+                model_color[0] != target_color_id):
+            restore_host_hybrid_lock()
+            return None
         if model_lock[1] is not None and not observed:
             model_lock[5] += 1
             if model_lock[5] > MODEL_LOST_FRAMES:
@@ -1676,45 +2075,93 @@ def front_scan_current_target():
     if color_track_active and color_track_box:
         return color_track_box, color_track_color_id
     return None, target_color_id
-def front_scan_blob_is_current(blob, current_box):
+def front_scan_box_is_current(box, current_box):
     if not current_box:
         return False
-    b_box = (blob.x(), blob.y(), blob.w(), blob.h())
-    if box_iou(b_box, current_box) >= FRONT_SCAN_EXCLUDE_IOU:
+    if box_iou(box, current_box) >= FRONT_SCAN_EXCLUDE_IOU:
         return True
-    return center_dist2(b_box, current_box) <= FRONT_SCAN_EXCLUDE_CENTER2
+    return center_dist2(box, current_box) <= FRONT_SCAN_EXCLUDE_CENTER2
 def front_scan_roi():
     x, y, w, h = dynamic_detect_roi
     y2 = min(y + h, FRONT_SCAN_Y_MAX)
     if y2 <= y:
         return None
     return (x, y, w, y2 - y)
+def front_scan_color_id(img, label, box):
+    if label < 0 or label >= len(MODEL_COLOR_IDS):
+        return 0
+    candidates = MODEL_COLOR_IDS[label]
+    if len(candidates) == 1:
+        return candidates[0]
+    roi = model_sample_roi(label, box)
+    if roi is None:
+        return 0
+    try:
+        stats = img.get_statistics(roi=roi)
+        sample = (
+            stats.l_lq(), stats.l_uq(),
+            stats.a_lq(), stats.a_uq(),
+            stats.b_lq(), stats.b_uq(),
+            stats.l_median(), stats.a_median(), stats.b_median(),
+        )
+    except Exception:
+        return 0
+    for channel in range(3):
+        if (sample[channel * 2 + 1] - sample[channel * 2] >
+                COLOR_SAMPLE_MAX_IQR[channel]):
+            return 0
+    return sample_color_id_from_stats(label, sample)
 def scan_front_other_color_ids(img):
+    global model_infer_error_count, model_last_frame
     current_box, current_id = front_scan_current_target()
     mask = 0
     count = 0
     roi = front_scan_roi()
-    if roi is None:
+    if (roi is None or not model_runtime_enabled or model_net is None):
         return current_id, mask, count
-    blobs = find_color_blobs_once(img, roi, 0, FRONT_SCAN_MIN_PIXELS)
-    if not blobs:
+    try:
+        model_last_frame = frame_count
+        objects = tf.detect(model_net, model_copy_frame(img))
+        model_infer_error_count = 0
+    except Exception as error:
+        model_infer_error_count += 1
+        if model_infer_error_count >= 3:
+            disable_model_runtime(
+                'three front-scan inference failures: ' + str(error))
         return current_id, mask, count
-    for blob in blobs:
-        color_id = color_id_from_blob_code(blob.code())
+    if not objects:
+        return current_id, mask, count
+    for obj in objects:
+        x1, y1, x2, y2, label_value, score_value = obj
+        label = int(label_value)
+        score = float(score_value)
+        if (label < 0 or label >= len(MODEL_COLOR_IDS) or
+                score < FRONT_SCAN_SCORE_MIN):
+            continue
+        model_x = int(float(x1) * img.width())
+        y = int(float(y1) * img.height())
+        w = int((float(x2) - float(x1)) * img.width())
+        h = int((float(y2) - float(y1)) * img.height())
+        x = img.width() - model_x - w
+        if (w < MODEL_MIN_BOX_SIDE or h < MODEL_MIN_BOX_SIDE or
+                w * h < MODEL_MIN_BOX_AREA):
+            continue
+        box = raw_model_box(x, y, w, h)
+        if rect_intersection_area(box, roi) <= 0:
+            continue
+        if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
+            if box[1] + box[3] < dynamic_cut_left_y + CUT_BLOB_DELTA:
+                continue
+        if (ENABLE_TENNIS_LINE_FILTER and label == 1 and
+                tennis_candidate_is_yellow_line(img, box)):
+            continue
+        if front_scan_box_is_current(box, current_box):
+            continue
+        color_id = front_scan_color_id(img, label, box)
         if color_id <= 0:
             continue
         color_bit = 1 << (color_id - 1)
         if mask & color_bit:
-            continue
-        if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-            if blob.y() + blob.h() < dynamic_cut_left_y + CUT_BLOB_DELTA:
-                continue
-        if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
-            continue
-        if not valid_front_scan_blob(
-                blob, color_id, FRONT_SCAN_MIN_PIXELS + 1):
-            continue
-        if front_scan_blob_is_current(blob, current_box):
             continue
         mask |= color_bit
         count += 1
@@ -1826,28 +2273,9 @@ def process_return_yellow(img):
         return_yellow_detected = False
         return_yellow_y = 0
         send_return_yellow_result(False, 0, return_stop_requested)
-H_PIX2WORLD = (
-    -0.789473684210523, 0.020532099479467793, 127.59861191440086,
-    -1.8064645824409328e-16, 0.5067596876807382, -167.72758820127169,
-    -1.2325598412554425e-17, -0.036184210526315652,
-)
 def box_to_world(x, y, w, h):
-    px = x + w * 0.5
-    py = y + h
-    den = H_PIX2WORLD[6] * px + H_PIX2WORLD[7] * py + 1.0
-    if -1e-10 < den < 1e-10:
-        return (0.0, WORLD_Y_MAX_CM)
-    wx = (H_PIX2WORLD[0] * px + H_PIX2WORLD[1] * py + H_PIX2WORLD[2]) / den
-    wy = (H_PIX2WORLD[3] * px + H_PIX2WORLD[4] * py + H_PIX2WORLD[5]) / den
-    if not (wy > 0.0 and wy <= WORLD_Y_MAX_CM):
-        wy = WORLD_Y_MAX_CM
-    if wx != wx:
-        wx = 0.0
-    elif wx < -WORLD_X_LIMIT_CM:
-        wx = -WORLD_X_LIMIT_CM
-    elif wx > WORLD_X_LIMIT_CM:
-        wx = WORLD_X_LIMIT_CM
-    return (wx, wy)
+    # The mesh was measured at the visible ground-contact point.
+    return ground_pixel_to_world(x + w * 0.5, y + h - 0.5)
 _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)
 _tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
@@ -1884,7 +2312,8 @@ def send_front_scan_target_hold(img, yellow_flag=False, pos_flag=0x00):
     if world_point is None:
         return False
     world_x, world_y = world_point
-    send_world_data(color_track_color_id, int(world_x * 10), int(world_y * 10),
+    send_world_data(color_track_color_id,
+                    world_cm_to_mm(world_x), world_cm_to_mm(world_y),
                     color_track_box[2], yellow_flag, pos_flag)
     img.draw_rectangle(
         color_track_box, color=TARGET_BOX_COLORS[color_track_color_id - 1],
@@ -2124,8 +2553,8 @@ while True:
     if has_target:
         lost_frame_count = 0
         world_x, world_y = world_point
-        wx_mm = int(world_x * 10)
-        wy_mm = int(world_y * 10)
+        wx_mm = world_cm_to_mm(world_x)
+        wy_mm = world_cm_to_mm(world_y)
         send_world_data(send_color_id, wx_mm, wy_mm, w, yellow_detected, pos_flag)
         img.draw_rectangle((x1, y1, w, h),
                            color=TARGET_BOX_COLORS[send_color_id - 1], thickness=2)
