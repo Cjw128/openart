@@ -6,13 +6,14 @@
 
 | 文件 | 设备 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v0.11.1-dev 模型识别 / 色块几何融合入口 |
-| `minimain.py` | OpenART Plus / 从车 | v0.11.1-dev 模型识别 / 色块几何融合入口 |
+| `main.py` | OpenART Plus / 主车 | v0.11.4-dev 模型识别 / 稳定接触点融合入口 |
+| `minimain.py` | OpenART Plus / 从车 | v0.11.4-dev 模型识别 / 稳定接触点融合入口 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点 |
 | `calibrate_ground_camera.py` | PC | 网格生成、校验和报告工具 |
 | `camera_ground_mesh_report.json` | PC | 当前网格质量报告 |
 | `raw_ground_projection_test.py` | OpenART Plus / IDE | 地面坐标采点和实地复核脚本 |
+| `world_coordinate_test.py` | OpenART Plus / IDE | 与主车完整检测对齐的全类别世界坐标观察脚本 |
 | `test_ground_projection.py` | PC | 运行时投影回归测试 |
 | `test_model_blob_fusion.py` | PC | 主从模型 / 色块融合回归测试 |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
@@ -30,6 +31,38 @@
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-07-25 - v0.11.4-dev - 近距离世界坐标接触点稳定
+
+范围：`main.py`、`minimain.py`、`world_coordinate_test.py`、`test_model_blob_fusion.py`、三份 README。
+
+- 对照省赛稳定版确认，原版低抖动主要来自模型接触点的空间限幅；v0.11.3 的完整色块底边会直接吸收阴影、粘地和阈值边缘变化，近距离时这些像素变化被逆透视放大。
+- 保留完整色块对显示框的所有权，在逆透视之前单独稳定底边中点：默认 `2 px` 圆形空间死区，小变化保持不动，超出后立即跟随并只保留 `2 px` 空间误差。该方法没有普通时间 EMA 的长拖尾。
+- 原始接触点相对上一稳定点达到 `24 px` 时直接重置，处理真实快速移动和重捕；显示框继续采用原 `35%` 当前值平滑，不恢复省赛版偏小的模型框尺寸。
+- 观察脚本同时打印 `raw_pixel`、`stable_pixel` 和 `delta_px`，并以小红十字、大黄十字分别标记原始和稳定接触点。
+- 28 个标定点、36 个三角形、图像中心 X 修正、单应回退、Y 坐标和 UART 毫米单位均未修改。
+- 共 18 项桌面回归测试覆盖小抖动冻结、近距离底边往返噪声收窄、真实移动后的最终收敛、大跳变立即重置、显示框/坐标框分离以及三份入口一致性。
+
+### 2026-07-25 - v0.11.3-dev - 可切换 ID2 绝对优先
+
+范围：`main.py`、`minimain.py`、`world_coordinate_test.py`、`test_model_blob_fusion.py`、`test_ground_projection.py`、三份 README。
+
+- 从省赛 `01_稳定版_ID2先_5中7` 恢复首目标门控，并在三份当前入口的快速配置区增加 `ID2_ABSOLUTE_PRIORITY`，默认开启。
+- 开启时，上电或 `0x08` 清零后只允许 ID2 进入普通模型搜索、动态 LAB 确认、主控 `0x03` 指定和世界坐标输出；即使其他 ID 更近或置信度更高也不会锁定。ID2 完成后，其余未完成 ID 自动恢复最近目标竞争。
+- 主车沿用越过黄线时写入完成 mask，从车沿用搬运结束后提交待完成 ID；`0x06` 全色前扫继续绕过优先门控。场上没有 ID2 时会持续等待，不自动降级。
+- 关闭开关时恢复 v0.11.0 的无颜色优先级行为，所有未完成 ID 从启动起按世界 Y 最近优先。
+- 共 14 项桌面回归测试通过，新增测试覆盖 ID2 未完成、ID2 已完成和关闭开关三种可用 ID 集合；Python 语法、`git diff --check` 通过。
+
+### 2026-07-25 - v0.11.2-dev - 全类别世界坐标观察脚本
+
+范围：`main.py`、`minimain.py`、`world_coordinate_test.py`、`test_model_blob_fusion.py`、`test_ground_projection.py`、三份 README。
+
+- 新增独立 OpenART IDE 入口 `world_coordinate_test.py`。它完整保留当前 `main.py` 的三类模型、五个颜色 ID、首次 `5/7` 锁定、动态 LAB、模型/色块几何融合、最近目标选择、地面网格和单应回退，不使用红沙包专用的简化检测。
+- 对任意正常锁定类别打印最终坐标框底边中点、厘米世界坐标和正式 UART 使用的毫米坐标；画面同步标出接触点。默认每 `200 ms` 打印，目标丢失时每秒输出一次 `NO_TARGET`。
+- 主车、从车和测试脚本统一按接触点所在图像行扣除 `u=160` 的原始 X 投影，使画面中心线在所有距离严格对应 `X=0`，同时保留 Y 和横向尺度；共用 `GROUND_CENTER_X_ON_IMAGE` 开关可恢复旧标定作现场 A/B 对比。测试脚本额外打印 `raw_x` 与 `x_bias`。
+- 输出状态 `HELD / TRACK / MODEL_FRAME` 对应保持帧、普通跟踪帧和模型刷新帧，便于区分坐标跳变发生在哪条检测路径。
+- 新增完整 AST 一致性保护：剔除 `_world_coord_*` 观察代码后，测试脚本必须与 `main.py` 完全一致；它同时参与模型/色块融合和地面投影回归测试。
+- 共 13 项桌面回归测试通过，包括多距离图像中心严格映射到 `X=0`；Python 语法、`git diff --check` 和 MicroPython `mpy-cross` 编译通过。
 
 ### 2026-07-23 - v0.11.1-dev - 模型识别与动态色块几何融合试验
 

@@ -6,13 +6,14 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 | File | Device | Role |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / master | v0.11.1-dev model-recognition / blob-geometry fusion runtime |
-| `minimain.py` | OpenART Plus / slave | v0.11.1-dev model-recognition / blob-geometry fusion runtime |
+| `main.py` | OpenART Plus / master | v0.11.4-dev model recognition / stable-contact fusion runtime |
+| `minimain.py` | OpenART Plus / slave | v0.11.4-dev model recognition / stable-contact fusion runtime |
 | `camera_ground_mesh.txt` | OpenART Plus / both | Board-side 28-point, 36-triangle ground mesh |
 | `ground_mesh_24_points_template.csv` | PC | Current 28 pixel/world calibration points |
 | `calibrate_ground_camera.py` | PC | Mesh generation, validation, and reporting tool |
 | `camera_ground_mesh_report.json` | PC | Current mesh quality report |
 | `raw_ground_projection_test.py` | OpenART Plus / IDE | Ground-coordinate collection and field verification tool |
+| `world_coordinate_test.py` | OpenART Plus / IDE | All-class world-coordinate observer aligned with the full master detector |
 | `test_ground_projection.py` | PC | Runtime projection regression tests |
 | `test_model_blob_fusion.py` | PC | Master/slave model-blob fusion regression tests |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
@@ -30,6 +31,38 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-25 - v0.11.4-dev - Stable close-range world contact point
+
+Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, and the three READMEs.
+
+- Comparison with the provincial stable build confirmed that its low jitter mainly came from a spatially limited model contact point. In v0.11.3, the full blob bottom directly included shadow, floor merge, and threshold-edge changes, which ground projection amplified at close range.
+- The full blob still owns the display box. Only its bottom-centre point is stabilized before projection: the default `2 px` circular spatial deadband freezes small changes, then follows real movement immediately while retaining at most `2 px` spatial error. This avoids the long tail of an ordinary temporal EMA.
+- A raw contact displacement of `24 px` or more from the previous stable point resets immediately for true rapid movement and reacquisition. Display geometry retains the existing `35%` current-value smoothing and does not restore the provincial build's undersized model-box geometry.
+- The observer now prints `raw_pixel`, `stable_pixel`, and `delta_px`, marking the raw contact with a small red cross and the stabilized contact with a larger yellow cross.
+- The 28 calibration points, 36 triangles, image-centred X correction, homography fallback, Y mapping, and UART millimetre units are unchanged.
+- Eighteen desktop regression tests cover small-jitter freezing, reduced close-range bottom-edge oscillation, final convergence after true motion, immediate large-jump reset, separate display/coordinate geometry, and three-entrypoint identity.
+
+### 2026-07-25 - v0.11.3-dev - Switchable absolute ID2 priority
+
+Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, `test_ground_projection.py`, and the three READMEs.
+
+- Restored the first-target gate from the provincial `01_稳定版_ID2先_5中7` build and added `ID2_ABSOLUTE_PRIORITY` to the quick settings in all three current entry points. It defaults to enabled.
+- When enabled, startup and `0x08` reset only allow ID2 through ordinary model search, dynamic LAB confirmation, host `0x03` requests, and world-coordinate output. A nearer or higher-confidence non-ID2 target cannot lock. Once ID2 is completed, all other incomplete IDs return to nearest-world-Y competition.
+- The master retains yellow-line completion and the slave retains pending-ID completion after a carry. The `0x06` all-color front scan bypasses the priority gate. If ID2 is absent, the runtime waits rather than falling back to another ID.
+- Disabling the switch restores v0.11.0 behavior: every incomplete ID competes by nearest world Y from startup.
+- All 14 desktop regression tests pass, including ID availability before ID2 completion, after completion, and with the switch disabled. Python syntax and `git diff --check` also pass.
+
+### 2026-07-25 - v0.11.2-dev - All-class world-coordinate observer
+
+Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, `test_ground_projection.py`, and the three READMEs.
+
+- Added the standalone OpenART IDE entry point `world_coordinate_test.py`. It retains the complete current `main.py` pipeline: three model classes, five color IDs, initial `5/7` lock, dynamic LAB thresholds, model/blob geometry fusion, nearest-target selection, ground mesh, and homography fallback. It does not use the red-bag-only simplified detector.
+- Every normally locked class prints the final coordinate box's bottom-center pixel, centimetre world coordinates, and the rounded millimetres used by the production UART packet. The framebuffer also marks the contact point. Output defaults to once per `200 ms`; `NO_TARGET` is printed once per second while unlocked.
+- The master, slave, and observer all subtract the raw X projection at `u=160` on the contact point's scanline. This makes the image centerline exactly `X=0` at every distance while preserving Y and the calibrated lateral scale. The shared `GROUND_CENTER_X_ON_IMAGE` switch restores the old mapping for field A/B tests; observer logs additionally retain `raw_x` and `x_bias`.
+- `HELD / TRACK / MODEL_FRAME` identifies held output, an ordinary tracking frame, or a model refresh frame so coordinate jumps can be tied to the active detection path.
+- A full AST guard verifies that removing `_world_coord_*` instrumentation leaves a script identical to `main.py`. The observer also participates in the model/blob fusion and ground-projection regression suites.
+- All 13 desktop regression tests pass, including exact `X=0` projection along the image centerline at multiple distances. Python syntax checks, `git diff --check`, and MicroPython `mpy-cross` compilation also pass.
 
 ### 2026-07-23 - v0.11.1-dev - Model recognition with dynamic-blob geometry
 

@@ -5,7 +5,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-RUNTIME_FILES = (ROOT / "main.py", ROOT / "minimain.py")
+RUNTIME_FILES = (
+    ROOT / "main.py",
+    ROOT / "minimain.py",
+    ROOT / "world_coordinate_test.py",
+)
 MESH_PATH = ROOT / "camera_ground_mesh.txt"
 POINTS_PATH = ROOT / "ground_mesh_24_points_template.csv"
 
@@ -20,6 +24,7 @@ RUNTIME_ASSIGNMENTS = {
     "GROUND_HOMOGRAPHY_EPSILON",
     "GROUND_OUTSIDE_DEADBAND_PX",
     "GROUND_REQUIRED_NEAR_Y_CM",
+    "GROUND_CENTER_X_ON_IMAGE",
     "MESH_INVALID",
     "MESH_VALID",
     "MESH_TOO_NEAR",
@@ -44,6 +49,7 @@ RUNTIME_FUNCTIONS = {
     "ground_far_limit_x",
     "fallback_ground_pixel_to_world",
     "ground_pixel_to_world",
+    "box_to_world",
     "world_cm_to_mm",
 }
 
@@ -92,7 +98,8 @@ class GroundProjectionTests(unittest.TestCase):
             start = source.index(pattern_start)
             end = source.index(pattern_end, start)
             blocks.append(source[start:end])
-        self.assertEqual(blocks[0], blocks[1])
+        for block in blocks[1:]:
+            self.assertEqual(blocks[0], block)
 
     def test_mesh_metadata_and_fit_vertices(self):
         fit_points = load_fit_points()
@@ -120,6 +127,25 @@ class GroundProjectionTests(unittest.TestCase):
                 self.assertGreater(world[1], 0.0)
                 self.assertLessEqual(world[1], 164.0)
 
+    def test_output_boxes_recenter_x_on_image_midline(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_runtime_projection(source_path)
+            projection = runtime["ground_pixel_to_world"]
+            box_to_world = runtime["box_to_world"]
+            self.assertTrue(runtime["GROUND_CENTER_X_ON_IMAGE"])
+
+            for py in (35, 40, 52, 69, 100, 123, 160, 200, 220, 235):
+                raw = projection(160, py)
+                actual = box_to_world(159.0, py - 0.5, 2.0, 1.0)
+                self.assertIsNotNone(raw)
+                self.assertIsNotNone(actual)
+                self.assertAlmostEqual(actual[0], 0.0, places=9)
+                self.assertAlmostEqual(actual[1], raw[1], places=9)
+
+            runtime["GROUND_CENTER_X_ON_IMAGE"] = False
+            raw = projection(160, 69)
+            self.assertEqual(box_to_world(159.0, 68.5, 2.0, 1.0), raw)
+
     def test_competition_uart_units_remain_millimetres(self):
         runtime = load_runtime_projection(RUNTIME_FILES[0])
         convert = runtime["world_cm_to_mm"]
@@ -127,12 +153,13 @@ class GroundProjectionTests(unittest.TestCase):
         self.assertEqual(convert(1.25), 13)
         self.assertEqual(convert(-1.25), -13)
 
-    def test_build_04_uses_final_model_and_field_exposure(self):
+    def test_build_04_uses_final_model_field_exposure_and_id2_switch(self):
         for source_path in RUNTIME_FILES:
             source = source_path.read_text(encoding="utf-8")
-            self.assertIn("no ID priority", source.splitlines()[0])
+            self.assertIn("optional ID2-first gate", source.splitlines()[0])
             self.assertIn("MODEL_PATH = '/sd/80lite0.5SS.tflite'", source)
             self.assertIn("EXPOSURE_INIT = 880", source)
+            self.assertIn("ID2_ABSOLUTE_PRIORITY = True", source)
 
 
 if __name__ == "__main__":

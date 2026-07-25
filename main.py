@@ -1,4 +1,4 @@
-# POST-PROVINCIAL BUILD 04 MASTER: no ID priority; nearest first; 5 hits in 7 inference frames.
+# POST-PROVINCIAL BUILD 04 MASTER: optional ID2-first gate; 5 hits in 7 inference frames.
 # ==================== QUICK MATCH SETTINGS ====================
 # Edit this block first when changing cameras, models, or SD files.
 WB_GAINS = (92.00, 64.00, 101.00)
@@ -7,6 +7,7 @@ COLOR_THR_PATH = '/sd/color_thr.txt'
 EXPOSURE_INIT = 880
 EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
+ID2_ABSOLUTE_PRIORITY = True
 # ================== END QUICK MATCH SETTINGS ==================
 import sensor, gc, time, math
 try:
@@ -298,6 +299,12 @@ COLOR_TRACK_AREA_MAX_PERCENT = 250
 COLOR_TRACK_CENTER_SCALE_X100 = 90
 OUTPUT_SMOOTH_ALPHA_X100 = 35
 OUTPUT_SMOOTH_RESET_CENTER2 = 36 * 36
+COORDINATE_CONTACT_DEADBAND_PX = 2.0
+COORDINATE_CONTACT_DEADBAND2 = (COORDINATE_CONTACT_DEADBAND_PX *
+                                COORDINATE_CONTACT_DEADBAND_PX)
+COORDINATE_CONTACT_RESET_PX = 24.0
+COORDINATE_CONTACT_RESET2 = (COORDINATE_CONTACT_RESET_PX *
+                             COORDINATE_CONTACT_RESET_PX)
 CONTACT_JITTER_PX = 1.0
 CONTACT_JITTER2 = CONTACT_JITTER_PX * CONTACT_JITTER_PX
 CONTACT_REJECT_JUMP2 = MODEL_MATCH_CENTER2
@@ -340,6 +347,7 @@ host_color_id_received = False
 completed_color_mask = 0
 color_track_active = False
 color_track_box = None
+color_track_raw_coordinate_box = None
 color_track_coordinate_box = None
 color_track_color_id = 0
 color_lost_count = 0
@@ -412,8 +420,12 @@ def color_id_completed(color_id):
     return (1 <= color_id <= len(all_color_thresholds) and
             bool(completed_color_mask & (1 << (color_id - 1))))
 def color_id_available_for_search(color_id):
-    return (1 <= color_id <= len(all_color_thresholds) and
-            not color_id_completed(color_id))
+    if (color_id < 1 or color_id > len(all_color_thresholds) or
+            color_id_completed(color_id)):
+        return False
+    if ID2_ABSOLUTE_PRIORITY and not color_id_completed(2):
+        return color_id == 2
+    return True
 def host_forced_target_active():
     return (host_color_id_received and
             1 <= target_color_id <= len(all_color_thresholds) and
@@ -436,12 +448,15 @@ def active_selected_color_id():
 def reset_target_tracking_state():
     global lost_frame_count
     global target_color_id, host_color_id_received
-    global color_track_active, color_track_box, color_track_color_id, color_lost_count
+    global color_track_active, color_track_box, color_track_raw_coordinate_box
+    global color_track_coordinate_box, color_track_color_id, color_lost_count
     lost_frame_count = 0
     target_color_id = 0
     host_color_id_received = False
     color_track_active = False
     color_track_box = None
+    color_track_raw_coordinate_box = None
+    color_track_coordinate_box = None
     color_track_color_id = 0
     color_lost_count = 0
     reset_hybrid_tracking()
@@ -478,6 +493,7 @@ GROUND_TRIANGLE_EPSILON = 1e-6
 GROUND_HOMOGRAPHY_EPSILON = 1e-6
 GROUND_OUTSIDE_DEADBAND_PX = 1.5
 GROUND_REQUIRED_NEAR_Y_CM = 6.0
+GROUND_CENTER_X_ON_IMAGE = True
 
 MESH_INVALID = 0
 MESH_VALID = 1
@@ -1054,12 +1070,14 @@ def reset_color_blob_search():
     global color_blob_box
     color_blob_box = None
 def reset_color_blob_tracking():
-    global color_track_active, color_track_box, color_track_coordinate_box
+    global color_track_active, color_track_box
+    global color_track_raw_coordinate_box, color_track_coordinate_box
     global color_track_color_id
     global color_lost_count
     reset_color_blob_search()
     color_track_active = False
     color_track_box = None
+    color_track_raw_coordinate_box = None
     color_track_coordinate_box = None
     color_track_color_id = 0
     color_lost_count = 0
@@ -1942,15 +1960,55 @@ def smooth_tracking_box(previous, current):
     height = (previous[3] * keep + current[3] * alpha + 50) // 100
     return box_from_center(center_x2 * 0.5, center_y2 * 0.5,
                            width, height)
+def tracking_box_contact(box):
+    return (box[0] + box[2] * 0.5,
+            box[1] + box[3] - 0.5)
+def coordinate_box_with_contact(box, contact_x, contact_y):
+    center_y = contact_y - box[3] * 0.5 + 0.5
+    return box_from_center(contact_x, center_y, box[2], box[3])
+def stabilize_coordinate_box(previous, current):
+    if previous is None or current is None:
+        return current
+    previous_x, previous_y = tracking_box_contact(previous)
+    raw_x, raw_y = tracking_box_contact(current)
+    raw_dx = raw_x - previous_x
+    raw_dy = raw_y - previous_y
+    if (raw_dx * raw_dx + raw_dy * raw_dy >=
+            COORDINATE_CONTACT_RESET2):
+        return current
+    distance2 = raw_dx * raw_dx + raw_dy * raw_dy
+    if distance2 <= COORDINATE_CONTACT_DEADBAND2:
+        stable_x = previous_x
+        stable_y = previous_y
+    else:
+        keep = COORDINATE_CONTACT_DEADBAND_PX / math.sqrt(distance2)
+        stable_x = raw_x - raw_dx * keep
+        stable_y = raw_y - raw_dy * keep
+    return coordinate_box_with_contact(current, stable_x, stable_y)
 def set_color_tracking(color_id, box, coordinate_box):
-    global color_track_active, color_track_box, color_track_coordinate_box
+    global color_track_active, color_track_box
+    global color_track_raw_coordinate_box, color_track_coordinate_box
     global color_track_color_id, color_lost_count
     if color_track_active and color_track_color_id == color_id:
         box = smooth_tracking_box(color_track_box, box)
-        coordinate_box = smooth_tracking_box(
-            color_track_coordinate_box, coordinate_box)
+        previous_x, previous_y = tracking_box_contact(
+            color_track_coordinate_box)
+        raw_x, raw_y = tracking_box_contact(coordinate_box)
+        raw_dx = raw_x - previous_x
+        raw_dy = raw_y - previous_y
+        if (raw_dx * raw_dx + raw_dy * raw_dy >=
+                COORDINATE_CONTACT_RESET2):
+            raw_coordinate_box = coordinate_box
+        else:
+            raw_coordinate_box = smooth_tracking_box(
+                color_track_raw_coordinate_box, coordinate_box)
+            coordinate_box = stabilize_coordinate_box(
+                color_track_coordinate_box, raw_coordinate_box)
+    else:
+        raw_coordinate_box = coordinate_box
     color_track_active = True
     color_track_box = box
+    color_track_raw_coordinate_box = raw_coordinate_box
     color_track_coordinate_box = coordinate_box
     color_track_color_id = color_id
     color_lost_count = 0
@@ -2242,7 +2300,15 @@ def process_return_yellow(img):
         send_return_yellow_result(False, 0, return_stop_requested)
 def box_to_world(x, y, w, h):
     # The mesh was measured at the visible ground-contact point.
-    return ground_pixel_to_world(x + w * 0.5, y + h - 0.5)
+    contact_x = x + w * 0.5
+    contact_y = y + h - 0.5
+    world = ground_pixel_to_world(contact_x, contact_y)
+    if world is None or not GROUND_CENTER_X_ON_IMAGE:
+        return world
+    center_world = ground_pixel_to_world(GROUND_IMAGE_W * 0.5, contact_y)
+    if center_world is None:
+        return world
+    return (world[0] - center_world[0], world[1])
 _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)
 _tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
