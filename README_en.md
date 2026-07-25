@@ -6,14 +6,15 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 | File | Device | Role |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / master | Build-04 no-priority runtime with multi-point world coordinates |
-| `minimain.py` | OpenART Plus / slave | Build-04 no-priority runtime with multi-point world coordinates |
+| `main.py` | OpenART Plus / master | v0.11.1-dev model-recognition / blob-geometry fusion runtime |
+| `minimain.py` | OpenART Plus / slave | v0.11.1-dev model-recognition / blob-geometry fusion runtime |
 | `camera_ground_mesh.txt` | OpenART Plus / both | Board-side 28-point, 36-triangle ground mesh |
 | `ground_mesh_24_points_template.csv` | PC | Current 28 pixel/world calibration points |
 | `calibrate_ground_camera.py` | PC | Mesh generation, validation, and reporting tool |
 | `camera_ground_mesh_report.json` | PC | Current mesh quality report |
 | `raw_ground_projection_test.py` | OpenART Plus / IDE | Ground-coordinate collection and field verification tool |
 | `test_ground_projection.py` | PC | Runtime projection regression tests |
+| `test_model_blob_fusion.py` | PC | Master/slave model-blob fusion regression tests |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | Pre-carry front color-blob scan preview script |
 
@@ -29,6 +30,29 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-23 - v0.11.1-dev - Model recognition with dynamic-blob geometry
+
+Scope: `main.py`, `minimain.py`, `test_model_blob_fusion.py`, and the three READMEs.
+
+Version preservation:
+
+- The pre-change provincial v0.11.0 build is preserved at commit `41260c0`. Branches `dedicated-model` and `archive/v0.11.0-ground-mesh` both point to it and have been pushed to `origin`, while this experiment continues on `model-blob-fusion` without replacing the archive.
+- The archive retains the car-tested `04_备用版_无优先级_5中7` baseline, SS model, `880 us` exposure, nearest-target acquisition without ID priority, initial `5/7` confirmation, the 28-point ground mesh, and UART coordinates in millimetres.
+
+Fusion behavior:
+
+- The previous path took width and height from the model box and used the blob only as a relative displacement. An incomplete model box therefore kept the final geometry undersized and could introduce a periodic size change on each four-frame model refresh. This model-anchored geometry path has been removed.
+- The model remains responsible for initial discovery, model-class confirmation, dynamic LAB threshold creation, periodic validation, and reacquisition after loss. Once a dynamic blob is confirmed, its box directly owns both display geometry and the bottom contact point used for world coordinates.
+- The first full-blob search expands the model box by `50%`. Once a blob exists, tracking uses a local ROI expanded by `45%`. A model-refresh frame unions the model and existing-blob gates while retaining the local blob ROI, so refresh no longer forces tracking back into an incomplete model box.
+- Initial candidate centre tolerance considers both the model-box size and the candidate-blob size, allowing a complete blob to be materially larger than a clipped model box. Area, overlap, color-ID, and dynamic-field constraints still reject nearby distractors.
+- Final centre and size smoothing keeps `65%` of the previous box and accepts `35%` of the current blob; a large relocation still resets immediately to avoid lag. A transient blob miss holds the previous result. Local blob search resets after three consecutive misses, output may be held for up to five frames, and only then falls back to model geometry or waits for reacquisition.
+
+Limits and validation:
+
+- This is a development experiment for on-car comparison, not a replacement for the archived provincial build. Because the blob now owns geometry, a dynamic threshold that fragments the object, merges floor pixels, or absorbs shadows can still jitter both the box and world coordinates. Field testing should display the raw model box, raw blob box, and final smoothed box separately.
+- Added six fusion regression tests covering first-search expansion, model-refresh ROI behavior, blob geometry ownership, smoothing weight, removal of the old anchor path, and AST identity of all master/slave fusion constants and helpers.
+- All six fusion tests and five existing ground-projection tests pass. `python -m py_compile` and `git diff --check` pass, and `mpy-cross` compiles both `main.py` and `minimain.py`.
 
 ### 2026-07-22 - v0.11.0 - Provincial build-04 no-priority multi-point world coordinates
 

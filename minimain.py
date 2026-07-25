@@ -238,9 +238,6 @@ TENNIS_LINE_DIAGONAL_MAX_DENSITY = 0.12
 TENNIS_LINE_EXTEND_X100 = 300
 TENNIS_LINE_MODEL_OVERLAP_PERCENT = 60
 COLOR_CONFIRM_FRAMES = 3
-COLOR_ROI_INSET_X_PERCENT = 5
-COLOR_ROI_INSET_TOP_PERCENT = 5
-COLOR_ROI_INSET_BOTTOM_PERCENT = 10
 COLOR_SAMPLE_INSET_X_PERCENT = 20
 COLOR_SAMPLE_INSET_TOP_PERCENT = 15
 COLOR_SAMPLE_INSET_BOTTOM_PERCENT = 25
@@ -259,7 +256,7 @@ COLOR_DYNAMIC_MAX_SPANS = (
 COLOR_DYNAMIC_BASE_EXPAND = (100, 128, 128)
 COLOR_DYNAMIC_UPDATE_ALPHA_X100 = 30
 COLOR_DYNAMIC_PENDING_CENTER_MAX = (12, 10, 12)
-COLOR_TRACK_MODEL_PAD_PERCENT = 30
+COLOR_TRACK_MODEL_PAD_PERCENT = 50
 COLOR_TRACK_LOCAL_PAD_PERCENT = 45
 COLOR_TRACK_MIN_PAD = 6
 COLOR_TRACK_MAX_MISSES = 2
@@ -269,7 +266,7 @@ COLOR_TRACK_GATE_OVERLAP_PERCENT = 70
 COLOR_TRACK_AREA_MIN_PERCENT = 40
 COLOR_TRACK_AREA_MAX_PERCENT = 250
 COLOR_TRACK_CENTER_SCALE_X100 = 90
-OUTPUT_SMOOTH_ALPHA_X100 = 70
+OUTPUT_SMOOTH_ALPHA_X100 = 35
 OUTPUT_SMOOTH_RESET_CENTER2 = 36 * 36
 CONTACT_JITTER_PX = 1.0
 CONTACT_JITTER2 = CONTACT_JITTER_PX * CONTACT_JITTER_PX
@@ -304,9 +301,6 @@ color_adapt_pending_id = 0
 color_adapt_pending_threshold = None
 color_adapt_pending_count = 0
 color_blob_box = None
-color_anchor_blob_box = None
-color_anchor_output_box = None
-color_anchor_coordinate_box = None
 dynamic_cut_left_y = DETECT_Y_MIN
 dynamic_cut_valid = False
 dynamic_cut_miss_count = 0
@@ -966,12 +960,8 @@ def reset_color_adaptation_pending():
     color_adapt_pending_threshold = None
     color_adapt_pending_count = 0
 def reset_color_blob_search():
-    global color_blob_box, color_anchor_blob_box
-    global color_anchor_output_box, color_anchor_coordinate_box
+    global color_blob_box
     color_blob_box = None
-    color_anchor_blob_box = None
-    color_anchor_output_box = None
-    color_anchor_coordinate_box = None
 def reset_color_blob_tracking():
     global color_track_active, color_track_box, color_track_coordinate_box
     global color_track_color_id
@@ -1057,17 +1047,6 @@ def raw_model_box(x, y, w, h):
     w = clamp_int(w, 1, 320 - x)
     h = clamp_int(h, 1, 240 - y)
     return (x, y, w, h)
-def model_color_roi(box):
-    x, y, w, h = box
-    inset_x = max(1, w * COLOR_ROI_INSET_X_PERCENT // 100)
-    inset_top = max(1, h * COLOR_ROI_INSET_TOP_PERCENT // 100)
-    inset_bottom = max(1, h * COLOR_ROI_INSET_BOTTOM_PERCENT // 100)
-    x += inset_x
-    y += inset_top
-    w -= inset_x * 2
-    h -= inset_top + inset_bottom
-    y2 = min(y + h, COLOR_DETECT_Y_MAX)
-    return (x, y, w, y2 - y) if w > 0 and y2 > y else None
 def model_proximity(box):
     cy = box[1] + box[3] // 2
     return clamp_int(max((cy - 70) * 100 // 60,
@@ -1515,6 +1494,16 @@ def intersect_rois(first, second):
     if x2 <= x1 or y2 <= y1:
         return None
     return (x1, y1, x2 - x1, y2 - y1)
+def union_rois(first, second):
+    if first is None:
+        return second
+    if second is None:
+        return first
+    x1 = min(first[0], second[0])
+    y1 = min(first[1], second[1])
+    x2 = max(first[0] + first[2], second[0] + second[2])
+    y2 = max(first[1] + first[3], second[1] + second[3])
+    return (x1, y1, x2 - x1, y2 - y1)
 def color_tracking_gate(model_observed=False):
     field_roi = intersect_rois(
         dynamic_detect_roi, (0, 0, 320, COLOR_DETECT_Y_MAX))
@@ -1522,13 +1511,18 @@ def color_tracking_gate(model_observed=False):
         return None
     model_gate = expand_tracking_box(
         model_lock[1], COLOR_TRACK_MODEL_PAD_PERCENT, COLOR_TRACK_MIN_PAD)
+    if color_blob_box is not None:
+        blob_gate = expand_tracking_box(
+            color_blob_box, COLOR_TRACK_LOCAL_PAD_PERCENT,
+            COLOR_TRACK_MIN_PAD)
+        model_gate = union_rois(model_gate, blob_gate)
     return intersect_rois(model_gate, field_roi)
 def color_tracking_search_roi(model_observed=False):
     tracking_gate = color_tracking_gate(model_observed)
     if tracking_gate is None:
         return None
-    if model_observed or color_blob_box is None:
-        return intersect_rois(model_color_roi(model_lock[1]), tracking_gate)
+    if color_blob_box is None:
+        return tracking_gate
     local_percent = (COLOR_TRACK_LOCAL_PAD_PERCENT +
                      min(color_lost_count, COLOR_TRACK_MAX_MISSES) * 10)
     local_roi = expand_tracking_box(
@@ -1577,7 +1571,8 @@ def strict_blob_candidate(blob, color_id, reference, model_gate,
         return False
     if reference is None:
         max_distance = max(
-            12, max(model_lock[1][2], model_lock[1][3]) *
+            12, max(model_lock[1][2], model_lock[1][3],
+                    box[2], box[3]) *
             COLOR_TRACK_CENTER_SCALE_X100 // 100)
         if center_dist2(box, model_lock[1]) > max_distance * max_distance:
             return False
@@ -1616,7 +1611,7 @@ def track_color_in_model_roi(img, color_id, model_observed=False):
     roi = color_tracking_search_roi(model_observed)
     tracking_gate = color_tracking_gate(model_observed)
     blobs, minimum = find_adaptive_color_blobs(img, roi, color_id)
-    reference = None if model_observed else color_blob_box
+    reference = color_blob_box
     picked = pick_tracking_blob(
         blobs, color_id, reference, tracking_gate, minimum)
     if picked is None:
@@ -1627,33 +1622,12 @@ def track_color_in_model_roi(img, color_id, model_observed=False):
     color_blob_box = picked
     color_lost_count = 0
     return picked
-def translate_tracking_box(box, dx, dy):
-    center_x = box[0] + box[2] * 0.5 + dx
-    center_y = box[1] + box[3] * 0.5 + dy
-    return box_from_center(center_x, center_y, box[2], box[3])
-def anchor_model_geometry(blob_box):
-    global color_anchor_blob_box
-    global color_anchor_output_box, color_anchor_coordinate_box
-    if not model_track[0]:
-        return False
-    color_anchor_blob_box = blob_box
-    color_anchor_output_box = output_box_from_track(0.0, 0.0)
-    color_anchor_coordinate_box = coordinate_box_from_track(0.0, 0.0)
-    return True
-def fused_tracking_boxes(blob_box):
-    if (color_anchor_blob_box is None or
-            color_anchor_output_box is None or
-            color_anchor_coordinate_box is None):
-        if not anchor_model_geometry(blob_box):
-            return None
-    dx = ((blob_box[0] + blob_box[2] * 0.5) -
-          (color_anchor_blob_box[0] + color_anchor_blob_box[2] * 0.5))
-    dy = ((blob_box[1] + blob_box[3] * 0.5) -
-          (color_anchor_blob_box[1] + color_anchor_blob_box[3] * 0.5))
-    return (
-        translate_tracking_box(color_anchor_output_box, dx, dy),
-        translate_tracking_box(color_anchor_coordinate_box, dx, dy),
-    )
+def color_blob_geometry(blob_box):
+    if blob_box is None:
+        return None
+    box = raw_model_box(blob_box[0], blob_box[1],
+                        blob_box[2], blob_box[3])
+    return (box, box)
 def should_run_model(frame_index):
     if model_lock[1] is None:
         return True
@@ -1896,15 +1870,11 @@ def held_color_tracking_result(color_id):
         return None
     return (color_id, color_track_box, color_track_coordinate_box, 1)
 def model_geometry_tracking_result(color_id):
-    global color_blob_box, color_anchor_blob_box
-    global color_anchor_output_box, color_anchor_coordinate_box
+    global color_blob_box
     global color_lost_count
     if not model_track[0]:
         return None
     color_blob_box = None
-    color_anchor_blob_box = None
-    color_anchor_output_box = None
-    color_anchor_coordinate_box = None
     color_lost_count = 0
     output_box = output_box_from_track(0.0, 0.0)
     coordinate_box = coordinate_box_from_track(0.0, 0.0)
@@ -1962,18 +1932,15 @@ def process_model_only_target(img, frame_index, run_model):
         return held_model_tracking_result(color_id)
     blob_box = track_color_in_model_roi(img, color_id, observed)
     if blob_box is None:
-        if observed:
-            return model_geometry_tracking_result(color_id)
         held = held_color_tracking_result(color_id)
-        return held if held is not None else held_model_tracking_result(color_id)
-    if (observed or color_anchor_blob_box is None):
-        if not anchor_model_geometry(blob_box):
-            return None
-    fused = fused_tracking_boxes(blob_box)
-    if fused is None:
+        if held is not None:
+            return held
         return (model_geometry_tracking_result(color_id)
                 if observed else held_model_tracking_result(color_id))
-    output_box, coordinate_box = fused
+    geometry = color_blob_geometry(blob_box)
+    if geometry is None:
+        return None
+    output_box, coordinate_box = geometry
     output_box, coordinate_box = set_color_tracking(
         color_id, output_box, coordinate_box)
     return (color_id, output_box, coordinate_box, 3 if observed else 2)

@@ -1,8 +1,8 @@
 # OpenART 双车视觉系统
 
-当前版本：**v0.11.0（2026-07-22）省赛 04 无优先级多点世界坐标版**
+当前版本：**v0.11.1-dev（2026-07-23）模型识别 / 色块几何融合试验版**
 
-本版本以实车使用的 `04_备用版_无优先级_5中7` 为基线：自动搜索不按颜色 ID 排序，优先锁定世界 Y 最近的目标，并保留 `7` 个推理帧命中 `5` 帧的首次确认。模型固定为 `/sd/80lite0.5SS.tflite`，默认曝光为 `880 us`。
+本开发版基于已归档的省赛 v0.11.0：模型负责识别、类别确认和重捕，动态色块确认后负责显示框与世界坐标几何。省赛基线保存在提交 `41260c0` 以及分支 `dedicated-model`、`archive/v0.11.0-ground-mesh`；模型仍为 `/sd/80lite0.5SS.tflite`，默认曝光仍为 `880 us`。
 
 ## 部署文件
 
@@ -37,8 +37,8 @@
 
 ```powershell
 python calibrate_ground_camera.py --ground-csv ground_mesh_24_points_template.csv --role master --expected-points 28 --required-near-y-cm 6 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
-python -m unittest -v test_ground_projection.py
-python -m py_compile main.py minimain.py calibrate_ground_camera.py raw_ground_projection_test.py test_ground_projection.py
+python -m unittest -v test_model_blob_fusion.py test_ground_projection.py
+python -m py_compile main.py minimain.py calibrate_ground_camera.py raw_ground_projection_test.py test_model_blob_fusion.py test_ground_projection.py
 git diff --check
 ```
 
