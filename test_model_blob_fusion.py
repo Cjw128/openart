@@ -25,6 +25,7 @@ FUSION_ASSIGNMENTS = {
     "COLOR_TRACK_CENTER_SCALE_X100",
     "OUTPUT_SMOOTH_ALPHA_X100",
     "OUTPUT_SMOOTH_RESET_CENTER2",
+    "COORDINATE_SMOOTH_ALPHA_X100",
     "COORDINATE_CONTACT_DEADBAND_PX",
     "COORDINATE_CONTACT_DEADBAND2",
     "COORDINATE_CONTACT_RESET_PX",
@@ -216,24 +217,30 @@ class ModelBlobFusionTests(unittest.TestCase):
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
             self.assertEqual(runtime["OUTPUT_SMOOTH_ALPHA_X100"], 35)
+            self.assertEqual(runtime["COORDINATE_SMOOTH_ALPHA_X100"], 50)
             smoothed = runtime["smooth_tracking_box"](previous, current)
+            coordinate_smoothed = runtime["smooth_tracking_box"](
+                previous, current,
+                runtime["COORDINATE_SMOOTH_ALPHA_X100"])
             self.assertNotEqual(smoothed, previous)
             self.assertNotEqual(smoothed, current)
             self.assertGreater(smoothed[2], previous[2])
             self.assertLess(smoothed[2], current[2])
+            self.assertGreater(coordinate_smoothed[2], smoothed[2])
+            self.assertLessEqual(coordinate_smoothed[2], current[2])
 
     def test_coordinate_contact_uses_spatial_deadband_and_jump_reset(self):
         previous = (100, 100, 20, 20)
         small_jitter = (101, 100, 20, 20)
         ordinary_move = (110, 100, 20, 20)
-        large_jump = (124, 100, 20, 20)
+        large_jump = (118, 100, 20, 20)
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
             stabilize = runtime["stabilize_coordinate_box"]
             contact = runtime["tracking_box_contact"]
 
             self.assertEqual(runtime["COORDINATE_CONTACT_DEADBAND_PX"], 2.0)
-            self.assertEqual(runtime["COORDINATE_CONTACT_RESET_PX"], 24.0)
+            self.assertEqual(runtime["COORDINATE_CONTACT_RESET_PX"], 18.0)
             self.assertEqual(stabilize(previous, small_jitter), previous)
 
             stable = stabilize(previous, ordinary_move)
@@ -259,6 +266,32 @@ class ModelBlobFusionTests(unittest.TestCase):
             _, next_stable = runtime["set_color_tracking"](
                 2, large_jump, large_jump)
             self.assertEqual(next_stable, large_jump)
+
+    def test_coordinate_filter_leads_display_during_fast_approach(self):
+        previous = (100, 100, 20, 20)
+        approach = (100, 117, 20, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            contact = runtime["tracking_box_contact"]
+            runtime["color_track_active"] = False
+            runtime["color_track_box"] = None
+            runtime["color_track_raw_coordinate_box"] = None
+            runtime["color_track_coordinate_box"] = None
+            runtime["color_track_color_id"] = 0
+            runtime["set_color_tracking"](2, previous, previous)
+
+            output_box, coordinate_box = runtime["set_color_tracking"](
+                2, approach, approach)
+            expected_raw_coordinate = runtime["smooth_tracking_box"](
+                previous, approach,
+                runtime["COORDINATE_SMOOTH_ALPHA_X100"])
+            self.assertEqual(runtime["color_track_raw_coordinate_box"],
+                             expected_raw_coordinate)
+            previous_y = contact(previous)[1]
+            output_travel = contact(output_box)[1] - previous_y
+            coordinate_travel = contact(coordinate_box)[1] - previous_y
+            self.assertGreater(coordinate_travel, output_travel)
+            self.assertNotEqual(coordinate_box, approach)
 
     def test_display_box_stays_separate_from_stable_coordinate_box(self):
         previous = (100, 100, 20, 20)

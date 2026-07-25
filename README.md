@@ -1,6 +1,6 @@
 # OpenART 双车视觉系统
 
-当前版本：**v0.11.4-dev（2026-07-25）近距离接触点稳定版**
+当前版本：**v0.11.5-dev（2026-07-25）快速接近坐标跟随版**
 
 本开发版基于已归档的省赛 v0.11.0：模型负责识别、类别确认和重捕，动态色块确认后负责完整显示框，其底边接触点经独立稳定后用于世界坐标。省赛基线保存在提交 `41260c0` 以及分支 `dedicated-model`、`archive/v0.11.0-ground-mesh`；模型仍为 `/sd/80lite0.5SS.tflite`，默认曝光仍为 `880 us`。
 
@@ -28,7 +28,8 @@
 - 标定源为 `ground_mesh_24_points_template.csv`，文件名沿用旧名，实际包含 `7 x 4 = 28` 个点。
 - 图像链路固定为 QVGA、`vflip=True`、软件水平镜像、不使用 `lens_corr()`。
 - 目标底边中点 `x + w/2, y + h - 0.5` 作为地面接触点。
-- 接触点默认使用 `2 px` 空间死区抑制近距离色块底边抖动；单次偏移达到 `24 px` 时直接重置，不产生长时间滤波拖尾。参数为 `COORDINATE_CONTACT_DEADBAND_PX` 和 `COORDINATE_CONTACT_RESET_PX`。
+- 显示框继续使用当前帧 `35%` 的平滑；世界坐标原始位置改用独立的当前帧 `50%` 权重，以更快跟随正常运动。参数为 `OUTPUT_SMOOTH_ALPHA_X100` 和 `COORDINATE_SMOOTH_ALPHA_X100`。
+- 接触点保留 `2 px` 空间死区抑制静止抖动；单次偏移达到 `18 px` 时当帧直接跳到新位置，避免快速接近时坐标落后。参数为 `COORDINATE_CONTACT_DEADBAND_PX` 和 `COORDINATE_CONTACT_RESET_PX`。
 - 网格内使用 36 个三角形插值，网格外使用全局单应矩阵回退。
 - 板内坐标单位为厘米，16 字节 UART 包中的 X/Y 仍发送**毫米**。
 

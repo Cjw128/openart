@@ -304,10 +304,11 @@ COLOR_TRACK_AREA_MAX_PERCENT = 250
 COLOR_TRACK_CENTER_SCALE_X100 = 90
 OUTPUT_SMOOTH_ALPHA_X100 = 35
 OUTPUT_SMOOTH_RESET_CENTER2 = 36 * 36
+COORDINATE_SMOOTH_ALPHA_X100 = 50
 COORDINATE_CONTACT_DEADBAND_PX = 2.0
 COORDINATE_CONTACT_DEADBAND2 = (COORDINATE_CONTACT_DEADBAND_PX *
                                 COORDINATE_CONTACT_DEADBAND_PX)
-COORDINATE_CONTACT_RESET_PX = 24.0
+COORDINATE_CONTACT_RESET_PX = 18.0
 COORDINATE_CONTACT_RESET2 = (COORDINATE_CONTACT_RESET_PX *
                              COORDINATE_CONTACT_RESET_PX)
 CONTACT_JITTER_PX = 1.0
@@ -1951,11 +1952,12 @@ def accept_model_candidate(candidate):
     model_lock[5] = 0
     model_last_score = score
     return True
-def smooth_tracking_box(previous, current):
+def smooth_tracking_box(previous, current, alpha_x100=None):
     if (previous is None or current is None or
             center_dist2(previous, current) > OUTPUT_SMOOTH_RESET_CENTER2):
         return current
-    alpha = OUTPUT_SMOOTH_ALPHA_X100
+    alpha = (OUTPUT_SMOOTH_ALPHA_X100 if alpha_x100 is None
+             else alpha_x100)
     keep = 100 - alpha
     center_x2 = ((previous[0] * 2 + previous[2]) * keep +
                  (current[0] * 2 + current[2]) * alpha + 50) // 100
@@ -2006,7 +2008,8 @@ def set_color_tracking(color_id, box, coordinate_box):
             raw_coordinate_box = coordinate_box
         else:
             raw_coordinate_box = smooth_tracking_box(
-                color_track_raw_coordinate_box, coordinate_box)
+                color_track_raw_coordinate_box, coordinate_box,
+                COORDINATE_SMOOTH_ALPHA_X100)
             coordinate_box = stabilize_coordinate_box(
                 color_track_coordinate_box, raw_coordinate_box)
     else:
@@ -2404,6 +2407,9 @@ def _world_coord_test_started():
     print('[WORLD TEST] contact deadband=%.1fpx reset=%.1fpx' %
           (COORDINATE_CONTACT_DEADBAND_PX,
            COORDINATE_CONTACT_RESET_PX))
+    print('[WORLD TEST] current weight: coordinate=%d%% display=%d%%' %
+          (COORDINATE_SMOOTH_ALPHA_X100,
+           OUTPUT_SMOOTH_ALPHA_X100))
 
 _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)

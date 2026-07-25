@@ -6,8 +6,8 @@
 
 | 文件 | 设备 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v0.11.4-dev 模型识别 / 稳定接触点融合入口 |
-| `minimain.py` | OpenART Plus / 从车 | v0.11.4-dev 模型识别 / 稳定接触点融合入口 |
+| `main.py` | OpenART Plus / 主车 | v0.11.5-dev 模型识别 / 快速坐标跟随入口 |
+| `minimain.py` | OpenART Plus / 从车 | v0.11.5-dev 模型识别 / 快速坐标跟随入口 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点 |
 | `calibrate_ground_camera.py` | PC | 网格生成、校验和报告工具 |
@@ -31,6 +31,16 @@
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-07-25 - v0.11.5-dev - 正常运动与快速接近响应
+
+范围：`main.py`、`minimain.py`、`world_coordinate_test.py`、`test_model_blob_fusion.py`、三份 README。
+
+- 针对正常运动时世界坐标滞后、快速接近时不能及时跳变的问题，将坐标原始位置平滑从显示框逻辑中独立出来。
+- 屏幕显示框仍保留当前帧 `35%` 权重，世界坐标原始位置改为当前帧 `50%` 权重；接触点的 `2 px` 空间死区保持不变，因此静止抗抖能力没有随运动响应一起取消。
+- 快速位移直接重置阈值从 `24 px` 降至 `18 px`。`17 px` 输入仍平滑跟随，坐标点比显示框前进更快；达到 `18 px` 时坐标当帧采用新位置。
+- 28 点地面网格、图像中心 X 修正、Y 映射、显示框尺寸、ID2 优先和 UART 协议均未修改。
+- 共 19 项桌面回归测试通过，新增快速接近响应与 `18 px` 跳变边界覆盖。
 
 ### 2026-07-25 - v0.11.4-dev - 近距离世界坐标接触点稳定
 

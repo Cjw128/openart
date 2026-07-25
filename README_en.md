@@ -6,8 +6,8 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 | File | Device | Role |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / master | v0.11.4-dev model recognition / stable-contact fusion runtime |
-| `minimain.py` | OpenART Plus / slave | v0.11.4-dev model recognition / stable-contact fusion runtime |
+| `main.py` | OpenART Plus / master | v0.11.5-dev model recognition / fast coordinate-follow runtime |
+| `minimain.py` | OpenART Plus / slave | v0.11.5-dev model recognition / fast coordinate-follow runtime |
 | `camera_ground_mesh.txt` | OpenART Plus / both | Board-side 28-point, 36-triangle ground mesh |
 | `ground_mesh_24_points_template.csv` | PC | Current 28 pixel/world calibration points |
 | `calibrate_ground_camera.py` | PC | Mesh generation, validation, and reporting tool |
@@ -31,6 +31,16 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-25 - v0.11.5-dev - Normal-motion and fast-approach response
+
+Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, and the three READMEs.
+
+- To address world-coordinate lag during normal movement and late jumps during rapid approach, coordinate-position smoothing is now independent from display-box smoothing.
+- The display box retains a `35%` current-frame weight, while the raw coordinate position uses `50%`. The `2 px` contact deadband is unchanged, preserving stationary jitter suppression while motion response becomes faster.
+- The direct reset threshold is reduced from `24 px` to `18 px`. A `17 px` input remains smoothly tracked with the coordinate point advancing faster than the display box; at `18 px`, the coordinate switches to the new position in the same frame.
+- The 28-point ground mesh, image-centred X correction, Y mapping, display-box dimensions, ID2 priority, and UART protocol are unchanged.
+- All 19 desktop regression tests pass, including new fast-approach response and exact `18 px` jump-boundary coverage.
 
 ### 2026-07-25 - v0.11.4-dev - Stable close-range world contact point
 
