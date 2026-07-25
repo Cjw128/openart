@@ -6,8 +6,8 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 | File | Device | Role |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / master | v0.11.5-dev model recognition / fast coordinate-follow runtime |
-| `minimain.py` | OpenART Plus / slave | v0.11.5-dev model recognition / fast coordinate-follow runtime |
+| `main.py` | OpenART Plus / master | v1.0.0 production model/blob fusion runtime |
+| `minimain.py` | OpenART Plus / slave | v1.0.0 production model/blob fusion runtime |
 | `camera_ground_mesh.txt` | OpenART Plus / both | Board-side 28-point, 36-triangle ground mesh |
 | `ground_mesh_24_points_template.csv` | PC | Current 28 pixel/world calibration points |
 | `calibrate_ground_camera.py` | PC | Mesh generation, validation, and reporting tool |
@@ -31,6 +31,16 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-25 - v1.0.0 - Production model/blob fusion baseline
+
+Scope: the complete current repository. Runtime entry points are `main.py` and `minimain.py`; `world_coordinate_test.py` is the all-class coordinate validation entry point.
+
+- Promoted the v0.11.5-dev runtime, which passes the complete desktop regression and all three OpenART compilation checks, to the first formal `1.x` release. This promotion changes version identity only; detection parameters, state machines, and coordinate results are unchanged.
+- The production baseline includes three model classes and five color IDs, dynamic LAB blob fusion, switchable absolute ID2 priority, all-class detection, the 28-point ground mesh, image-centred X correction, stable fast-following world coordinates, and the existing master/slave UART protocol.
+- Full blobs continue to own display geometry; the model continues to own discovery, class confirmation, and reacquisition. The world contact retains its `50%` current-frame position weight, `2 px` spatial deadband, and `18 px` fast-jump threshold.
+- The v0.x entries remain as development and provincial-competition history. Compatible improvements use v1.x; a deployment-protocol or runtime-contract break requires the next major version.
+- The release baseline is protected by 19 desktop regressions, Python syntax checks, `git diff --check`, and `mpy-cross` compilation of `main.py`, `minimain.py`, and `world_coordinate_test.py`.
 
 ### 2026-07-25 - v0.11.5-dev - Normal-motion and fast-approach response
 

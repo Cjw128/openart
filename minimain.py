@@ -1,4 +1,4 @@
-# POST-PROVINCIAL BUILD 04 SLAVE: optional ID2-first gate; 5 hits in 7 inference frames.
+# v1.0.0 SLAVE: optional ID2-first gate; 5 hits in 7 inference frames.
 # ==================== QUICK MATCH SETTINGS ====================
 # Edit this block first when changing cameras, models, or SD files.
 WB_GAINS = (92.00, 64.00, 101.00)

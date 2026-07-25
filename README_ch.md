@@ -6,8 +6,8 @@
 
 | 文件 | 设备 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v0.11.5-dev 模型识别 / 快速坐标跟随入口 |
-| `minimain.py` | OpenART Plus / 从车 | v0.11.5-dev 模型识别 / 快速坐标跟随入口 |
+| `main.py` | OpenART Plus / 主车 | v1.0.0 模型 / 色块融合正式入口 |
+| `minimain.py` | OpenART Plus / 从车 | v1.0.0 模型 / 色块融合正式入口 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点 |
 | `calibrate_ground_camera.py` | PC | 网格生成、校验和报告工具 |
@@ -31,6 +31,16 @@
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-07-25 - v1.0.0 - 模型 / 色块融合正式部署基线
+
+范围：当前完整仓库；运行入口为 `main.py`、`minimain.py`，全类别坐标验证入口为 `world_coordinate_test.py`。
+
+- 将通过完整桌面回归和三份 OpenART 板端编译的 v0.11.5-dev 提升为首个 `1.x` 正式版本；本次仅调整版本标识，不改变检测参数、状态机或坐标结果。
+- 正式基线包含三类模型与五个颜色 ID、动态 LAB 色块融合、可切换 ID2 绝对优先、全类别检测、28 点地面网格、图像中心 X 修正、稳定且可快速跟随的世界坐标，以及主从车既有 UART 协议。
+- 完整色块继续负责显示几何；模型继续负责发现、类别确认和重捕；世界坐标接触点保留 `50%` 当前帧位置权重、`2 px` 空间死区和 `18 px` 快速跳转阈值。
+- v0.x 日志继续保留为开发与省赛历史；后续兼容改进使用 v1.x 版本号，破坏部署协议或运行契约时再升级主版本号。
+- 发布基线由 19 项桌面回归、Python 语法检查、`git diff --check` 以及 `main.py`、`minimain.py`、`world_coordinate_test.py` 的 `mpy-cross` 编译共同保护。
 
 ### 2026-07-25 - v0.11.5-dev - 正常运动与快速接近响应
 

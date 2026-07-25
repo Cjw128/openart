@@ -1,4 +1,4 @@
-# POST-PROVINCIAL BUILD 04 MASTER: optional ID2-first gate; 5 hits in 7 inference frames.
+# v1.0.0 MASTER OBSERVER: optional ID2-first gate; 5 hits in 7 inference frames.
 # Dedicated world-coordinate observer. Detection and projection stay aligned
 # with main.py; only IDE overlay and throttled coordinate logging are added.
 # ==================== QUICK MATCH SETTINGS ====================
