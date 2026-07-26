@@ -37,6 +37,8 @@ RUNTIME_ASSIGNMENTS = {
     "ground_mesh_boundaries",
     "ground_mesh_near_v_max",
     "ground_fallback_h",
+    "_mesh_last_triangle",
+    "ground_center_x_cache",
 }
 
 RUNTIME_FUNCTIONS = {
@@ -49,6 +51,7 @@ RUNTIME_FUNCTIONS = {
     "ground_far_limit_x",
     "fallback_ground_pixel_to_world",
     "ground_pixel_to_world",
+    "center_line_world_x_for_row",
     "box_to_world",
     "world_cm_to_mm",
 }

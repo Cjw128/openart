@@ -6,8 +6,8 @@
 
 | 文件 | 设备 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v1.0.0 模型 / 色块融合正式入口 |
-| `minimain.py` | OpenART Plus / 从车 | v1.0.0 模型 / 色块融合正式入口 |
+| `main.py` | OpenART Plus / 主车 | v1.1.0 模型 / 色块融合正式入口 |
+| `minimain.py` | OpenART Plus / 从车 | v1.1.0 模型 / 色块融合正式入口 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点 |
 | `calibrate_ground_camera.py` | PC | 网格生成、校验和报告工具 |
@@ -31,6 +31,36 @@
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-07-26 - v1.1.0 - 内存与热路径优化版
+
+范围：`main.py`（2611 → 2650 行）、`minimain.py`（2407 → 2376 行）、`world_coordinate_test.py`、`test_ground_projection.py`、三份 README。基线为 v1.0.0（提交 `d83b6d6`，2026-07-25）。
+
+本轮为内存 / 热路径优化轮：除下述 1 条行为变更外，全部改动行为逐位等价；门禁 `test_model_blob_fusion.py` 13 项与 `test_ground_projection.py` 6 项测试全绿，含 `main.py` / `minimain.py` / `world_coordinate_test.py` 三方 AST 同步与地面投影代码块逐字节一致。
+
+行为变更（仅 1 条，有意变更）：
+
+- `0x06` 前扫命令处理现在额外调用 `reset_yellow_state()`：搬运中收到前扫请求会清空黄线拟合与进度标志，扫描后需重新捕获黄线（v1.0.0 会把黄线状态带进 `MODE_SEARCH`）。
+
+性能优化（行为等价，均在 `main.py`）：
+
+- `mesh_ground_pixel_to_world`：三角形扫描从上次命中的网格单元续扫（连续接触点几乎总在同一单元，约 36 次三角形测试降到约 1 次）；逐三角形字段直接下标展开，消除每三角形 3 个临时元组；重心坐标 b/c 计算提前短路。
+- 新增 `u=160` 中心线投影按行懒缓存（240 行）：`box_to_world` 命中像素中心行时直接查表，每帧省一次完整网格投影。
+- `model_track` 由 14 槽缩到 11 槽：删除从未被读取的接触点速度 EMA 与 `sample_time` 记账，每推理帧少约 6 次浮点装箱、1 次 `ticks_diff` 和 2 次除法。
+- `sample_box_lab_stats` 提取为共享函数，`sample_model_color` 与 `front_scan_color_id` 复用；`model_candidate_matches_requested_color` 改返回 `(matches, sampled)`，锁定获取帧不再对同一框重复 `get_statistics` 采样。
+- `run_model_best`：`img.width()` / `img.height()` 提升为局部变量；`host_forced_target_active()` 调用链每帧一次；重复 `float()` 转换消除。
+- `build_dynamic_threshold` / `build_dynamic_channel` / `threshold_center_distance` / IQR 检查按三通道展开，消除每次颜色采样的 `range` / `list` / `tuple()` 分配。
+- `draw_carry_yellow_line` 每帧 4-8 个堆对象改为 4 个标量；`pick_yellow_blob` 循环不变量提升并消除每 blob 一次 4 元组赋值分配；`model_lock` 切片赋值改逐元素；帧循环 `draw_rectangle` 复用现成 `output_box` 元组。
+- `update_dynamic_cut` 的节流门移入函数内。外层 `lab_frame` 强制路径在 v1.0.0 就是死代码：函数内部的间隔判断使其永不生效。
+- 导入期峰值内存削减：`load_ground_projection` 逐条释放 `triangleN` 源字符串、不保留 `pointN` 值字符串、三角形元组一次构建，省约 5KB 导入期瞬时垃圾。
+- 死代码删除：`find_color_blobs_once`、`output_model_color_id`、`model_labels_compatible`、`yellow_line_y_at_x`、`model_high_score_minimum`、`_color_threshold_groups`、`MULTICOLOR_MIN_PIXELS/AREA`、`TRACK_MAX_JUMP_PX/JUMP2`、`MODEL_SCORE_HIGH_NEAR/MID/FAR`、`CONTACT_VELOCITY_ALPHA`、`YELLOW_DETECT_INTERVAL`、`first_lock_pending_sample_time`、死 `import time`。
+- `maybe_collect` 与 `receive_command_from_host` 保持 v1.0.0 行为不变：每 30 帧强制 GC + 48KB 低水位；每帧最多消费一条主控命令。
+
+文件同步：
+
+- `minimain.py`（从车从机）首次整体同步 `main.py` 的全部适用优化，共 29 项端口（mesh 续扫、行缓存、`model_track` 瘦身、采样复用、死代码删除等），另移除从机自身的 `lab_frame` 死门与死 `import time`。
+- `world_coordinate_test.py`（IDE 观测脚本）与 `main.py` 重新对齐（56 处顶层节点替换/删除/插入 + 帧循环 3 处点改），观测插桩完整保留并改为自带 `_world_coord_time` 引用（`main.py` 已不再 `import time`）。
+- 三份入口的地面投影代码块（`WORLD_X_LIMIT_CM` 至 `clamp_int`）重新逐字节对齐；`test_ground_projection.py` 提取 harness 适配 v1.1.0 新增的 `_mesh_last_triangle` 续扫全局、`ground_center_x_cache` 与 `center_line_world_x_for_row` 行缓存，6 项投影回归（28 点回代、全幅 QVGA 有界、毫米换算等）全部通过。
 
 ### 2026-07-25 - v1.0.0 - 模型 / 色块融合正式部署基线
 

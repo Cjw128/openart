@@ -6,8 +6,8 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 | File | Device | Role |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / master | v1.0.0 production model/blob fusion runtime |
-| `minimain.py` | OpenART Plus / slave | v1.0.0 production model/blob fusion runtime |
+| `main.py` | OpenART Plus / master | v1.1.0 production model/blob fusion runtime |
+| `minimain.py` | OpenART Plus / slave | v1.1.0 production model/blob fusion runtime |
 | `camera_ground_mesh.txt` | OpenART Plus / both | Board-side 28-point, 36-triangle ground mesh |
 | `ground_mesh_24_points_template.csv` | PC | Current 28 pixel/world calibration points |
 | `calibrate_ground_camera.py` | PC | Mesh generation, validation, and reporting tool |
@@ -31,6 +31,36 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-07-26 - v1.1.0 - Memory and hot-path optimization release
+
+Scope: `main.py` (2611 → 2650 lines), `minimain.py` (2407 → 2376 lines), `world_coordinate_test.py`, `test_ground_projection.py`, and the three READMEs. Baseline: v1.0.0 (commit `d83b6d6`, 2026-07-25).
+
+This is a memory and hot-path optimization round. Except for the single behavior change below, every change is bit-for-bit behavior-equivalent. The `test_model_blob_fusion.py` gate passes all 13 tests, including three-way AST synchronization of `main.py`, `minimain.py`, and `world_coordinate_test.py`, and the `test_ground_projection.py` gate passes all 6 tests, including byte-identical ground-projection blocks across the three entries.
+
+Behavior change (single, intentional):
+
+- The `0x06` front-scan command handler now additionally calls `reset_yellow_state()`: a front-scan request received while carrying clears the yellow-line fit and progress flags, so the yellow line must be reacquired after the scan (v1.0.0 carried the yellow-line state into `MODE_SEARCH`).
+
+Performance optimizations (behavior-equivalent, all in `main.py`):
+
+- `mesh_ground_pixel_to_world`: the triangle scan resumes from the previously hit mesh cell (consecutive contact points almost always stay in the same cell, dropping ~36 triangle tests to ~1); per-triangle fields are unpacked by direct indexing, removing 3 temporary tuples per triangle; the barycentric b/c computation short-circuits early.
+- Added a lazy per-row cache of the `u=160` centerline projection (240 rows): `box_to_world` reads the table directly when the pixel-centre row hits, saving one full mesh projection per frame.
+- `model_track` shrinks from 14 to 11 slots: removed the never-read contact-velocity EMA and `sample_time` bookkeeping (~6 fewer float boxings, 1 fewer `ticks_diff`, and 2 fewer divisions per inference frame).
+- `sample_box_lab_stats` is extracted as a shared helper reused by `sample_model_color` and `front_scan_color_id`; `model_candidate_matches_requested_color` now returns `(matches, sampled)`, so lock-acquisition frames no longer run a second `get_statistics` sample on the same box.
+- `run_model_best`: `img.width()` / `img.height()` hoisted into locals; the `host_forced_target_active()` call chain runs once per frame; redundant `float()` conversions removed.
+- `build_dynamic_threshold` / `build_dynamic_channel` / `threshold_center_distance` / the IQR check are unrolled across the three channels, removing the `range` / `list` / `tuple()` allocations from every color sample.
+- `draw_carry_yellow_line` drops from 4-8 heap objects per frame to 4 scalars; `pick_yellow_blob` hoists loop invariants and removes one 4-tuple unpacking allocation per blob; the `model_lock` slice assignment becomes element-wise; the frame loop's `draw_rectangle` reuses the existing `output_box` tuple.
+- The throttle gate of `update_dynamic_cut` moves inside the function. The outer `lab_frame` force path was already dead code in v1.0.0: the interval check inside the function meant it could never take effect.
+- Import-time peak memory reduction: `load_ground_projection` releases each `triangleN` source string as it goes, no longer retains the `pointN` value strings, and builds each triangle tuple in one step (~5KB less transient import-time garbage).
+- Dead code removed: `find_color_blobs_once`, `output_model_color_id`, `model_labels_compatible`, `yellow_line_y_at_x`, `model_high_score_minimum`, `_color_threshold_groups`, `MULTICOLOR_MIN_PIXELS/AREA`, `TRACK_MAX_JUMP_PX/JUMP2`, `MODEL_SCORE_HIGH_NEAR/MID/FAR`, `CONTACT_VELOCITY_ALPHA`, `YELLOW_DETECT_INTERVAL`, `first_lock_pending_sample_time`, and a dead `import time`.
+- `maybe_collect` and `receive_command_from_host` keep their v1.0.0 behavior: forced GC every 30 frames with a 48KB low-water mark, and at most one host command consumed per frame.
+
+File synchronization:
+
+- `minimain.py` (car-B slave) receives its first full synchronization of every applicable `main.py` optimization, 29 ports in total (mesh scan resumption, row cache, `model_track` slimming, sampling reuse, dead-code removal, and the rest), plus removal of the slave's own dead `lab_frame` gate and dead `import time`.
+- `world_coordinate_test.py` (IDE observer) is realigned with `main.py` (56 top-level node replacements/deletions/insertions plus 3 point edits in the frame loop). The observation instrumentation is fully preserved and now carries its own `_world_coord_time` reference, since `main.py` no longer imports `time`.
+- The ground-projection block (`WORLD_X_LIMIT_CM` through `clamp_int`) is re-synchronized byte-for-byte across the three entries; the `test_ground_projection.py` extraction harness is adapted to the new v1.1.0 `_mesh_last_triangle` resume-scan global, `ground_center_x_cache`, and `center_line_world_x_for_row` row cache, and all 6 projection regressions (28-point round-trip, bounded full-QVGA coordinates, millimetre conversion, etc.) pass.
 
 ### 2026-07-25 - v1.0.0 - Production model/blob fusion baseline
 

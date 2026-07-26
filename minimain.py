@@ -9,7 +9,7 @@ EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
 ID2_ABSOLUTE_PRIORITY = True
 # ================== END QUICK MATCH SETTINGS ==================
-import sensor, gc, time, math
+import sensor, gc, math
 try:
     import tf
 except Exception:
@@ -129,9 +129,6 @@ if _loaded:
     all_color_thresholds = _loaded
     all_color_thresholds[4] = _separate_white_bear_from_ground(
         all_color_thresholds[4], _loaded_ground_threshold)
-_color_threshold_groups = []
-for threshold in all_color_thresholds:
-    _color_threshold_groups.append([threshold])
 COLOR_MIN_PIXELS = 70
 COLOR_MIN_AREA = 100
 TENNIS_MIN_PIXELS = 80
@@ -146,8 +143,6 @@ _color_blob_limits = (
     (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
     (COLOR_MIN_PIXELS, COLOR_MIN_AREA),
 )
-MULTICOLOR_MIN_PIXELS = min(COLOR_MIN_PIXELS, TENNIS_MIN_PIXELS)
-MULTICOLOR_MIN_AREA = min(COLOR_MIN_AREA, TENNIS_MIN_AREA)
 TARGET_BOX_COLORS = (
     (0, 170, 255), (255, 0, 0), (0, 255, 0),
     (160, 96, 32), (255, 255, 255),
@@ -279,7 +274,6 @@ COORDINATE_CONTACT_RESET2 = (COORDINATE_CONTACT_RESET_PX *
 CONTACT_JITTER_PX = 1.0
 CONTACT_JITTER2 = CONTACT_JITTER_PX * CONTACT_JITTER_PX
 CONTACT_REJECT_JUMP2 = MODEL_MATCH_CENTER2
-CONTACT_VELOCITY_ALPHA = 1.0
 GC_CHECK_INTERVAL = 10
 GC_FORCE_INTERVAL = 30
 GC_MIN_FREE = 48 * 1024
@@ -291,7 +285,7 @@ model_infer_error_count = 0
 model_lock = [-1, None, -1, None, 0, 0]
 model_color = [0, 0, 0, False]
 model_track = [False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-               0.0, 0.0, 0.0, 0.0, -1, 0, 0]
+               0.0, 0.0, 0, 0]
 model_last_frame = -MODEL_REFRESH_INTERVAL
 model_last_score = 0.0
 first_lock_reset_cycle_active = False
@@ -303,7 +297,6 @@ first_lock_pending_boxes = []
 first_lock_pending_scores = []
 first_lock_pending_color_ids = []
 first_lock_pending_color_thresholds = []
-first_lock_pending_sample_time = 0
 adaptive_color_thresholds = [None, None, None, None, None]
 color_adapt_pending_id = 0
 color_adapt_pending_threshold = None
@@ -461,6 +454,8 @@ ground_mesh_triangles = ()
 ground_mesh_boundaries = ()
 ground_mesh_near_v_max = -1.0
 ground_fallback_h = DEFAULT_GROUND_FALLBACK_H
+_mesh_last_triangle = 0
+ground_center_x_cache = [False] * GROUND_IMAGE_H
 
 def _parse_ground_float_list(text, count):
     parts = text.split(',')
@@ -488,7 +483,12 @@ def load_ground_projection(path=CAMERA_GROUND_MESH_PATH):
                 key = parts[0].strip()
                 if key in rows:
                     return None
-                rows[key] = parts[1].strip()
+                if key.startswith('point') and key[5:].isdigit():
+                    # pointN 行只用于生成 triangleN/boundaryN，运行时不读取，
+                    # 仅占位保留重复键检测，不保留字符串本体
+                    rows[key] = None
+                else:
+                    rows[key] = parts[1].strip()
 
         if int(rows.get('version', '0')) != 4:
             return None
@@ -534,10 +534,12 @@ def load_ground_projection(path=CAMERA_GROUND_MESH_PATH):
         triangles = []
         orientation_sign = 0
         for index in range(triangle_count):
-            values = _parse_ground_float_list(
-                rows.get('triangle{}'.format(index), ''), 12)
+            triangle_key = 'triangle{}'.format(index)
+            values = _parse_ground_float_list(rows.get(triangle_key, ''), 12)
             if values is None:
                 return None
+            # 该行文本已解析完毕，立即释放，压低导入期峰值内存
+            rows[triangle_key] = None
             u0, v0, x0, y0 = values[0], values[1], values[2], values[3]
             u1, v1, x1, y1 = values[4], values[5], values[6], values[7]
             u2, v2, x2, y2 = values[8], values[9], values[10], values[11]
@@ -567,7 +569,8 @@ def load_ground_projection(path=CAMERA_GROUND_MESH_PATH):
                 orientation_sign = sign
             elif sign != orientation_sign:
                 return None
-            triangles.append(tuple(values) + (1.0 / denominator,))
+            values.append(1.0 / denominator)
+            triangles.append(tuple(values))
 
         boundary_count = int(rows.get('boundary_count', '0'))
         expected_boundary_count = (2 * (grid_rows - 1) +
@@ -634,21 +637,45 @@ def load_ground_projection(path=CAMERA_GROUND_MESH_PATH):
         return None
 
 def mesh_ground_pixel_to_world(px, py):
-    for triangle in ground_mesh_triangles:
-        u0, v0, x0, y0 = triangle[0], triangle[1], triangle[2], triangle[3]
-        u1, v1, x1, y1 = triangle[4], triangle[5], triangle[6], triangle[7]
-        u2, v2, x2, y2 = triangle[8], triangle[9], triangle[10], triangle[11]
+    # Resume the scan at the last matched triangle: consecutive contact
+    # points almost always stay inside the same mesh cell.
+    global _mesh_last_triangle
+    triangles = ground_mesh_triangles
+    triangle_count = len(triangles)
+    if triangle_count == 0:
+        return None
+    epsilon = -GROUND_TRIANGLE_EPSILON
+    start = _mesh_last_triangle
+    if start >= triangle_count:
+        start = 0
+    for offset in range(triangle_count):
+        index = start + offset
+        if index >= triangle_count:
+            index -= triangle_count
+        triangle = triangles[index]
+        # A 4-target assignment compiles to BUILD_TUPLE + UNPACK_SEQUENCE,
+        # i.e. one heap tuple per triangle; index the tuple directly and
+        # read the world coordinates only after the point is accepted.
+        u2 = triangle[8]
+        v2 = triangle[9]
+        pu = px - u2
+        pv = py - v2
         inverse_denominator = triangle[12]
-        a = ((v1 - v2) * (px - u2) +
-             (u2 - u1) * (py - v2)) * inverse_denominator
-        b = ((v2 - v0) * (px - u2) +
-             (u0 - u2) * (py - v2)) * inverse_denominator
+        a = ((triangle[5] - v2) * pu +
+             (u2 - triangle[4]) * pv) * inverse_denominator
+        if a < epsilon:
+            continue
+        u0 = triangle[0]
+        v0 = triangle[1]
+        b = ((v2 - v0) * pu +
+             (u0 - u2) * pv) * inverse_denominator
+        if b < epsilon:
+            continue
         c = 1.0 - a - b
-        if (a >= -GROUND_TRIANGLE_EPSILON and
-                b >= -GROUND_TRIANGLE_EPSILON and
-                c >= -GROUND_TRIANGLE_EPSILON):
-            wx = a * x0 + b * x1 + c * x2
-            wy = a * y0 + b * y1 + c * y2
+        if c >= epsilon:
+            _mesh_last_triangle = index
+            wx = a * triangle[2] + b * triangle[6] + c * triangle[10]
+            wy = a * triangle[3] + b * triangle[7] + c * triangle[11]
             if wy > WORLD_Y_MAX_CM:
                 wy = WORLD_Y_MAX_CM
             if wy <= 0.0:
@@ -773,6 +800,16 @@ def ground_pixel_to_world(px, py):
         boundary_v = None
     return fallback_ground_pixel_to_world(
         px, py, mesh_status, boundary_u, boundary_v)
+
+def center_line_world_x_for_row(row):
+    # Lazy per-row cache of the u=160 centre-line projection used by
+    # GROUND_CENTER_X_ON_IMAGE; False marks a row not yet computed.
+    cached = ground_center_x_cache[row]
+    if cached is False:
+        world = ground_pixel_to_world(GROUND_IMAGE_W * 0.5, row + 0.5)
+        cached = None if world is None else world[0]
+        ground_center_x_cache[row] = cached
+    return cached
 
 _loaded_ground_projection = load_ground_projection()
 if _loaded_ground_projection is not None:
@@ -909,34 +946,6 @@ def valid_color_blob(blob, color_id, pixels_threshold_override=0):
         if blob.density() < 0.40:
             return False
     return True
-def find_color_blobs_once(img, roi, fixed_color_id=0, pixels_threshold_override=0):
-    if fixed_color_id > 0:
-        thresholds = _color_threshold_groups[fixed_color_id - 1]
-        pixels_threshold, area_threshold = _color_blob_limits[fixed_color_id - 1]
-        merge = True
-    else:
-        thresholds = all_color_thresholds
-        pixels_threshold = MULTICOLOR_MIN_PIXELS
-        area_threshold = MULTICOLOR_MIN_AREA
-        merge = False
-    if pixels_threshold_override > 0:
-        pixels_threshold = pixels_threshold_override
-    try:
-        if fixed_color_id == 4 or fixed_color_id == 5:
-            margin = (BRN_BEAR_MERGE_MARGIN if fixed_color_id == 4
-                      else WHT_BEAR_MERGE_MARGIN)
-            try:
-                return img.find_blobs(thresholds, roi=roi,
-                                      pixels_threshold=pixels_threshold,
-                                      area_threshold=area_threshold, merge=True,
-                                      margin=margin)
-            except TypeError:
-                pass
-        return img.find_blobs(thresholds, roi=roi,
-                              pixels_threshold=pixels_threshold,
-                              area_threshold=area_threshold, merge=merge)
-    except Exception:
-        return None
 def color_id_to_model_label(color_id):
     if color_id == 1 or color_id == 2:
         return 2
@@ -963,13 +972,9 @@ def trusted_model_color_id(label):
             color_id_to_model_label(target_color_id) == label):
         return target_color_id
     return locally_trusted_model_color_id(label)
-def output_model_color_id(label):
-    return trusted_model_color_id(label)
-def model_labels_compatible(first, second):
-    return first == second
 def reset_model_track():
     model_track[:] = [False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                      0.0, 0.0, 0.0, 0.0, -1, 0, 0]
+                      0.0, 0.0, 0, 0]
 def reset_color_adaptation_pending():
     global color_adapt_pending_id, color_adapt_pending_threshold
     global color_adapt_pending_count
@@ -994,7 +999,6 @@ def reset_color_blob_tracking():
 def reset_first_lock_pending():
     global first_lock_pending_label, first_lock_pending_box
     global first_lock_pending_hits, first_lock_pending_samples
-    global first_lock_pending_sample_time
     first_lock_pending_label = -1
     first_lock_pending_box = None
     first_lock_pending_hits = 0
@@ -1003,7 +1007,6 @@ def reset_first_lock_pending():
     first_lock_pending_scores[:] = []
     first_lock_pending_color_ids[:] = []
     first_lock_pending_color_thresholds[:] = []
-    first_lock_pending_sample_time = 0
 def reset_hybrid_tracking():
     global model_last_frame, model_last_score
     model_lock[:] = [-1, None, -1, None, 0, 0]
@@ -1024,7 +1027,7 @@ def apply_host_hybrid_color(color_id):
     locked_color_id = (locally_trusted_model_color_id(model_lock[0])
                        if model_lock[1] is not None else 0)
     if (model_lock[1] is None or
-            not model_labels_compatible(model_lock[0], label) or
+            model_lock[0] != label or
             locked_color_id != color_id):
         reset_hybrid_tracking()
     else:
@@ -1122,23 +1125,25 @@ def model_acquire_rank(box, score):
     return (-distance_mm, box[1] + box[3], box[2] * box[3],
             -abs(center_x - 160))
 def model_candidate_matches_requested_color(img, label, box):
+    # Returns (matches, sampled); sampled is the (color_id, threshold)
+    # pair when a color sample was taken, so callers can reuse it.
     candidates = MODEL_COLOR_IDS[label]
     if host_color_id_received and target_color_id > 0:
         if (not color_id_available_for_search(target_color_id) or
                 target_color_id not in candidates):
-            return False
-        sampled_id, _ = sample_model_color(img, label, box)
-        return sampled_id == target_color_id
+            return False, None
+        sampled = sample_model_color(img, label, box)
+        return sampled[0] == target_color_id, sampled
     available_count = 0
     for color_id in candidates:
         if color_id_available_for_search(color_id):
             available_count += 1
     if available_count <= 0:
-        return False
+        return False, None
     if available_count == len(candidates):
-        return True
-    sampled_id, _ = sample_model_color(img, label, box)
-    return color_id_available_for_search(sampled_id)
+        return True, None
+    sampled = sample_model_color(img, label, box)
+    return color_id_available_for_search(sampled[0]), sampled
 
 def tennis_candidate_is_yellow_line(img, box):
     x, y, w, h = box
@@ -1213,28 +1218,29 @@ def run_model_best(img):
         desired_label = model_lock[0]
     try:
         model_last_frame = frame_count
-        sample_time = time.ticks_ms()
         objects = tf.detect(model_net, model_copy_frame(img))
         best = None
         best_rank = None
+        best_sampled = None
         locked = model_lock[1] is not None
         anchor = model_lock[1]
         if locked and color_track_active and color_track_box is not None:
             anchor = color_track_box
+        frame_width = img.width()
+        frame_height = img.height()
         for obj in objects:
             x1, y1, x2, y2, label_value, score_value = obj
             label = int(label_value)
             score = float(score_value)
             if (label < 0 or label >= len(MODEL_COLOR_IDS) or
-                    (desired_label >= 0 and
-                     not model_labels_compatible(label, desired_label))):
+                    (desired_label >= 0 and label != desired_label)):
                 continue
-            model_x = int(float(x1) * img.width())
-            y = int(float(y1) * img.height())
-            w = int((float(x2) - float(x1)) * img.width())
-            h = int((float(y2) - float(y1)) * img.height())
+            model_x = int(float(x1) * frame_width)
+            y = int(float(y1) * frame_height)
+            w = int((float(x2) - float(x1)) * frame_width)
+            h = int((float(y2) - float(y1)) * frame_height)
             # Model input is sensor-native; tracking uses the mirrored control frame.
-            x = img.width() - model_x - w
+            x = frame_width - model_x - w
             if (w < MODEL_MIN_BOX_SIDE or h < MODEL_MIN_BOX_SIDE or
                     w * h < MODEL_MIN_BOX_AREA):
                 continue
@@ -1252,8 +1258,9 @@ def run_model_best(img):
             if locked and not model_box_matches(
                     box, anchor, MODEL_MATCH_CENTER2):
                 continue
-            if not model_candidate_matches_requested_color(
-                    img, label, box):
+            matches, sampled = model_candidate_matches_requested_color(
+                img, label, box)
+            if not matches:
                 continue
             if locked:
                 rank = (int(score * 100000) +
@@ -1266,15 +1273,16 @@ def run_model_best(img):
                            else FIRST_LOCK_REQUIRED_HITS)
                 rank = model_acquire_rank(box, score)
             if best is None or rank > best_rank:
-                best = (label, box, score, confirm, sample_time)
+                best = (label, box, score, confirm)
                 best_rank = rank
+                best_sampled = sampled
         model_infer_error_count = 0
         if best is not None:
             if locked:
                 return best + (0, None)
-            color_id, color_threshold = sample_model_color(
-                img, best[0], best[1])
-            return best + (color_id, color_threshold)
+            if best_sampled is None:
+                best_sampled = sample_model_color(img, best[0], best[1])
+            return best + best_sampled
         return None
     except Exception as error:
         model_infer_error_count += 1
@@ -1407,10 +1415,10 @@ def threshold_centers_close(first, second):
                 COLOR_DYNAMIC_PENDING_CENTER_MAX[channel] * 2):
             return False
     return True
-def sample_model_color(img, label, box):
+def sample_box_lab_stats(img, label, box, max_iqr):
     roi = model_sample_roi(label, box)
     if roi is None:
-        return 0, None
+        return None
     try:
         stats = img.get_statistics(roi=roi)
         sample = (
@@ -1420,14 +1428,19 @@ def sample_model_color(img, label, box):
             stats.l_median(), stats.a_median(), stats.b_median(),
         )
     except Exception:
-        return 0, None
+        return None
+    for channel in range(3):
+        if sample[channel * 2 + 1] - sample[channel * 2] > max_iqr[channel]:
+            return None
+    return sample
+def sample_model_color(img, label, box):
     forced_color_id = (target_color_id
                        if host_forced_target_active() else 0)
     max_iqr = (HOST_FORCED_COLOR_SAMPLE_MAX_IQR
                if forced_color_id > 0 else COLOR_SAMPLE_MAX_IQR)
-    for channel in range(3):
-        if sample[channel * 2 + 1] - sample[channel * 2] > max_iqr[channel]:
-            return 0, None
+    sample = sample_box_lab_stats(img, label, box, max_iqr)
+    if sample is None:
+        return 0, None
     color_id = sample_color_id_from_stats(
         label, sample, forced_color_id)
     if color_id <= 0:
@@ -1654,14 +1667,14 @@ def should_run_model(frame_index):
         return True
     return frame_index - model_last_frame >= MODEL_REFRESH_INTERVAL
 
-def coordinate_box_from_track(dx, dy):
-    return box_from_center(model_track[5] + dx,
-                           model_track[6] + dy - model_track[13] * 0.5,
-                           model_track[12], model_track[13])
-def output_box_from_track(dx, dy):
-    return box_from_center(model_track[1] + dx, model_track[2] + dy,
+def coordinate_box_from_track():
+    return box_from_center(model_track[5],
+                           model_track[6] - model_track[10] * 0.5,
+                           model_track[9], model_track[10])
+def output_box_from_track():
+    return box_from_center(model_track[1], model_track[2],
                            model_track[3], model_track[4])
-def observe_model_box(label, box, sample_time):
+def observe_model_box(label, box):
     raw_x = box[0] + box[2] * 0.5 + MODEL_CONTACT_OFF_X[label]
     raw_y = box[1] + box[3] + MODEL_CONTACT_OFF_Y[label]
     display = corrected_output_box(label, box)
@@ -1670,7 +1683,7 @@ def observe_model_box(label, box, sample_time):
     if not model_track[0]:
         model_track[:] = [True, center_x, center_y, float(display[2]),
                           float(display[3]), raw_x, raw_y, raw_x, raw_y,
-                          0.0, 0.0, sample_time, box[2], box[3]]
+                          box[2], box[3]]
         return True
     raw_dx = raw_x - model_track[7]
     raw_dy = raw_y - model_track[8]
@@ -1678,17 +1691,6 @@ def observe_model_box(label, box, sample_time):
     if (raw_distance2 > CONTACT_REJECT_JUMP2 and model_lock[1] is not None and
             box_iou(box, model_lock[1]) < TRACK_MIN_IOU):
         return False
-    elapsed = time.ticks_diff(sample_time, model_track[11])
-    if elapsed <= 0:
-        elapsed = 1
-    if raw_distance2 <= CONTACT_JITTER2:
-        model_track[9] = 0.0
-        model_track[10] = 0.0
-    else:
-        vx = raw_dx / elapsed
-        vy = raw_dy / elapsed
-        model_track[9] += (vx - model_track[9]) * CONTACT_VELOCITY_ALPHA
-        model_track[10] += (vy - model_track[10]) * CONTACT_VELOCITY_ALPHA
     model_track[7] = raw_x
     model_track[8] = raw_y
     contact_dx = raw_x - model_track[5]
@@ -1702,9 +1704,8 @@ def observe_model_box(label, box, sample_time):
     model_track[2] = center_y
     model_track[3] = display[2]
     model_track[4] = display[3]
-    model_track[11] = sample_time
-    model_track[12] = box[2]
-    model_track[13] = box[3]
+    model_track[9] = box[2]
+    model_track[10] = box[3]
     return True
 def first_lock_boxes_match(first, second):
     if first is None or second is None:
@@ -1761,8 +1762,7 @@ def first_lock_color_consensus():
 def begin_first_lock_pending(candidate):
     global first_lock_pending_label, first_lock_pending_box
     global first_lock_pending_hits, first_lock_pending_samples
-    global first_lock_pending_sample_time
-    label, box, score, _, sample_time, color_id, color_threshold = candidate
+    label, box, score, _, color_id, color_threshold = candidate
     if not host_forced_target_active():
         model_color[:] = [0, 0, 0, False]
         reset_color_adaptation_pending()
@@ -1774,7 +1774,6 @@ def begin_first_lock_pending(candidate):
     first_lock_pending_scores[:] = [score]
     first_lock_pending_color_ids[:] = [color_id]
     first_lock_pending_color_thresholds[:] = [color_threshold]
-    first_lock_pending_sample_time = sample_time
 def commit_first_lock():
     global model_last_score
     label = first_lock_pending_label
@@ -1782,13 +1781,12 @@ def commit_first_lock():
     color_id, color_threshold = first_lock_color_consensus()
     scores = sorted(first_lock_pending_scores)
     score = scores[len(scores) // 2]
-    sample_time = first_lock_pending_sample_time
     reset_first_lock_pending()
     model_lock[0] = label
     model_lock[1] = box
     model_lock[2:6] = [-1, None, 0, 0]
     reset_model_track()
-    if not observe_model_box(label, box, sample_time):
+    if not observe_model_box(label, box):
         model_lock[:] = [-1, None, -1, None, 0, 0]
         return False
     if color_id > 0 and color_threshold is not None:
@@ -1804,14 +1802,14 @@ def commit_first_lock():
     return True
 def accept_first_lock_candidate(candidate):
     global first_lock_pending_box, first_lock_pending_hits
-    global first_lock_pending_samples, first_lock_pending_sample_time
+    global first_lock_pending_samples
     if first_lock_pending_box is None:
         if candidate is not None:
             begin_first_lock_pending(candidate)
         return False
     first_lock_pending_samples += 1
     if candidate is not None:
-        label, box, score, _, sample_time, color_id, color_threshold = candidate
+        label, box, score, _, color_id, color_threshold = candidate
         if (label == first_lock_pending_label and
                 first_lock_boxes_match(box, first_lock_pending_box)):
             first_lock_pending_box = box
@@ -1820,7 +1818,6 @@ def accept_first_lock_candidate(candidate):
             first_lock_pending_scores.append(score)
             first_lock_pending_color_ids.append(color_id)
             first_lock_pending_color_thresholds.append(color_threshold)
-            first_lock_pending_sample_time = sample_time
         elif (model_box_distance(box) + FIRST_LOCK_NEARER_MARGIN_CM <
               model_box_distance(first_lock_pending_box)):
             begin_first_lock_pending(candidate)
@@ -1844,10 +1841,10 @@ def accept_model_candidate(candidate):
         return accept_first_lock_candidate(candidate)
     if candidate is None:
         return False
-    label, box, score, _, sample_time, _, _ = candidate
+    label, box, score, _, _, _ = candidate
     if label != model_lock[0]:
         return False
-    if not observe_model_box(label, box, sample_time):
+    if not observe_model_box(label, box):
         return False
     model_lock[0] = label
     model_lock[1] = box
@@ -1937,8 +1934,8 @@ def model_geometry_tracking_result(color_id):
         return None
     color_blob_box = None
     color_lost_count = 0
-    output_box = output_box_from_track(0.0, 0.0)
-    coordinate_box = coordinate_box_from_track(0.0, 0.0)
+    output_box = output_box_from_track()
+    coordinate_box = coordinate_box_from_track()
     output_box, coordinate_box = set_color_tracking(
         color_id, output_box, coordinate_box)
     return (color_id, output_box, coordinate_box, 3)
@@ -1981,10 +1978,10 @@ def process_model_only_target(img, frame_index, run_model):
             reset_color_adaptation_pending()
     if model_lock[1] is None:
         return None
-    color_id = output_model_color_id(model_lock[0])
+    lock_label = model_lock[0]
+    color_id = trusted_model_color_id(lock_label)
     if (color_id <= 0 or
-            not model_labels_compatible(
-                color_id_to_model_label(color_id), model_lock[0]) or
+            color_id_to_model_label(color_id) != lock_label or
             not model_track[0]):
         return None
     if adaptive_color_thresholds[color_id - 1] is None:
@@ -2027,23 +2024,9 @@ def front_scan_color_id(img, label, box):
     candidates = MODEL_COLOR_IDS[label]
     if len(candidates) == 1:
         return candidates[0]
-    roi = model_sample_roi(label, box)
-    if roi is None:
+    sample = sample_box_lab_stats(img, label, box, COLOR_SAMPLE_MAX_IQR)
+    if sample is None:
         return 0
-    try:
-        stats = img.get_statistics(roi=roi)
-        sample = (
-            stats.l_lq(), stats.l_uq(),
-            stats.a_lq(), stats.a_uq(),
-            stats.b_lq(), stats.b_uq(),
-            stats.l_median(), stats.a_median(), stats.b_median(),
-        )
-    except Exception:
-        return 0
-    for channel in range(3):
-        if (sample[channel * 2 + 1] - sample[channel * 2] >
-                COLOR_SAMPLE_MAX_IQR[channel]):
-            return 0
     return sample_color_id_from_stats(label, sample)
 def scan_front_other_color_ids(img):
     global model_infer_error_count, model_last_frame
@@ -2065,6 +2048,8 @@ def scan_front_other_color_ids(img):
         return current_id, mask, count
     if not objects:
         return current_id, mask, count
+    frame_width = img.width()
+    frame_height = img.height()
     for obj in objects:
         x1, y1, x2, y2, label_value, score_value = obj
         label = int(label_value)
@@ -2072,11 +2057,11 @@ def scan_front_other_color_ids(img):
         if (label < 0 or label >= len(MODEL_COLOR_IDS) or
                 score < FRONT_SCAN_SCORE_MIN):
             continue
-        model_x = int(float(x1) * img.width())
-        y = int(float(y1) * img.height())
-        w = int((float(x2) - float(x1)) * img.width())
-        h = int((float(y2) - float(y1)) * img.height())
-        x = img.width() - model_x - w
+        model_x = int(float(x1) * frame_width)
+        y = int(float(y1) * frame_height)
+        w = int((float(x2) - float(x1)) * frame_width)
+        h = int((float(y2) - float(y1)) * frame_height)
+        x = frame_width - model_x - w
         if (w < MODEL_MIN_BOX_SIDE or h < MODEL_MIN_BOX_SIDE or
                 w * h < MODEL_MIN_BOX_AREA):
             continue
@@ -2214,10 +2199,15 @@ def box_to_world(x, y, w, h):
     world = ground_pixel_to_world(contact_x, contact_y)
     if world is None or not GROUND_CENTER_X_ON_IMAGE:
         return world
-    center_world = ground_pixel_to_world(GROUND_IMAGE_W * 0.5, contact_y)
-    if center_world is None:
+    row = int(contact_y)
+    if 0 <= row < GROUND_IMAGE_H and contact_y == row + 0.5:
+        center_x = center_line_world_x_for_row(row)
+    else:
+        center_world = ground_pixel_to_world(GROUND_IMAGE_W * 0.5, contact_y)
+        center_x = None if center_world is None else center_world[0]
+    if center_x is None:
         return world
-    return (world[0] - center_world[0], world[1])
+    return (world[0] - center_x, world[1])
 _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)
 _tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
@@ -2361,12 +2351,9 @@ while True:
         process_return_yellow(img)
         maybe_collect(frame_count)
         continue
-    lab_frame = (frame_count % CUT_UPDATE_INTERVAL == 0)
-    if (model_lock[1] is not None and not model_color[3]
-            and model_color[0] <= 0
-            and frame_count % 2 == 0):
-        lab_frame = True
-    if lab_frame:
+    # update_dynamic_cut 内部同样按 CUT_UPDATE_INTERVAL 取模后直接返回，
+    # 额外的 lab_frame 条件只会多产生一次空调用，这里用同一条件即可。
+    if frame_count % CUT_UPDATE_INTERVAL == 0:
         update_dynamic_cut(img, frame_count)
     if process_front_scan_request(img):
         send_front_scan_target_hold(img)
