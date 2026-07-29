@@ -10,7 +10,9 @@ OBSERVER_FILE = ROOT / "world_coordinate_test.py"
 RUNTIME_FILES = (MAIN_FILE, ROOT / "minimain.py", OBSERVER_FILE)
 
 FUSION_ASSIGNMENTS = {
+    "ENABLE_TARGET_ANCHOR_LOCK",
     "ID2_ABSOLUTE_PRIORITY",
+    "MODEL_COLOR_IDS",
     "MODEL_HOLD_FRAMES",
     "COLOR_DETECT_Y_MAX",
     "COLOR_TRACK_MODEL_PAD_PERCENT",
@@ -30,11 +32,28 @@ FUSION_ASSIGNMENTS = {
     "COORDINATE_CONTACT_DEADBAND2",
     "COORDINATE_CONTACT_RESET_PX",
     "COORDINATE_CONTACT_RESET2",
+    "target_color_id",
+    "host_color_id_received",
+    "target_anchor_active",
+    "target_anchor_color_id",
+    "target_anchor_x_cm",
+    "target_anchor_y_cm",
+    "target_anchor_radius_cm",
+    "target_anchor_sequence",
+    "TARGET_ANCHOR_COMMAND",
+    "TARGET_ANCHOR_FRAME_SIZE",
 }
 
 FUSION_FUNCTIONS = {
     "color_id_completed",
     "color_id_available_for_search",
+    "clear_target_anchor",
+    "update_target_anchor",
+    "target_anchor_enabled_for",
+    "target_anchor_world_distance2",
+    "target_anchor_candidate_distance2",
+    "target_anchor_model_rank",
+    "apply_target_anchor_command",
     "clamp_int",
     "raw_model_box",
     "center_dist2",
@@ -119,6 +138,45 @@ def normalized_runtime_ast(source_path, strip_observer=False):
     return ast.dump(tree, include_attributes=False)
 
 
+def load_named_function(source_path, function_name):
+    tree = ast.parse(source_path.read_text(encoding="utf-8"),
+                     filename=str(source_path))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    namespace = {}
+    module = ast.fix_missing_locations(ast.Module(
+        body=[function], type_ignores=[]))
+    exec(compile(module, str(source_path), "exec"), namespace)
+    return namespace
+
+
+def target_anchor_frame(color_id, x_mm, y_mm, radius_cm, sequence):
+    x_raw = x_mm & 0xFFFF
+    y_raw = y_mm & 0xFFFF
+    payload = bytearray((
+        0x09, color_id,
+        x_raw & 0xFF, (x_raw >> 8) & 0xFF,
+        y_raw & 0xFF, (y_raw >> 8) & 0xFF,
+        radius_cm, sequence,
+    ))
+    return bytes((0xAA, 0x55)) + bytes(payload) + bytes((sum(payload) & 0xFF,))
+
+
+class FakeUART:
+    def __init__(self, data):
+        self.data = bytearray(data)
+
+    def any(self):
+        return len(self.data)
+
+    def read(self, count):
+        chunk = bytes(self.data[:count])
+        del self.data[:count]
+        return chunk
+
+
 def load_fusion_runtime(source_path):
     namespace = {"math": math}
     module = ast.fix_missing_locations(ast.Module(
@@ -181,6 +239,115 @@ class ModelBlobFusionTests(unittest.TestCase):
                 [available(color_id) for color_id in range(1, 6)],
                 [True, True, True, True, True],
             )
+
+    def test_target_anchor_gate_and_switch_preserve_legacy_rank(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            rank = runtime["target_anchor_model_rank"]
+            self.assertEqual(rank(2, (13, 24, 1, 1), 1234), 1234)
+
+            runtime["target_color_id"] = 2
+            runtime["box_to_world"] = lambda x, y, w, h: (float(x), float(y))
+            self.assertFalse(runtime["update_target_anchor"](
+                2, 100, 200, 5, 7))
+            self.assertEqual(
+                runtime["target_anchor_candidate_distance2"](
+                    2, (13, 24, 1, 1)),
+                25.0,
+            )
+            self.assertEqual(rank(2, (13, 24, 1, 1), 1234), (-25.0, 1234))
+            self.assertIsNone(rank(2, (16, 20, 1, 1), 999999))
+            self.assertIsNone(rank(1, (10, 20, 1, 1), 999999))
+
+            runtime["ENABLE_TARGET_ANCHOR_LOCK"] = False
+            self.assertEqual(rank(2, (16, 20, 1, 1), 999999), 999999)
+
+    def test_target_anchor_sequence_controls_identity_reset(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["all_color_thresholds"] = [None] * 5
+            runtime["completed_color_mask"] = 0
+            runtime["lost_frame_count"] = 99
+            runtime["model_color"] = [0, 0, 0, False]
+            resets = []
+            legacy_applies = []
+            runtime["reset_hybrid_tracking"] = lambda: resets.append(True)
+            runtime["apply_host_hybrid_color"] = (
+                lambda color_id: legacy_applies.append(color_id))
+
+            self.assertFalse(runtime["apply_target_anchor_command"](
+                2, 100, 200, 20, 40))
+            self.assertEqual(len(resets), 1)
+            self.assertTrue(runtime["model_color"][3])
+
+            self.assertTrue(runtime["apply_target_anchor_command"](
+                2, 130, 240, 25, 40))
+            self.assertEqual(len(resets), 1)
+            self.assertEqual(runtime["target_anchor_x_cm"], 13.0)
+            self.assertEqual(runtime["target_anchor_y_cm"], 24.0)
+            self.assertEqual(runtime["target_anchor_radius_cm"], 25.0)
+
+            self.assertFalse(runtime["apply_target_anchor_command"](
+                2, 130, 240, 25, 41))
+            self.assertEqual(len(resets), 2)
+
+            self.assertFalse(runtime["apply_target_anchor_command"](
+                9, 0, 0, 25, 1))
+            self.assertEqual(len(resets), 2)
+            self.assertEqual(runtime["target_color_id"], 2)
+
+            runtime["ENABLE_TARGET_ANCHOR_LOCK"] = False
+            self.assertTrue(runtime["apply_target_anchor_command"](
+                2, 0, 0, 25, 42))
+            self.assertEqual(len(resets), 2)
+            self.assertFalse(runtime["target_anchor_active"])
+            self.assertEqual(legacy_applies, [])
+
+            runtime["ID2_ABSOLUTE_PRIORITY"] = False
+            self.assertFalse(runtime["apply_target_anchor_command"](
+                1, 0, 0, 25, 43))
+            self.assertEqual(len(resets), 2)
+            self.assertEqual(legacy_applies, [1])
+
+    def test_target_anchor_uart_frame_is_signed_and_keeps_boundaries(self):
+        first = target_anchor_frame(2, -1234, 2345, 60, 19)
+        second = target_anchor_frame(2, 321, -456, 40, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_named_function(source_path, "receive_command_from_host")
+            calls = []
+            runtime.update({
+                "uart": FakeUART(first + second),
+                "_cmd_rx_buf": bytearray(),
+                "TARGET_ANCHOR_COMMAND": 0x09,
+                "TARGET_ANCHOR_FRAME_SIZE": 11,
+                "apply_target_anchor_command": (
+                    lambda *values: calls.append(values)),
+            })
+            runtime["receive_command_from_host"]()
+            self.assertEqual(calls, [(2, -1234, 2345, 60, 19)])
+            self.assertEqual(len(runtime["_cmd_rx_buf"]), 11)
+            runtime["receive_command_from_host"]()
+            self.assertEqual(calls[-1], (2, 321, -456, 40, 20))
+            self.assertEqual(runtime["_cmd_rx_buf"], bytearray())
+
+    def test_target_anchor_uart_rejects_bad_checksum_and_resynchronizes(self):
+        broken = bytearray(target_anchor_frame(2, 10, 20, 30, 1))
+        broken[-1] ^= 0x01
+        valid = target_anchor_frame(2, -10, -20, 30, 2)
+        for source_path in RUNTIME_FILES:
+            runtime = load_named_function(source_path, "receive_command_from_host")
+            calls = []
+            runtime.update({
+                "uart": FakeUART(bytes(broken) + valid),
+                "_cmd_rx_buf": bytearray(),
+                "TARGET_ANCHOR_COMMAND": 0x09,
+                "TARGET_ANCHOR_FRAME_SIZE": 11,
+                "apply_target_anchor_command": (
+                    lambda *values: calls.append(values)),
+            })
+            runtime["receive_command_from_host"]()
+            self.assertEqual(calls, [(2, -10, -20, 30, 2)])
+            self.assertEqual(runtime["_cmd_rx_buf"], bytearray())
 
     def test_first_blob_search_expands_incomplete_model_box(self):
         for source_path in RUNTIME_FILES:

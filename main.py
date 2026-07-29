@@ -8,6 +8,9 @@ EXPOSURE_INIT = 880
 EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
 ID2_ABSOLUTE_PRIORITY = True
+# Optional instance-level gate. With no 0x09 anchor command, behavior remains
+# identical to the legacy color-only 0x03 mode.
+ENABLE_TARGET_ANCHOR_LOCK = True
 # ================== END QUICK MATCH SETTINGS ==================
 import sensor, gc, math
 try:
@@ -334,6 +337,12 @@ dynamic_detect_roi = DETECT_ROI
 target_color_id = 0
 host_color_id_received = False
 completed_color_mask = 0
+target_anchor_active = False
+target_anchor_color_id = 0
+target_anchor_x_cm = 0.0
+target_anchor_y_cm = 0.0
+target_anchor_radius_cm = 0.0
+target_anchor_sequence = 0
 color_track_active = False
 color_track_box = None
 color_track_raw_coordinate_box = None
@@ -343,6 +352,8 @@ color_lost_count = 0
 _cmd_rx_buf = bytearray()
 front_scan_requested = False
 CMD_CLEAR_COMPLETED = 0x08
+TARGET_ANCHOR_COMMAND = 0x09
+TARGET_ANCHOR_FRAME_SIZE = 11
 FRONT_SCAN_PACKET_ID = 0xC7
 FRONT_SCAN_EXCLUDE_IOU = 0.20
 FRONT_SCAN_EXCLUDE_CENTER_PX = 35
@@ -433,6 +444,83 @@ def active_selected_color_id():
     if 1 <= model_color[0] <= len(all_color_thresholds):
         return model_color[0]
     return 0
+def clear_target_anchor():
+    global target_anchor_active, target_anchor_color_id
+    global target_anchor_x_cm, target_anchor_y_cm
+    global target_anchor_radius_cm, target_anchor_sequence
+    target_anchor_active = False
+    target_anchor_color_id = 0
+    target_anchor_x_cm = 0.0
+    target_anchor_y_cm = 0.0
+    target_anchor_radius_cm = 0.0
+    target_anchor_sequence = 0
+def update_target_anchor(color_id, x_mm, y_mm, radius_cm, sequence):
+    global target_anchor_active, target_anchor_color_id
+    global target_anchor_x_cm, target_anchor_y_cm
+    global target_anchor_radius_cm, target_anchor_sequence
+    same_instance = (target_anchor_active and
+                     target_anchor_color_id == color_id and
+                     target_anchor_sequence == sequence)
+    target_anchor_active = True
+    target_anchor_color_id = color_id
+    target_anchor_x_cm = x_mm * 0.1
+    target_anchor_y_cm = y_mm * 0.1
+    target_anchor_radius_cm = float(radius_cm)
+    target_anchor_sequence = sequence
+    return same_instance
+def target_anchor_enabled_for(color_id):
+    return (ENABLE_TARGET_ANCHOR_LOCK and target_anchor_active and
+            color_id == target_anchor_color_id and
+            target_anchor_radius_cm > 0.0)
+def target_anchor_world_distance2(color_id, world_point):
+    if not target_anchor_enabled_for(color_id) or world_point is None:
+        return None
+    dx = world_point[0] - target_anchor_x_cm
+    dy = world_point[1] - target_anchor_y_cm
+    distance2 = dx * dx + dy * dy
+    if distance2 > target_anchor_radius_cm * target_anchor_radius_cm:
+        return None
+    return distance2
+def target_anchor_candidate_distance2(label, box):
+    if not target_anchor_enabled_for(target_color_id):
+        return None
+    if (label < 0 or label >= len(MODEL_COLOR_IDS) or
+            target_anchor_color_id not in MODEL_COLOR_IDS[label]):
+        return None
+    return target_anchor_world_distance2(
+        target_color_id, box_to_world(box[0], box[1], box[2], box[3]))
+def target_anchor_model_rank(label, box, base_rank):
+    if not target_anchor_enabled_for(target_color_id):
+        return base_rank
+    distance2 = target_anchor_candidate_distance2(label, box)
+    if distance2 is None:
+        return None
+    return (-distance2, base_rank)
+def apply_target_anchor_command(color_id, x_mm, y_mm, radius_cm, sequence):
+    global lost_frame_count, target_color_id, host_color_id_received
+    if color_id < 1 or color_id > len(all_color_thresholds):
+        return False
+    if not color_id_available_for_search(color_id):
+        reset_target_tracking_state()
+        return False
+    same_target = host_color_id_received and target_color_id == color_id
+    anchor_requested = ENABLE_TARGET_ANCHOR_LOCK and radius_cm > 0
+    if anchor_requested:
+        same_instance = update_target_anchor(
+            color_id, x_mm, y_mm, radius_cm, sequence)
+    else:
+        clear_target_anchor()
+        same_instance = same_target
+    target_color_id = color_id
+    host_color_id_received = True
+    lost_frame_count = 0
+    if anchor_requested:
+        if not same_instance:
+            reset_hybrid_tracking()
+            model_color[3] = True
+    elif not same_target:
+        apply_host_hybrid_color(color_id)
+    return same_instance
 def reset_target_tracking_state():
     global lost_frame_count
     global target_color_id, host_color_id_received
@@ -447,6 +535,7 @@ def reset_target_tracking_state():
     color_track_coordinate_box = None
     color_track_color_id = 0
     color_lost_count = 0
+    clear_target_anchor()
     reset_hybrid_tracking()
 def reset_yellow_state():
     global yellow_lost_count, yellow_seen_in_carry, yellow_tracking, yellow_detected
@@ -1376,6 +1465,9 @@ def run_model_best(img):
             else:
                 confirm = acquire_confirm
                 rank = model_acquire_rank(box, score)
+                rank = target_anchor_model_rank(label, box, rank)
+                if rank is None:
+                    continue
             if best is None or rank > best_rank:
                 best = (label, box, score, confirm)
                 best_rank = rank
@@ -1941,10 +2033,23 @@ def accept_first_lock_candidate(candidate):
             first_lock_pending_scores.append(score)
             first_lock_pending_color_ids.append(color_id)
             first_lock_pending_color_thresholds.append(color_threshold)
-        elif (model_box_distance(box) + FIRST_LOCK_NEARER_MARGIN_CM <
-              model_box_distance(first_lock_pending_box)):
-            begin_first_lock_pending(candidate)
-            return False
+        else:
+            if target_anchor_enabled_for(target_color_id):
+                candidate_distance2 = target_anchor_candidate_distance2(
+                    label, box)
+                pending_distance2 = target_anchor_candidate_distance2(
+                    first_lock_pending_label, first_lock_pending_box)
+                candidate_preferred = (
+                    candidate_distance2 is not None and
+                    (pending_distance2 is None or
+                     candidate_distance2 < pending_distance2))
+            else:
+                candidate_preferred = (
+                    model_box_distance(box) + FIRST_LOCK_NEARER_MARGIN_CM <
+                    model_box_distance(first_lock_pending_box))
+            if candidate_preferred:
+                begin_first_lock_pending(candidate)
+                return False
     # Commit as soon as the active automatic or host-forced evidence threshold
     # is reached; do not wait for unused slots at the end of the window.
     # host_forced_target_active() 为纯查询，两处判定复用一次结果
@@ -2407,20 +2512,47 @@ def receive_command_from_host():
         if len(_cmd_rx_buf) < 4:
             return
         command = _cmd_rx_buf[2]
-        frame_size = 5 if command == 0x03 or command == 0x04 else 4
+        if command == TARGET_ANCHOR_COMMAND:
+            frame_size = TARGET_ANCHOR_FRAME_SIZE
+        elif command == 0x03 or command == 0x04:
+            frame_size = 5
+        else:
+            frame_size = 4
         if len(_cmd_rx_buf) < frame_size:
             return
-        param = _cmd_rx_buf[3] if frame_size == 5 else 0
+        if command == TARGET_ANCHOR_COMMAND:
+            param = _cmd_rx_buf[3]
+            x_mm = _cmd_rx_buf[4] | (_cmd_rx_buf[5] << 8)
+            y_mm = _cmd_rx_buf[6] | (_cmd_rx_buf[7] << 8)
+            if x_mm >= 0x8000:
+                x_mm -= 0x10000
+            if y_mm >= 0x8000:
+                y_mm -= 0x10000
+            anchor_radius_cm = _cmd_rx_buf[8]
+            anchor_sequence = _cmd_rx_buf[9]
+            checksum_calc = 0
+            for index in range(2, frame_size - 1):
+                checksum_calc = (checksum_calc + _cmd_rx_buf[index]) & 0xFF
+        else:
+            param = _cmd_rx_buf[3] if frame_size == 5 else 0
+            checksum_calc = (command + param) & 0xFF
         checksum = _cmd_rx_buf[frame_size - 1]
-        if checksum != ((command + param) & 0xFF):
+        if checksum != checksum_calc:
             _cmd_rx_buf = _cmd_rx_buf[2:]
             continue
         _cmd_rx_buf = _cmd_rx_buf[frame_size:]
-        if command == 0x03 and 1 <= param <= len(all_color_thresholds):
+        if command == TARGET_ANCHOR_COMMAND:
+            apply_target_anchor_command(
+                param, x_mm, y_mm, anchor_radius_cm, anchor_sequence)
+        elif command == 0x03 and 1 <= param <= len(all_color_thresholds):
             if not color_id_available_for_search(param):
                 reset_target_tracking_state()
             else:
                 same_target = host_color_id_received and target_color_id == param
+                if (target_anchor_active and
+                        (not ENABLE_TARGET_ANCHOR_LOCK or
+                         target_anchor_color_id != param)):
+                    clear_target_anchor()
                 target_color_id = param
                 host_color_id_received = True
                 lost_frame_count = 0
@@ -2452,6 +2584,7 @@ def receive_command_from_host():
         elif command == 0x07:
             first_lock_reset_cycle_active = False
             reset_first_lock_pending()
+            clear_target_anchor()
             openart_mode = MODE_RETURN
             front_scan_requested = False
             reset_front_scan_state()

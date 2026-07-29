@@ -32,6 +32,17 @@
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
 
+### 2026-07-29 - 开发中 - 可切换的同 ID 目标锚点
+
+范围：`main.py`、`minimain.py`、`world_coordinate_test.py`、`test_model_blob_fusion.py`、README；本轮只修改 OpenART 视觉端，RT1021 主控端未修改。
+
+- 三份入口新增 `ENABLE_TARGET_ANCHOR_LOCK=True`。未收到有效锚点时行为与现有 `0x03` 最近目标模式一致；设为 `False` 或发送半径 0 时，`0x09` 仍按完整 11 字节消费并退化为只按 CID 搜索。
+- 新增 11 字节命令 `AA 55 09 CID X_LO X_HI Y_LO Y_HI RADIUS_CM SEQ CHECKSUM`。X/Y 为当前相机局部坐标下的 little-endian 有符号毫米，半径为厘米，校验为 `09` 至 `SEQ` 的逐字节和低 8 位。
+- 未锁定时丢弃锚点半径外的同 ID 候选，半径内按锚点平方误差优先，再用原模型排名打破相同误差；锁定后保留现有图像连续跟踪。
+- 同一 `CID+SEQ` 只移动预期坐标和半径，不清除主控指定搜索的 `3/5` 证据；新序号代表新物理实例并触发重新锁定。重复同 CID 的 `0x03` 保留锚点，目标/任务重置与回库清除锚点。
+- 当前主控不会发送 `0x09`，所以只更新 OpenART 不会改变现车行为，也不会单独产生双车同实例保证。主控后续需结合当轮左右槽位、固定车距和搜索平移后的实时局部里程计，为两车持续发送同一物体各自的局部预期坐标。
+- `test_model_blob_fusion.py` 从 13 项增至 17 项，新增开关回退、半径门控、序号身份、负坐标解码、连续帧边界和坏校验重同步覆盖。
+
 ### 2026-07-26 - v1.1.0 - 内存与热路径优化版
 
 范围：`main.py`（2611 → 2650 行）、`minimain.py`（2407 → 2376 行）、`world_coordinate_test.py`、`test_ground_projection.py`、三份 README。基线为 v1.0.0（提交 `d83b6d6`，2026-07-25）。

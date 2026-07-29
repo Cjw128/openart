@@ -32,6 +32,17 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
 
+### 2026-07-29 - In development - Switchable same-ID target anchor
+
+Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, and the READMEs. This change is OpenART-only; the RT1021 controller is unchanged.
+
+- Added `ENABLE_TARGET_ANCHOR_LOCK=True` to all three entries. With no valid anchor, behavior is identical to legacy nearest-target `0x03`; setting the switch false or sending a zero radius keeps consuming the complete `0x09` frame but uses color-only legacy selection.
+- Added the 11-byte frame `AA 55 09 CID X_LO X_HI Y_LO Y_HI RADIUS_CM SEQ CHECKSUM`. X/Y are signed little-endian millimetres in the receiving camera's current local frame, radius is in centimetres, and the checksum is the low byte of the sum from `09` through `SEQ`.
+- Before first lock, same-ID candidates outside the radius are rejected and valid candidates are ranked by anchor error before the legacy model rank. Existing image-continuity tracking remains unchanged after lock.
+- Repeated `CID+SEQ` updates move the expected point without clearing directed-search `3/5` evidence; a new sequence represents a new physical instance and resets visual acquisition.
+- The current controller does not send `0x09`, so deploying OpenART alone does not change current car behavior or yet guarantee a shared instance. Future controller integration must transform the same object into each camera's local coordinates using the live left/right slot, fixed spacing, and local odometry during search translation.
+- `test_model_blob_fusion.py` grows from 13 to 17 tests, adding switch fallback, radius gating, sequence identity, signed coordinates, concatenated-frame boundaries, and bad-checksum resynchronization.
+
 ### 2026-07-26 - v1.1.0 - Memory and hot-path optimization release
 
 Scope: `main.py` (2611 → 2650 lines), `minimain.py` (2407 → 2376 lines), `world_coordinate_test.py`, `test_ground_projection.py`, and the three READMEs. Baseline: v1.0.0 (commit `d83b6d6`, 2026-07-25).
