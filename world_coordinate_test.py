@@ -9,6 +9,7 @@ COLOR_THR_PATH = '/sd/color_thr.txt'
 EXPOSURE_INIT = 880
 EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
+ENABLE_COMPLETED_COLOR_EXCLUSION = False
 ID2_ABSOLUTE_PRIORITY = True
 ENABLE_TARGET_ANCHOR_LOCK = True
 import sensor, gc, math
@@ -421,7 +422,9 @@ def color_id_completed(color_id):
     return (1 <= color_id <= len(all_color_thresholds) and
             bool(completed_color_mask & (1 << (color_id - 1))))
 def color_id_available_for_search(color_id):
-    if (color_id < 1 or color_id > len(all_color_thresholds) or
+    if color_id < 1 or color_id > len(all_color_thresholds):
+        return False
+    if (ENABLE_COMPLETED_COLOR_EXCLUSION and
             color_id_completed(color_id)):
         return False
     if ID2_ABSOLUTE_PRIORITY and not color_id_completed(2):

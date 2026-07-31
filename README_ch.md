@@ -42,7 +42,8 @@
 - 锁定后的同类兼容模型候选首次推理即更新，不再要求 `0.70` 分数与连续两次一致框；任何距离下的新模型几何均进入同一 `70%` 跟随，不再在 `30 cm` 内因模型分数低于 `0.60` 而保持旧坐标。
 - `main.py`、`minimain.py` 和 `world_coordinate_test.py` 的公共融合节点已同步，三份入口头部版本标识统一为 `v1.1.0`，主循环移除未使用的框坐标拆包。观察脚本继续只增加 IDE 插桩，剔除 `_world_coord_*` 后必须与主车完整运行时 AST 一致。
 - 完整删除主车临时 `/sd/id2_coordinate_watchdog.log` 配置、缓冲、写入函数和主循环埋点，正式运行不再执行该 SD I/O；用于防死锁的 `8 s` 硬件 WDT 保留。
-- 28 个标定点、36 个三角形、单应回退、中心 X 修正、Y 映射和 UART 毫米单位均未修改。`test_model_blob_fusion.py` 现有 31 项，与 `test_ground_projection.py` 的 6 项合计 37 项全部通过。
+- 三份入口新增 `ENABLE_COMPLETED_COLOR_EXCLUSION=False`。默认只记录 `completed_color_mask` 而不排除候选，需要时设为 `True` 即按现有完成位启用排除，再次关闭也不会清空记录。该开关与 `ID2_ABSOLUTE_PRIORITY` 独立：默认第一个仍为 ID2，完成后所有颜色（含 ID2）按距离竞争；开启排除后才变为从剩余未完成颜色中选择。
+- 28 个标定点、36 个三角形、单应回退、中心 X 修正、Y 映射和 UART 毫米单位均未修改。`test_model_blob_fusion.py` 现有 32 项，与 `test_ground_projection.py` 的 6 项合计 38 项全部通过。
 
 ### 2026-07-29 - 开发中 - 目标锚点与运动首锁
 

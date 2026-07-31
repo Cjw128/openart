@@ -10,6 +10,7 @@ OBSERVER_FILE = ROOT / "world_coordinate_test.py"
 RUNTIME_FILES = (MAIN_FILE, ROOT / "minimain.py", OBSERVER_FILE)
 
 FUSION_ASSIGNMENTS = {
+    "ENABLE_COMPLETED_COLOR_EXCLUSION",
     "ENABLE_TARGET_ANCHOR_LOCK",
     "ID2_ABSOLUTE_PRIORITY",
     "MODEL_COLOR_IDS",
@@ -260,6 +261,12 @@ class ModelBlobFusionTests(unittest.TestCase):
             runtime["completed_color_mask"] = 1 << (2 - 1)
             self.assertEqual(
                 [available(color_id) for color_id in range(1, 6)],
+                [True, True, True, True, True],
+            )
+
+            runtime["ENABLE_COMPLETED_COLOR_EXCLUSION"] = True
+            self.assertEqual(
+                [available(color_id) for color_id in range(1, 6)],
                 [True, False, True, True, True],
             )
 
@@ -269,6 +276,24 @@ class ModelBlobFusionTests(unittest.TestCase):
                 [available(color_id) for color_id in range(1, 6)],
                 [True, True, True, True, True],
             )
+
+    def test_completed_color_exclusion_switch_preserves_records(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["all_color_thresholds"] = [None] * 5
+            runtime["ID2_ABSOLUTE_PRIORITY"] = False
+            runtime["completed_color_mask"] = 1 << (4 - 1)
+            available = runtime["color_id_available_for_search"]
+
+            self.assertFalse(runtime["ENABLE_COMPLETED_COLOR_EXCLUSION"])
+            self.assertTrue(available(4))
+
+            runtime["ENABLE_COMPLETED_COLOR_EXCLUSION"] = True
+            self.assertFalse(available(4))
+            self.assertEqual(runtime["completed_color_mask"], 1 << (4 - 1))
+
+            runtime["ENABLE_COMPLETED_COLOR_EXCLUSION"] = False
+            self.assertTrue(available(4))
 
     def test_target_anchor_gate_and_switch_preserve_legacy_rank(self):
         for source_path in RUNTIME_FILES:
