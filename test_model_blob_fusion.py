@@ -14,6 +14,15 @@ FUSION_ASSIGNMENTS = {
     "ID2_ABSOLUTE_PRIORITY",
     "MODEL_COLOR_IDS",
     "MODEL_HOLD_FRAMES",
+    "FIRST_LOCK_SCORE_MIN",
+    "FIRST_LOCK_WINDOW_FRAMES",
+    "FIRST_LOCK_REQUIRED_HITS",
+    "FIRST_LOCK_MATCH_CENTER_PX",
+    "FIRST_LOCK_MATCH_CENTER2",
+    "FIRST_LOCK_SIZE_DELTA_PERCENT",
+    "COLOR_ROI_INSET_X_PERCENT",
+    "COLOR_ROI_INSET_TOP_PERCENT",
+    "COLOR_ROI_INSET_BOTTOM_PERCENT",
     "COLOR_DETECT_Y_MAX",
     "COLOR_TRACK_MODEL_PAD_PERCENT",
     "COLOR_TRACK_LOCAL_PAD_PERCENT",
@@ -27,11 +36,11 @@ FUSION_ASSIGNMENTS = {
     "COLOR_TRACK_CENTER_SCALE_X100",
     "OUTPUT_SMOOTH_ALPHA_X100",
     "OUTPUT_SMOOTH_RESET_CENTER2",
-    "COORDINATE_SMOOTH_ALPHA_X100",
-    "COORDINATE_CONTACT_DEADBAND_PX",
-    "COORDINATE_CONTACT_DEADBAND2",
-    "COORDINATE_CONTACT_RESET_PX",
-    "COORDINATE_CONTACT_RESET2",
+    "model_track",
+    "color_coordinate_anchor_blob_x",
+    "color_coordinate_anchor_blob_y",
+    "color_coordinate_anchor_output_box",
+    "color_coordinate_anchor_box",
     "target_color_id",
     "host_color_id_received",
     "target_anchor_active",
@@ -56,6 +65,7 @@ FUSION_FUNCTIONS = {
     "apply_target_anchor_command",
     "clamp_int",
     "raw_model_box",
+    "model_color_roi",
     "center_dist2",
     "box_from_center",
     "expand_tracking_box",
@@ -67,13 +77,18 @@ FUSION_FUNCTIONS = {
     "strict_blob_candidate",
     "pick_tracking_blob",
     "track_color_in_model_roi",
+    "reset_color_coordinate_anchor",
+    "translate_tracking_box",
+    "anchor_color_coordinate_geometry",
     "color_blob_geometry",
     "should_run_model",
+    "coordinate_box_from_track",
+    "output_box_from_track",
     "smooth_tracking_box",
     "tracking_box_contact",
-    "coordinate_box_with_contact",
-    "stabilize_coordinate_box",
     "set_color_tracking",
+    "tracking_world_point",
+    "current_tracking_hold_result",
     "held_color_tracking_result",
     "model_geometry_tracking_result",
     "held_model_tracking_result",
@@ -184,8 +199,13 @@ def load_fusion_runtime(source_path):
     exec(compile(module, str(source_path), "exec"), namespace)
     namespace["dynamic_detect_roi"] = (0, 8, 320, 232)
     namespace["model_lock"] = [0, (100, 80, 20, 30), -1, None, 0, 0]
+    namespace["model_track"] = [
+        True, 100.0, 105.0, 50.0, 60.0,
+        100.0, 120.0, 100.0, 120.0, 40, 30,
+    ]
     namespace["color_blob_box"] = None
     namespace["color_lost_count"] = 0
+    namespace["ground_pixel_to_world"] = lambda x, y: (0.0, 100.0)
     return namespace
 
 
@@ -210,9 +230,19 @@ class ModelBlobFusionTests(unittest.TestCase):
 
     def test_world_observer_matches_complete_main_runtime(self):
         self.assertEqual(
-            normalized_runtime_ast(MAIN_FILE),
+            normalized_runtime_ast(MAIN_FILE, strip_observer=True),
             normalized_runtime_ast(OBSERVER_FILE, strip_observer=True),
         )
+
+    def test_motion_first_lock_policy_matches_all_entries(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            self.assertEqual(runtime["FIRST_LOCK_SCORE_MIN"], 0.30)
+            self.assertEqual(runtime["FIRST_LOCK_WINDOW_FRAMES"], 5)
+            self.assertEqual(runtime["FIRST_LOCK_REQUIRED_HITS"], 3)
+            self.assertEqual(runtime["FIRST_LOCK_MATCH_CENTER_PX"], 36)
+            self.assertEqual(runtime["FIRST_LOCK_MATCH_CENTER2"], 36 * 36)
+            self.assertEqual(runtime["FIRST_LOCK_SIZE_DELTA_PERCENT"], 50)
 
     def test_id2_absolute_priority_matches_provincial_gate(self):
         for source_path in RUNTIME_FILES:
@@ -349,138 +379,418 @@ class ModelBlobFusionTests(unittest.TestCase):
             self.assertEqual(calls, [(2, -10, -20, 30, 2)])
             self.assertEqual(runtime["_cmd_rx_buf"], bytearray())
 
-    def test_first_blob_search_expands_incomplete_model_box(self):
+    def test_fresh_model_search_uses_inset_model_color_roi(self):
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
             roi = runtime["color_tracking_search_roi"](True)
             model_box = runtime["model_lock"][1]
-            self.assertTrue(contains(roi, model_box))
-            self.assertLess(roi[0], model_box[0])
-            self.assertLess(roi[1], model_box[1])
-            self.assertGreater(roi[2], model_box[2])
-            self.assertGreater(roi[3], model_box[3])
+            self.assertEqual(runtime["COLOR_ROI_INSET_X_PERCENT"], 5)
+            self.assertEqual(runtime["COLOR_ROI_INSET_TOP_PERCENT"], 5)
+            self.assertEqual(runtime["COLOR_ROI_INSET_BOTTOM_PERCENT"], 10)
+            self.assertEqual(roi, runtime["model_color_roi"](model_box))
+            self.assertTrue(contains(model_box, roi))
+            self.assertGreater(roi[0], model_box[0])
+            self.assertGreater(roi[1], model_box[1])
+            self.assertLess(roi[2], model_box[2])
+            self.assertLess(roi[3], model_box[3])
 
-    def test_model_refresh_keeps_existing_blob_inside_search_roi(self):
+    def test_model_refresh_restricts_old_blob_to_fresh_model_roi(self):
         full_blob = (78, 70, 60, 65)
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
             runtime["color_blob_box"] = full_blob
             refresh_roi = runtime["color_tracking_search_roi"](True)
             tracking_roi = runtime["color_tracking_search_roi"](False)
-            self.assertEqual(refresh_roi, tracking_roi)
-            self.assertTrue(contains(refresh_roi, full_blob))
+            self.assertEqual(
+                refresh_roi,
+                runtime["model_color_roi"](runtime["model_lock"][1]),
+            )
+            self.assertFalse(contains(refresh_roi, full_blob))
+            self.assertTrue(contains(tracking_roi, full_blob))
 
-    def test_blob_owns_output_and_coordinate_geometry(self):
-        blob = (78, 70, 60, 65)
+    def test_model_refresh_does_not_rank_against_stale_blob(self):
+        stale_blob = (78, 70, 60, 65)
+        picked_blob = (101, 81, 18, 26)
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
-            output_box, coordinate_box = runtime["color_blob_geometry"](blob)
-            self.assertEqual(output_box, blob)
-            self.assertEqual(coordinate_box, blob)
+            references = []
+            runtime["color_blob_box"] = stale_blob
+            runtime["color_tracking_search_roi"] = lambda observed: (0, 0, 1, 1)
+            runtime["color_tracking_gate"] = lambda observed: (0, 0, 1, 1)
+            runtime["find_adaptive_color_blobs"] = (
+                lambda img, roi, color_id: ([object()], 1))
+            runtime["pick_tracking_blob"] = (
+                lambda blobs, color_id, reference, gate, minimum:
+                references.append(reference) or picked_blob)
 
-    def test_blob_geometry_uses_stable_current_weight(self):
+            self.assertEqual(runtime["track_color_in_model_roi"](
+                object(), 2, model_observed=True), picked_blob)
+            self.assertIsNone(references[-1])
+            self.assertEqual(runtime["track_color_in_model_roi"](
+                object(), 2, model_observed=False), picked_blob)
+            self.assertEqual(references[-1], picked_blob)
+
+    def test_blob_size_changes_do_not_move_coordinate_geometry(self):
+        initial_blob = (80, 80, 40, 40)
+        resized_blob = (60, 60, 80, 80)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            expected_output = runtime["output_box_from_track"]()
+            expected_coordinate = runtime["coordinate_box_from_track"]()
+
+            initial = runtime["color_blob_geometry"](initial_blob)
+            resized = runtime["color_blob_geometry"](resized_blob)
+
+            self.assertEqual(initial, (expected_output, expected_coordinate))
+            self.assertEqual(resized, (expected_output, expected_coordinate))
+
+    def test_blob_center_translation_moves_coordinate_geometry_immediately(self):
+        initial_blob = (80, 80, 40, 40)
+        moved_blob = (87, 74, 40, 40)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            anchor_output = runtime["output_box_from_track"]()
+            anchor_coordinate = runtime["coordinate_box_from_track"]()
+            runtime["color_blob_geometry"](initial_blob)
+
+            output_box, coordinate_box = runtime["color_blob_geometry"](
+                moved_blob)
+
+            self.assertEqual(
+                output_box,
+                runtime["translate_tracking_box"](
+                    anchor_output, 7.0, -6.0),
+            )
+            self.assertEqual(
+                coordinate_box,
+                runtime["translate_tracking_box"](
+                    anchor_coordinate, 7.0, -6.0),
+            )
+
+    def test_model_refresh_reanchors_coordinate_to_latest_contact(self):
+        initial_blob = (80, 80, 40, 40)
+        moved_blob = (87, 74, 40, 40)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["color_blob_geometry"](initial_blob)
+            translated = runtime["color_blob_geometry"](moved_blob)[1]
+
+            runtime["model_track"] = [
+                True, 140.0, 125.0, 30.0, 50.0,
+                140.0, 150.0, 140.0, 150.0, 30, 50,
+            ]
+            expected_output = runtime["output_box_from_track"]()
+            expected_coordinate = runtime["coordinate_box_from_track"]()
+            refreshed = runtime["color_blob_geometry"](
+                moved_blob, model_observed=True)
+
+            self.assertNotEqual(translated, expected_coordinate)
+            self.assertEqual(refreshed,
+                             (expected_output, expected_coordinate))
+            self.assertEqual(runtime["color_coordinate_anchor_blob_x"],
+                             107.0)
+            self.assertEqual(runtime["color_coordinate_anchor_blob_y"],
+                             94.0)
+
+    def test_display_box_keeps_its_existing_smoothing(self):
         previous = (100, 100, 20, 20)
         current = (104, 102, 30, 24)
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
-            self.assertEqual(runtime["OUTPUT_SMOOTH_ALPHA_X100"], 35)
-            self.assertEqual(runtime["COORDINATE_SMOOTH_ALPHA_X100"], 50)
+            self.assertEqual(runtime["OUTPUT_SMOOTH_ALPHA_X100"], 70)
             smoothed = runtime["smooth_tracking_box"](previous, current)
-            coordinate_smoothed = runtime["smooth_tracking_box"](
-                previous, current,
-                runtime["COORDINATE_SMOOTH_ALPHA_X100"])
             self.assertNotEqual(smoothed, previous)
             self.assertNotEqual(smoothed, current)
             self.assertGreater(smoothed[2], previous[2])
             self.assertLess(smoothed[2], current[2])
-            self.assertGreater(coordinate_smoothed[2], smoothed[2])
-            self.assertLessEqual(coordinate_smoothed[2], current[2])
 
-    def test_coordinate_contact_uses_spatial_deadband_and_jump_reset(self):
-        previous = (100, 100, 20, 20)
-        small_jitter = (101, 100, 20, 20)
-        ordinary_move = (110, 100, 20, 20)
-        large_jump = (118, 100, 20, 20)
+    def test_locked_model_candidate_updates_on_first_observation(self):
+        anchor = (100, 100, 40, 40)
+        candidate_box = (100, 126, 40, 40)
+        for source_path in RUNTIME_FILES:
+            runtime = load_named_function(
+                source_path, "accept_model_candidate")
+            observed = []
+            runtime.update({
+                "model_lock": [2, anchor, -1, None, 0, 0],
+                "model_last_score": 0.90,
+                "accept_first_lock_candidate": lambda candidate: False,
+                "observe_model_box": (
+                    lambda label, box: observed.append((label, box)) or True),
+            })
+
+            candidate = (2, candidate_box, 0.21, None, None, None)
+            self.assertTrue(runtime["accept_model_candidate"](candidate))
+            self.assertEqual(observed, [(2, candidate_box)])
+            self.assertEqual(runtime["model_lock"][1], candidate_box)
+            self.assertEqual(runtime["model_last_score"], 0.21)
+
+    def test_coordinate_box_updates_without_temporal_filter(self):
+        first = (100, 100, 20, 20)
+        second = (140, 80, 20, 20)
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
-            stabilize = runtime["stabilize_coordinate_box"]
-            contact = runtime["tracking_box_contact"]
-
-            self.assertEqual(runtime["COORDINATE_CONTACT_DEADBAND_PX"], 2.0)
-            self.assertEqual(runtime["COORDINATE_CONTACT_RESET_PX"], 18.0)
-            self.assertEqual(stabilize(previous, small_jitter), previous)
-
-            stable = stabilize(previous, ordinary_move)
-            previous_x, _ = contact(previous)
-            current_x, _ = contact(ordinary_move)
-            stable_x, _ = contact(stable)
-            self.assertGreater(stable_x, previous_x)
-            self.assertLess(stable_x, current_x)
-            self.assertAlmostEqual(current_x - stable_x, 2.0, delta=0.5)
-
-            self.assertEqual(stabilize(previous, large_jump), large_jump)
             runtime["color_track_active"] = False
             runtime["color_track_box"] = None
-            runtime["color_track_raw_coordinate_box"] = None
             runtime["color_track_coordinate_box"] = None
             runtime["color_track_color_id"] = 0
-            runtime["set_color_tracking"](2, previous, previous)
-            _, stable_jump = runtime["set_color_tracking"](
-                2, large_jump, large_jump)
-            self.assertEqual(stable_jump, large_jump)
-            self.assertEqual(runtime["color_track_raw_coordinate_box"],
-                             large_jump)
-            _, next_stable = runtime["set_color_tracking"](
-                2, large_jump, large_jump)
-            self.assertEqual(next_stable, large_jump)
-
-    def test_coordinate_filter_leads_display_during_fast_approach(self):
-        previous = (100, 100, 20, 20)
-        approach = (100, 117, 20, 20)
-        for source_path in RUNTIME_FILES:
-            runtime = load_fusion_runtime(source_path)
-            contact = runtime["tracking_box_contact"]
-            runtime["color_track_active"] = False
-            runtime["color_track_box"] = None
-            runtime["color_track_raw_coordinate_box"] = None
-            runtime["color_track_coordinate_box"] = None
-            runtime["color_track_color_id"] = 0
-            runtime["set_color_tracking"](2, previous, previous)
-
+            runtime["set_color_tracking"](2, first, first)
             output_box, coordinate_box = runtime["set_color_tracking"](
-                2, approach, approach)
-            expected_raw_coordinate = runtime["smooth_tracking_box"](
-                previous, approach,
-                runtime["COORDINATE_SMOOTH_ALPHA_X100"])
-            self.assertEqual(runtime["color_track_raw_coordinate_box"],
-                             expected_raw_coordinate)
-            previous_y = contact(previous)[1]
-            output_travel = contact(output_box)[1] - previous_y
-            coordinate_travel = contact(coordinate_box)[1] - previous_y
-            self.assertGreater(coordinate_travel, output_travel)
-            self.assertNotEqual(coordinate_box, approach)
+                2, second, second)
 
-    def test_display_box_stays_separate_from_stable_coordinate_box(self):
+            self.assertEqual(output_box, second)
+            self.assertEqual(coordinate_box, second)
+            self.assertEqual(runtime["color_track_coordinate_box"], second)
+
+    def test_tracking_world_point_projects_current_coordinate_directly(self):
+        coordinate_box = (100, 70, 20, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            calls = []
+            runtime["box_to_world"] = (
+                lambda x, y, w, h: calls.append((x, y, w, h)) or
+                (7.0, 8.0))
+
+            self.assertEqual(runtime["tracking_world_point"](
+                2, coordinate_box), (7.0, 8.0))
+            self.assertEqual(calls, [coordinate_box])
+
+    def test_large_coordinate_move_is_visible_on_first_frame(self):
+        previous = (283, 210, 20, 20)
+        current = (283, 171, 20, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["color_track_active"] = False
+            runtime["color_track_box"] = None
+            runtime["color_track_coordinate_box"] = None
+            runtime["color_track_color_id"] = 0
+            runtime["set_color_tracking"](2, previous, previous)
+            _, coordinate_box = runtime["set_color_tracking"](
+                2, current, current)
+            runtime["box_to_world"] = (
+                lambda x, y, w, h: (x + w * 0.5, y + h))
+
+            self.assertEqual(coordinate_box, current)
+            self.assertEqual(runtime["tracking_world_point"](
+                2, coordinate_box), (293.0, 191))
+
+    def test_world_x_follows_each_fresh_mesh_measurement(self):
+        initial = (100, 100, 20, 20)
+        moving_boxes = (
+            (104, 100, 20, 20),
+            (109, 100, 20, 20),
+            (113, 100, 20, 20),
+            (118, 100, 20, 20),
+        )
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["color_track_active"] = False
+            runtime["color_track_box"] = None
+            runtime["color_track_coordinate_box"] = None
+            runtime["color_track_color_id"] = 0
+            runtime["set_color_tracking"](2, initial, initial)
+
+            for moving_box in moving_boxes:
+                runtime["set_color_tracking"](2, moving_box, moving_box)
+                raw_x = runtime["tracking_box_contact"](moving_box)[0]
+                runtime["box_to_world"] = (
+                    lambda x, y, w, h: (x + w * 0.5, y + h - 0.5))
+                world_x, _ = runtime["tracking_world_point"](
+                    2, moving_box)
+                self.assertEqual(world_x, raw_x)
+
+    def test_held_frame_preserves_last_coordinate_box(self):
+        previous = (100, 100, 20, 20)
+        current = (100, 80, 20, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["color_track_active"] = False
+            runtime["color_track_box"] = None
+            runtime["color_track_coordinate_box"] = None
+            runtime["color_track_color_id"] = 0
+            runtime["set_color_tracking"](2, previous, previous)
+            runtime["set_color_tracking"](2, current, current)
+            expected_coordinate = runtime["smooth_tracking_box"](
+                previous, current)
+            runtime["color_lost_count"] = 1
+
+            held = runtime["held_color_tracking_result"](2)
+            self.assertIsNotNone(held)
+            self.assertEqual(held[2], expected_coordinate)
+            self.assertEqual(runtime["color_track_coordinate_box"],
+                             expected_coordinate)
+
+    def test_new_color_uses_its_coordinate_immediately(self):
+        previous = (100, 100, 20, 20)
+        new_target = (100, 60, 20, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["color_track_active"] = False
+            runtime["color_track_box"] = None
+            runtime["color_track_coordinate_box"] = None
+            runtime["color_track_color_id"] = 0
+            runtime["set_color_tracking"](2, previous, previous)
+            output_box, coordinate_box = runtime["set_color_tracking"](
+                3, new_target, new_target)
+
+            self.assertEqual(output_box, new_target)
+            self.assertEqual(coordinate_box, new_target)
+
+    def test_fresh_model_geometry_precedes_held_color_coordinates(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_named_function(
+                source_path, "process_model_only_target")
+            calls = []
+            model_result = object()
+            held_result = object()
+            runtime.update({
+                "model_runtime_enabled": True,
+                "openart_mode": 1,
+                "MODE_SEARCH": 1,
+                "MODE_CARRY": 2,
+                "run_model_best": lambda img: object(),
+                "model_lock": [2, (100, 100, 20, 20), -1, None, 0, 0],
+                "accept_model_candidate": lambda candidate: True,
+                "host_forced_target_active": lambda: True,
+                "trusted_model_color_id": lambda label: 2,
+                "color_id_to_model_label": lambda color_id: 2,
+                "model_track": [True],
+                "adaptive_color_thresholds": [None, object()],
+                "track_color_in_model_roi": (
+                    lambda img, color_id, observed: None),
+                "model_geometry_tracking_result": (
+                    lambda color_id: calls.append("model") or model_result),
+                "held_color_tracking_result": (
+                    lambda color_id: calls.append("held") or held_result),
+            })
+
+            result = runtime["process_model_only_target"](
+                object(), 10, True)
+            self.assertIs(result, model_result)
+            self.assertEqual(calls, ["model"])
+
+    def test_low_score_near_model_geometry_follows_fresh_coordinate(self):
+        previous = (100, 100, 20, 20)
+        current = (100, 80, 20, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["ground_pixel_to_world"] = lambda x, y: (0.0, 13.5)
+            runtime["color_track_active"] = False
+            runtime["color_track_box"] = None
+            runtime["color_track_coordinate_box"] = None
+            runtime["color_track_color_id"] = 0
+            runtime["set_color_tracking"](2, previous, previous)
+            runtime["model_last_score"] = 0.59
+            runtime["output_box_from_track"] = lambda: current
+            runtime["coordinate_box_from_track"] = lambda: current
+
+            result = runtime["model_geometry_tracking_result"](2)
+            expected = runtime["smooth_tracking_box"](previous, current)
+            self.assertEqual(result, (2, expected, expected, 3))
+
+    def test_model_geometry_refresh_uses_provincial_single_stage_follow(self):
+        previous = (100, 100, 20, 20)
+        current = (100, 80, 20, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["ground_pixel_to_world"] = lambda x, y: (0.0, y / 10.0)
+            runtime["color_track_active"] = False
+            runtime["color_track_box"] = None
+            runtime["color_track_coordinate_box"] = None
+            runtime["color_track_color_id"] = 0
+            runtime["set_color_tracking"](2, previous, previous)
+            runtime["model_last_score"] = 0.90
+            runtime["output_box_from_track"] = lambda: current
+            runtime["coordinate_box_from_track"] = lambda: current
+            runtime["color_coordinate_anchor_blob_x"] = 110.0
+            runtime["color_coordinate_anchor_blob_y"] = 110.0
+            runtime["color_coordinate_anchor_box"] = previous
+
+            result = runtime["model_geometry_tracking_result"](2)
+            expected_coordinate = runtime["smooth_tracking_box"](
+                previous, current)
+
+            self.assertEqual(result[2], expected_coordinate)
+            self.assertEqual(runtime["color_track_coordinate_box"],
+                             expected_coordinate)
+            self.assertIsNone(runtime["color_coordinate_anchor_box"])
+
+    def test_legacy_coordinate_filter_paths_are_removed(self):
+        removed = (
+            "COORDINATE_WORLD_Y_ALPHA_X100",
+            "COORDINATE_FILTER_ENTER_Y_CM",
+            "COORDINATE_FILTER_EXIT_Y_CM",
+            "COORDINATE_SMOOTH_ALPHA_X100",
+            "COORDINATE_NEAR_ALPHA_X100",
+            "COORDINATE_NEAR_JUMP_CONFIRM_FRAMES",
+            "COORDINATE_CONTACT_DEADBAND_PX",
+            "COORDINATE_JUMP_GATE_Y_CM",
+            "COORDINATE_JUMP_THRESHOLD_PX",
+            "COORDINATE_JUMP_CONFIRM_PX",
+            "color_track_raw_coordinate_box",
+            "color_track_world_y",
+            "color_track_world_y_filter_active",
+            "color_track_near_jump_box",
+            "stabilize_coordinate_box",
+            "MODEL_UPDATE_SCORE_MIN",
+            "MODEL_UPDATE_CONFIRM_FRAMES",
+            "MODEL_UPDATE_DIRECT_CENTER_PX",
+            "MODEL_UPDATE_DIRECT_BOTTOM_PX",
+            "MODEL_UPDATE_MATCH_CENTER_PX",
+            "MODEL_UPDATE_MATCH_BOTTOM_PX",
+            "MODEL_UPDATE_SIZE_DELTA_PERCENT",
+            "MODEL_GEOMETRY_NEAR_SCORE_MIN",
+            "MODEL_GEOMETRY_NEAR_DISTANCE_CM",
+            "locked_model_candidate_ready",
+            "model_update_box_matches",
+            "model_box_size_matches",
+            "coordinate_box_world_y",
+            "WORLD_COORD_SD_LOG",
+            "_world_coord_log",
+            "id2_coordinate_watchdog",
+        )
+        for source_path in RUNTIME_FILES:
+            source = source_path.read_text(encoding="utf-8")
+            for name in removed:
+                self.assertNotIn(name, source)
+
+    def test_tracking_world_point_does_not_depend_on_track_state(self):
+        coordinate_box = (100, 80, 20, 20)
+        for source_path in RUNTIME_FILES:
+            runtime = load_fusion_runtime(source_path)
+            runtime["color_track_active"] = False
+            runtime["color_track_color_id"] = 0
+            runtime["box_to_world"] = lambda x, y, w, h: (7.0, 8.0)
+
+            self.assertEqual(runtime["tracking_world_point"](
+                2, coordinate_box), (7.0, 8.0))
+
+    def test_display_and_coordinate_use_same_provincial_follow(self):
         previous = (100, 100, 20, 20)
         current = (110, 100, 20, 20)
+        previous_coordinate = (80, 90, 40, 30)
+        current_coordinate = (90, 84, 40, 30)
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
             runtime["color_track_active"] = False
             runtime["color_track_box"] = None
-            runtime["color_track_raw_coordinate_box"] = None
             runtime["color_track_coordinate_box"] = None
             runtime["color_track_color_id"] = 0
-            runtime["set_color_tracking"](2, previous, previous)
+            runtime["set_color_tracking"](
+                2, previous, previous_coordinate)
 
             output_box, coordinate_box = runtime["set_color_tracking"](
-                2, current, current)
+                2, current, current_coordinate)
             expected_output = runtime["smooth_tracking_box"](
                 previous, current)
+            expected_coordinate = runtime["smooth_tracking_box"](
+                previous_coordinate, current_coordinate)
             self.assertEqual(output_box, expected_output)
-            self.assertNotEqual(coordinate_box, output_box)
+            self.assertEqual(coordinate_box, expected_coordinate)
+            self.assertNotEqual(coordinate_box, current_coordinate)
             self.assertEqual(output_box[2:], current[2:])
 
-    def test_near_range_bottom_edge_noise_is_reduced(self):
+    def test_coordinate_uses_only_provincial_single_stage_follow(self):
         raw_boxes = [
             (100, 108, 20, 20),
             (100, 99, 20, 20),
@@ -489,57 +799,62 @@ class ModelBlobFusionTests(unittest.TestCase):
         ]
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
-            contact = runtime["tracking_box_contact"]
             runtime["color_track_active"] = False
             runtime["color_track_box"] = None
-            runtime["color_track_raw_coordinate_box"] = None
             runtime["color_track_coordinate_box"] = None
             runtime["color_track_color_id"] = 0
             initial = (100, 100, 20, 20)
             runtime["set_color_tracking"](2, initial, initial)
-            raw_y = []
-            stable_y = [contact(initial)[1]]
+            coordinate_boxes = []
+            expected_boxes = []
+            previous_coordinate = initial
             for raw_box in raw_boxes:
-                raw_y.append(contact(raw_box)[1])
-                _, stable_box = runtime["set_color_tracking"](
+                _, coordinate_box = runtime["set_color_tracking"](
                     2, raw_box, raw_box)
-                stable_y.append(contact(stable_box)[1])
-            self.assertLess(max(stable_y) - min(stable_y),
-                            max(raw_y) - min(raw_y))
+                coordinate_boxes.append(coordinate_box)
+                previous_coordinate = runtime["smooth_tracking_box"](
+                    previous_coordinate, raw_box)
+                expected_boxes.append(previous_coordinate)
+            self.assertEqual(coordinate_boxes, expected_boxes)
 
-    def test_stable_contact_converges_after_real_motion_stops(self):
-        initial = (100, 100, 20, 20)
-        moved = (100, 108, 20, 20)
+    def test_coordinate_anchor_is_cleared_when_model_geometry_is_unavailable(self):
+        blob = (80, 80, 40, 40)
         for source_path in RUNTIME_FILES:
             runtime = load_fusion_runtime(source_path)
-            contact = runtime["tracking_box_contact"]
-            runtime["color_track_active"] = False
-            runtime["color_track_box"] = None
-            runtime["color_track_raw_coordinate_box"] = None
-            runtime["color_track_coordinate_box"] = None
-            runtime["color_track_color_id"] = 0
-            runtime["set_color_tracking"](2, initial, initial)
-            stable_box = initial
-            for _ in range(12):
-                _, stable_box = runtime["set_color_tracking"](
-                    2, moved, moved)
-            raw_y = contact(moved)[1]
-            stable_y = contact(stable_box)[1]
-            self.assertLessEqual(abs(raw_y - stable_y),
-                                 runtime["COORDINATE_CONTACT_DEADBAND_PX"])
+            self.assertIsNotNone(runtime["color_blob_geometry"](blob))
+            runtime["model_track"][0] = False
 
-    def test_old_model_anchor_path_is_removed(self):
+            self.assertIsNone(runtime["color_blob_geometry"](
+                blob, model_observed=True))
+            self.assertIsNone(runtime["color_coordinate_anchor_blob_x"])
+            self.assertIsNone(runtime["color_coordinate_anchor_blob_y"])
+            self.assertIsNone(
+                runtime["color_coordinate_anchor_output_box"])
+            self.assertIsNone(runtime["color_coordinate_anchor_box"])
+
+    def test_provincial_center_anchor_uses_model_owned_output_geometry(self):
         removed = (
             "anchor_model_geometry",
             "fused_tracking_boxes",
             "color_anchor_blob_box",
-            "model_color_roi",
+            "color_anchor_output_box",
+            "color_anchor_coordinate_box",
         )
         for source_path in RUNTIME_FILES:
             source = source_path.read_text(encoding="utf-8")
             for name in removed:
                 self.assertNotIn(name, source)
-            self.assertIn("reference = color_blob_box", source)
+            self.assertIn(
+                "reference = None if model_observed else color_blob_box",
+                source,
+            )
+            self.assertIn("def model_color_roi", source)
+            self.assertIn("color_coordinate_anchor_blob_x", source)
+            self.assertIn(
+                "color_coordinate_anchor_output_box = output_box_from_track()",
+                source,
+            )
+            self.assertIn("return (translate_tracking_box(", source)
 
 
 if __name__ == "__main__":

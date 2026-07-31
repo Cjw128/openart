@@ -24,6 +24,7 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 - Deployment keeps the single-file layout. `main.py` and `minimain.py` contain the complete master and slave logic and additionally load `/sd/camera_ground_mesh.txt` at startup.
 - The multi-file runtime modules have been removed. The deployment no longer uses `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, or `openart_calibration.py`.
 - Color detection, yellow-line state, the UART protocol, and the main loop remain in each single-file runtime. Ground-mesh generation and field verification remain standalone tools.
+- Shared model/blob fusion and coordinate-following nodes must remain synchronized across `main.py`, `minimain.py`, and `world_coordinate_test.py`. Role-specific differences stay limited to yellow-line, return, and task-state behavior, while the AST gate prevents drift in the shared framework.
 - `fast_blob_backup/`, `stable_confirm/`, `stable_no_priority/`, and `mainbak` are historical references, not deployment entrypoints.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
 - The root `README.md` stays as a concise deployment guide; detailed changes live in `README_ch.md` and `README_en.md`.
@@ -32,7 +33,18 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
 
-### 2026-07-29 - In development - Switchable same-ID target anchor
+### 2026-07-31 - In development - Provincial coordinate following and framework synchronization
+
+Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, and the READMEs. This is an OpenART-only change; the current 28-point mesh is retained and the RT1021 controller is unchanged.
+
+- On model-refresh frames, color search uses a model-box inset of `5%` on each side, `5%` at the top, and `10%` at the bottom, while ignoring the stale blob reference. The model owns display and coordinate geometry; only the blob bounding-box center displacement translates them, so blob-size changes no longer directly alter distance geometry.
+- Display and coordinate boxes restore the same single-stage provincial follow: `70%` current and `30%` previous, with a direct switch when center displacement exceeds `36 px`. This removes the later independent `50%` coordinate EMA, `2 px` contact deadband, `18 px` jump bypass, and the uncommitted close-range weighting/two-frame confirmation experiment.
+- A compatible locked-model candidate is accepted on its first inference instead of requiring a `0.70` score and two consistent boxes. Fresh model geometry at every distance enters the same `70%` follow and is no longer held below `30 cm` when model score is under `0.60`.
+- Shared fusion nodes are synchronized across `main.py`, `minimain.py`, and `world_coordinate_test.py`; all three headers now identify `v1.1.0`, and unused box-coordinate unpacking is removed from the runtime loops. The observer remains an IDE-instrumented master runtime and must match the complete `main.py` AST after `_world_coord_*` instrumentation is stripped.
+- The temporary master-side `/sd/id2_coordinate_watchdog.log` configuration, buffering, writers, and loop hooks are completely removed, eliminating that SD I/O from production. The `8 s` hardware WDT remains enabled for deadlock recovery.
+- The 28 calibration points, 36 triangles, homography fallback, center-X correction, Y mapping, and UART millimeter units are unchanged. `test_model_blob_fusion.py` now contains 31 tests; together with the 6 projection tests, all 37 pass.
+
+### 2026-07-29 - In development - Target anchors and motion first lock
 
 Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, and the READMEs. This change is OpenART-only; the RT1021 controller is unchanged.
 
@@ -41,7 +53,8 @@ Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fu
 - Before first lock, same-ID candidates outside the radius are rejected and valid candidates are ranked by anchor error before the legacy model rank. Existing image-continuity tracking remains unchanged after lock.
 - Repeated `CID+SEQ` updates move the expected point without clearing directed-search `3/5` evidence; a new sequence represents a new physical instance and resets visual acquisition.
 - The current controller does not send `0x09`, so deploying OpenART alone does not change current car behavior or yet guarantee a shared instance. Future controller integration must transform the same object into each camera's local coordinates using the live left/right slot, fixed spacing, and local odometry during search translation.
-- `test_model_blob_fusion.py` grows from 13 to 17 tests, adding switch fallback, radius gating, sequence identity, signed coordinates, concatenated-frame boundaries, and bad-checksum resynchronization.
+- Ordinary free-search acquisition changes from `5/7` to motion-tolerant `3/5`; centre continuity widens from `24 px` to `36 px`, and size-change tolerance widens from `35%` to `50%`. The initial score remains `0.30`, while exposure and colour-IQR limits remain unchanged. Host-directed colour search already used equivalent `3/5` tolerance.
+- `test_model_blob_fusion.py` grows from 13 to 18 tests, adding the motion first-lock policy, switch fallback, radius gating, sequence identity, signed coordinates, concatenated-frame boundaries, and bad-checksum resynchronization.
 
 ### 2026-07-26 - v1.1.0 - Memory and hot-path optimization release
 

@@ -4,11 +4,13 @@
 
 v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热路径优化：地面网格逆透视改为从上次命中三角形续扫、新增 `u=160` 中心线按行懒缓存、`model_track` 状态由 14 槽缩到 11 槽、LAB 采样与三通道阈值计算消除逐次堆分配、删除一批从未被读取的死代码，并削减导入期峰值内存。除一条行为变更外，全部改动与 v1.0.0 行为逐位等价，由门禁 `test_model_blob_fusion.py` 的 13 项测试（含 `main.py` / `minimain.py` / `world_coordinate_test.py` 三方 AST 同步）保护。**唯一行为变更**：`0x06` 全色前扫命令处理现在额外调用 `reset_yellow_state()`——搬运中收到前扫请求会清空黄线拟合与进度标志，扫描后需重新捕获黄线（v1.0.0 会把黄线状态带进 `MODE_SEARCH`）。检测参数、状态机其余部分、坐标结果与 UART 协议均未改变；模型仍为 `/sd/80lite0.5SS.tflite`，默认曝光仍为 `880 us`。
 
+当前开发版将普通自由搜索的首次锁定由 `5/7` 调整为运动容错的 `3/5`，中心连续性容差由 `24 px` 放宽至 `36 px`，尺寸变化容差由 `35%` 放宽至 `50%`；首锁置信度仍为 `0.30`，曝光和颜色 IQR 不变。模型 / 色块融合恢复省赛冻结版的响应方式：模型几何作为锚点，颜色框只用中心位移带动显示框和坐标框，两者统一采用当前帧 `70%` 的单级平滑，中心移动超过 `36 px` 时当帧直接接管。锁定后的兼容模型结果首次出现即更新，近距离低分模型帧也不再冻结旧坐标。28 点 mesh、36 个三角形、中心 X 修正和 UART 毫米协议保持不变；主车临时 ID2 坐标 watchdog 日志已完整删除，正式循环不做 SD 日志 I/O。
+
 ## 工程概览
 
 这是全国大学生智能汽车竞赛双车接力方案的**视觉侧**仓库。每辆车由两块板组成：NXP RT1021 底盘主控负责运动控制与任务调度（代码在独立工程维护，不在本仓库），OpenART Plus 视觉板运行本仓库脚本，负责物块识别与世界坐标解算。视觉板作为主控的 UART 从设备（两车均为 `UART12`、`115200 bps`）：接收主控的命令帧（`0xAA 0x55` 帧头 + 单字节命令码 + 参数 + 校验和，如 `0x03` 指定颜色、`0x06` 全色前扫、`0x08` 清零完成记录、`0x09` 指定同 ID 目标锚点），持续回发 16 字节坐标包，其中目标世界 X/Y 以**毫米**发送。
 
-双车角色：主车运行 `main.py`，负责搬运全流程，含越过黄线记完成、回库黄线引导；从车运行 `minimain.py`，为搬运从机，搬运结束后提交待完成 ID。两份入口为各自车辆的固定入口（不再保留 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关），检测管线一致：TFLite 模型负责发现、类别确认和重捕，动态 LAB 色块确认后负责完整显示框，其底边接触点经独立稳定后送入 28 点地面网格逆透视得到世界坐标。
+双车角色：主车运行 `main.py`，负责搬运全流程，含越过黄线记完成、回库黄线引导；从车运行 `minimain.py`，为搬运从机，搬运结束后提交待完成 ID。两份入口为各自车辆的固定入口（不再保留 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关），检测管线一致：TFLite 模型负责发现、类别确认和重捕，动态 LAB 色块负责确认目标并提供中心位移，模型拥有的显示 / 坐标几何随该位移移动，平滑后的底边接触点再送入 28 点地面网格解算世界坐标。
 
 省赛基线 v0.11.0 保存在提交 `41260c0` 以及分支 `dedicated-model`、`archive/v0.11.0-ground-mesh`；完整迭代历史见 [中文更新日志](README_ch.md) 与 [English changelog](README_en.md)。
 
@@ -16,8 +18,8 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 
 | 文件 | 运行位置 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v1.1.0 主车正式入口（2650 行） |
-| `minimain.py` | OpenART Plus / 从车 | v1.1.0 从车正式入口（2376 行） |
+| `main.py` | OpenART Plus / 主车 | v1.1.0 主车正式入口（2782 行） |
+| `minimain.py` | OpenART Plus / 从车 | v1.1.0 从车正式入口（2532 行） |
 | `world_coordinate_test.py` | OpenART Plus / IDE | 与主车完整检测对齐的全类别世界坐标观察脚本 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点（文件名沿用旧名） |
@@ -73,10 +75,12 @@ AA 55 09 CID X_LO X_HI Y_LO Y_HI RADIUS_CM SEQ CHECKSUM
 - 标定源为 `ground_mesh_24_points_template.csv`，文件名沿用旧名，实际包含 `7 x 4 = 28` 个点。
 - 图像链路固定为 QVGA、`vflip=True`、软件水平镜像、不使用 `lens_corr()`。
 - 目标底边中点 `x + w/2, y + h - 0.5` 作为地面接触点。
-- 显示框继续使用当前帧 `35%` 的平滑；世界坐标原始位置改用独立的当前帧 `50%` 权重，以更快跟随正常运动。参数为 `OUTPUT_SMOOTH_ALPHA_X100` 和 `COORDINATE_SMOOTH_ALPHA_X100`。
-- 接触点保留 `2 px` 空间死区抑制静止抖动；单次偏移达到 `18 px` 时当帧直接跳到新位置，避免快速接近时坐标落后。参数为 `COORDINATE_CONTACT_DEADBAND_PX` 和 `COORDINATE_CONTACT_RESET_PX`。
+- 模型刷新帧只在模型框内缩区域搜索颜色：左右各缩 `5%`、顶部缩 `5%`、底部缩 `10%`，并忽略旧颜色框引用。模型几何作为锚点；后续颜色框的尺寸变化不会改变坐标几何，只有颜色框中心位移会同步平移显示框和坐标框。
+- 显示框和坐标框统一使用省赛冻结版的单级平滑：当前值 `70%`、上一值 `30%`；框中心移动超过 `36 px` 时当帧直接采用新框。唯一参数为 `OUTPUT_SMOOTH_ALPHA_X100=70` 和 `OUTPUT_SMOOTH_RESET_CENTER2=36*36`。
+- 已删除独立坐标 EMA、接触点死区、近距离降权和跳变二次确认。锁定后的兼容模型候选首次推理即更新；任何距离下的新模型几何均参与同一 `70%` 跟随，不再因低分保持旧坐标。只有真实检测丢失时仍沿用既有的有限帧保持 / 重捕状态机。
 - 网格内使用 36 个三角形插值，网格外使用全局单应矩阵回退。v1.1.0 起三角形扫描从上次命中的网格单元续扫（连续接触点几乎总在同一单元），插值结果与逐一扫描逐位一致。
 - 板内坐标单位为厘米，16 字节 UART 包中的 X/Y 仍发送**毫米**。
+- 主车继续保留 `8 s` 硬件 WDT 防死锁；它与已删除的 ID2 坐标 watchdog 日志无关。主从正式入口都不创建或写入 `id2_coordinate_watchdog.log`。
 
 ### 全类别坐标观察
 
@@ -92,7 +96,7 @@ AA 55 09 CID X_LO X_HI Y_LO Y_HI RADIUS_CM SEQ CHECKSUM
 
 `raw_pixel` 是原始色块（无色块时为显示框）的底边中点，画面用小红十字标记；`stable_pixel` 是实际送入逆透视的稳定接触点，画面用大黄十字标记。`delta_px` 是稳定点相对原始点的位移；`world_cm` 是居中修正后的逆投影结果；`world_mm` 是测试脚本 UART 包采用的四舍五入毫米值；`uncentered_x` 是旧标定 X，`x_bias` 是本行被扣除的旧中心偏置。`source=HELD/TRACK/MODEL_FRAME` 分别表示保持帧、普通跟踪帧和模型刷新帧。
 
-该稳定层只处理接触像素，不修改 28 个标定点、36 个三角形、单应回退、Y 映射或 UART 单位；完整色块仍决定屏幕显示框。
+`stable_pixel` 来自显示 / 坐标框共用的省赛式 `70%` 单级跟随，不再经过独立接触点滤波。该跟随层不修改 28 个标定点、36 个三角形、单应回退、Y 映射或 UART 单位；目标重新锁定或 ID 切换时会重新建立模型 / 色块中心锚点，不沿用上一个物体的位置。
 
 启动时应看到：
 
@@ -119,6 +123,6 @@ python -m py_compile main.py minimain.py world_coordinate_test.py calibrate_grou
 git diff --check
 ```
 
-`test_model_blob_fusion.py` 当前共 17 项，覆盖模型/色块融合回归、锚点开关与半径门控、序号身份、UART 有符号坐标/粘包/坏校验，以及 `main.py` / `minimain.py` / `world_coordinate_test.py` 的三方 AST 同步（观察脚本剔除 `_world_coord_*` 插桩后必须与 `main.py` 一致）。`test_ground_projection.py` 共 6 项，覆盖三方地面投影代码块逐字节一致、28 个标定点回代精度、全幅 QVGA 坐标有界与毫米单位换算；其提取 harness 已在 v1.1.0 适配 `_mesh_last_triangle` 续扫全局与 `center_line_world_x_for_row` 行缓存，两套测试全绿方可提交。
+`test_model_blob_fusion.py` 当前共 31 项，覆盖模型 / 色块中心锚定、省赛式单级跟随、模型首帧即时更新、近距离低分帧即时跟随、旧坐标滤波路径删除、运动首锁、锚点门控、UART 边界，以及 `main.py` / `minimain.py` / `world_coordinate_test.py` 的三方 AST 同步（观察脚本剔除 `_world_coord_*` 插桩后必须与 `main.py` 一致）。`test_ground_projection.py` 共 6 项，覆盖三方地面投影代码块逐字节一致、28 个标定点回代精度、全幅 QVGA 坐标有界与毫米单位换算；两套测试合计 37 项，全绿方可提交。
 
 `raw_ground_projection_test.py` 继续用于红沙包采点和标定复核；`world_coordinate_test.py` 用于按正式全类别检测流程观察最终坐标。完整版本说明、误差数据和历史记录见 [中文更新日志](README_ch.md) 与 [English changelog](README_en.md)。
