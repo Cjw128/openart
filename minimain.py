@@ -9,9 +9,8 @@ EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
 ENABLE_COMPLETED_COLOR_EXCLUSION = False
 ID2_ABSOLUTE_PRIORITY = True
-# Optional instance-level gate. With no 0x09 anchor command, behavior remains
-# identical to the legacy color-only 0x03 mode.
-ENABLE_TARGET_ANCHOR_LOCK = True
+# 0x09 enumerates every visible candidate of one color without changing the
+# active tracker. The controller selects an exact candidate with 0x0A.
 # ================== END QUICK MATCH SETTINGS ==================
 import sensor, gc, math
 try:
@@ -314,12 +313,11 @@ target_color_id = 0
 host_color_id_received = False
 completed_color_mask = 0
 pending_carry_color_id = 0
-target_anchor_active = False
-target_anchor_color_id = 0
-target_anchor_x_cm = 0.0
-target_anchor_y_cm = 0.0
-target_anchor_radius_cm = 0.0
-target_anchor_sequence = 0
+target_scan_requested = False
+target_scan_color_id = 0
+target_scan_sequence = 0
+target_scan_result_sequence = -1
+target_scan_candidates = []
 color_track_active = False
 color_track_box = None
 color_track_coordinate_box = None
@@ -328,8 +326,10 @@ color_lost_count = 0
 _cmd_rx_buf = bytearray()
 front_scan_requested = False
 CMD_CLEAR_COMPLETED = 0x08
-TARGET_ANCHOR_COMMAND = 0x09
-TARGET_ANCHOR_FRAME_SIZE = 11
+TARGET_SCAN_COMMAND = 0x09
+TARGET_SELECT_COMMAND = 0x0A
+TARGET_COMMAND_FRAME_SIZE = 6
+TARGET_CANDIDATE_PACKET_ID = 0xC9
 FRONT_SCAN_PACKET_ID = 0xC7
 FRONT_SCAN_EXCLUDE_IOU = 0.20
 FRONT_SCAN_EXCLUDE_CENTER_PX = 35
@@ -405,83 +405,45 @@ def active_selected_color_id():
     if 1 <= model_color[0] <= len(all_color_thresholds):
         return model_color[0]
     return 0
-def clear_target_anchor():
-    global target_anchor_active, target_anchor_color_id
-    global target_anchor_x_cm, target_anchor_y_cm
-    global target_anchor_radius_cm, target_anchor_sequence
-    target_anchor_active = False
-    target_anchor_color_id = 0
-    target_anchor_x_cm = 0.0
-    target_anchor_y_cm = 0.0
-    target_anchor_radius_cm = 0.0
-    target_anchor_sequence = 0
-def update_target_anchor(color_id, x_mm, y_mm, radius_cm, sequence):
-    global target_anchor_active, target_anchor_color_id
-    global target_anchor_x_cm, target_anchor_y_cm
-    global target_anchor_radius_cm, target_anchor_sequence
-    same_instance = (target_anchor_active and
-                     target_anchor_color_id == color_id and
-                     target_anchor_sequence == sequence)
-    target_anchor_active = True
-    target_anchor_color_id = color_id
-    target_anchor_x_cm = x_mm * 0.1
-    target_anchor_y_cm = y_mm * 0.1
-    target_anchor_radius_cm = float(radius_cm)
-    target_anchor_sequence = sequence
-    return same_instance
-def target_anchor_enabled_for(color_id):
-    return (ENABLE_TARGET_ANCHOR_LOCK and target_anchor_active and
-            color_id == target_anchor_color_id and
-            target_anchor_radius_cm > 0.0)
-def target_anchor_world_distance2(color_id, world_point):
-    if not target_anchor_enabled_for(color_id) or world_point is None:
-        return None
-    dx = world_point[0] - target_anchor_x_cm
-    dy = world_point[1] - target_anchor_y_cm
-    distance2 = dx * dx + dy * dy
-    if distance2 > target_anchor_radius_cm * target_anchor_radius_cm:
-        return None
-    return distance2
-def target_anchor_candidate_distance2(label, box):
-    if not target_anchor_enabled_for(target_color_id):
-        return None
-    if (label < 0 or label >= len(MODEL_COLOR_IDS) or
-            target_anchor_color_id not in MODEL_COLOR_IDS[label]):
-        return None
-    return target_anchor_world_distance2(
-        target_color_id, box_to_world(box[0], box[1], box[2], box[3]))
-def target_anchor_model_rank(label, box, base_rank):
-    if not target_anchor_enabled_for(target_color_id):
-        return base_rank
-    distance2 = target_anchor_candidate_distance2(label, box)
-    if distance2 is None:
-        return None
-    return (-distance2, base_rank)
-def apply_target_anchor_command(color_id, x_mm, y_mm, radius_cm, sequence):
+def clear_target_scan():
+    global target_scan_requested, target_scan_color_id
+    global target_scan_sequence, target_scan_result_sequence
+    target_scan_requested = False
+    target_scan_color_id = 0
+    target_scan_sequence = 0
+    target_scan_result_sequence = -1
+    target_scan_candidates[:] = []
+def apply_target_scan_command(color_id, sequence):
     global lost_frame_count, target_color_id, host_color_id_received
+    global target_scan_requested, target_scan_color_id
+    global target_scan_sequence, target_scan_result_sequence
     if color_id < 1 or color_id > len(all_color_thresholds):
         return False
     if not color_id_available_for_search(color_id):
         reset_target_tracking_state()
         return False
     same_target = host_color_id_received and target_color_id == color_id
-    anchor_requested = ENABLE_TARGET_ANCHOR_LOCK and radius_cm > 0
-    if anchor_requested:
-        same_instance = update_target_anchor(
-            color_id, x_mm, y_mm, radius_cm, sequence)
-    else:
-        clear_target_anchor()
-        same_instance = same_target
     target_color_id = color_id
     host_color_id_received = True
     lost_frame_count = 0
-    if anchor_requested:
-        if not same_instance:
-            reset_hybrid_tracking()
-            model_color[3] = True
-    elif not same_target:
+    if not same_target:
         apply_host_hybrid_color(color_id)
-    return same_instance
+    target_scan_requested = True
+    target_scan_color_id = color_id
+    target_scan_sequence = int(sequence) & 0xFF
+    target_scan_result_sequence = -1
+    target_scan_candidates[:] = []
+    return True
+def apply_target_selection_command(sequence, candidate_index):
+    if (int(sequence) != target_scan_result_sequence or
+            candidate_index < 0 or
+            candidate_index >= len(target_scan_candidates)):
+        return False
+    candidate = target_scan_candidates[candidate_index]
+    if not commit_target_scan_candidate(candidate):
+        return False
+    clear_target_scan()
+    return True
 def reset_target_tracking_state():
     global lost_frame_count
     global target_color_id, host_color_id_received
@@ -495,7 +457,7 @@ def reset_target_tracking_state():
     color_track_coordinate_box = None
     color_track_color_id = 0
     color_lost_count = 0
-    clear_target_anchor()
+    clear_target_scan()
     reset_hybrid_tracking()
 def reset_return_yellow_state():
     global return_yellow_last_y, return_yellow_stable_count
@@ -1380,9 +1342,6 @@ def run_model_best(img):
                            if host_forced_target_active()
                            else FIRST_LOCK_REQUIRED_HITS)
                 rank = model_acquire_rank(box, score)
-                rank = target_anchor_model_rank(label, box, rank)
-                if rank is None:
-                    continue
             if best is None or rank > best_rank:
                 best = (label, box, score, confirm)
                 best_rank = rank
@@ -1955,19 +1914,9 @@ def accept_first_lock_candidate(candidate):
             first_lock_pending_color_ids.append(color_id)
             first_lock_pending_color_thresholds.append(color_threshold)
         else:
-            if target_anchor_enabled_for(target_color_id):
-                candidate_distance2 = target_anchor_candidate_distance2(
-                    label, box)
-                pending_distance2 = target_anchor_candidate_distance2(
-                    first_lock_pending_label, first_lock_pending_box)
-                candidate_preferred = (
-                    candidate_distance2 is not None and
-                    (pending_distance2 is None or
-                     candidate_distance2 < pending_distance2))
-            else:
-                candidate_preferred = (
-                    model_box_distance(box) + FIRST_LOCK_NEARER_MARGIN_CM <
-                    model_box_distance(first_lock_pending_box))
+            candidate_preferred = (
+                model_box_distance(box) + FIRST_LOCK_NEARER_MARGIN_CM <
+                model_box_distance(first_lock_pending_box))
             if candidate_preferred:
                 begin_first_lock_pending(candidate)
                 return False
@@ -2329,6 +2278,131 @@ def tracking_world_point(color_id, coordinate_box):
     return box_to_world(
         coordinate_box[0], coordinate_box[1],
         coordinate_box[2], coordinate_box[3])
+
+def target_candidate_coordinate_box(label, box):
+    contact_x = box[0] + box[2] * 0.5 + MODEL_CONTACT_OFF_X[label]
+    contact_y = box[1] + box[3] + MODEL_CONTACT_OFF_Y[label]
+    return box_from_center(contact_x, contact_y - box[3] * 0.5,
+                           box[2], box[3])
+def collect_target_scan_candidates(img):
+    global model_infer_error_count, model_last_frame
+    if (not model_runtime_enabled or model_net is None or
+            not color_id_available_for_search(target_scan_color_id)):
+        return []
+    desired_label = color_id_to_model_label(target_scan_color_id)
+    if desired_label < 0:
+        return []
+    try:
+        model_last_frame = frame_count
+        objects = tf.detect(model_net, model_copy_frame(img))
+        model_infer_error_count = 0
+    except Exception as error:
+        model_infer_error_count += 1
+        if model_infer_error_count >= 3:
+            disable_model_runtime(
+                'three target-scan inference failures: ' + str(error))
+        return []
+    candidates = []
+    frame_width = img.width()
+    frame_height = img.height()
+    for obj in objects:
+        x1, y1, x2, y2, label_value, score_value = obj
+        label = int(label_value)
+        score = float(score_value)
+        if label != desired_label or score < HOST_FORCED_FIRST_LOCK_SCORE_MIN:
+            continue
+        model_x = int(float(x1) * frame_width)
+        y = int(float(y1) * frame_height)
+        w = int((float(x2) - float(x1)) * frame_width)
+        h = int((float(y2) - float(y1)) * frame_height)
+        x = frame_width - model_x - w
+        if (w < MODEL_MIN_BOX_SIDE or h < MODEL_MIN_BOX_SIDE or
+                w * h < MODEL_MIN_BOX_AREA):
+            continue
+        box = raw_model_box(x, y, w, h)
+        if (ENABLE_TENNIS_LINE_FILTER and label == 1 and
+                tennis_candidate_is_yellow_line(img, box)):
+            continue
+        matches, sampled = model_candidate_matches_requested_color(
+            img, label, box)
+        if not matches or sampled is None:
+            continue
+        coordinate_box = target_candidate_coordinate_box(label, box)
+        world_point = tracking_world_point(target_scan_color_id,
+                                           coordinate_box)
+        if world_point is None:
+            continue
+        candidates.append((label, box, score, sampled, world_point))
+    candidates.sort(key=lambda candidate:
+                    candidate[1][0] + candidate[1][2] * 0.5)
+    return candidates
+def commit_target_scan_candidate(candidate):
+    global target_color_id, host_color_id_received, model_last_score
+    label, box, score, sampled, _world_point = candidate
+    color_id, color_threshold = sampled
+    if (color_id != target_scan_color_id or
+            color_id_to_model_label(color_id) != label):
+        return False
+    reset_hybrid_tracking()
+    target_color_id = color_id
+    host_color_id_received = True
+    model_lock[0] = label
+    model_lock[1] = box
+    model_lock[2:6] = [-1, None, 0, 0]
+    model_color[:] = [color_id, 0, 0, True]
+    if not observe_model_box(label, box):
+        reset_hybrid_tracking()
+        return False
+    if color_threshold is not None:
+        existing = adaptive_color_thresholds[color_id - 1]
+        adaptive_color_thresholds[color_id - 1] = (
+            color_threshold if existing is None else blend_threshold(
+                existing, color_threshold, COLOR_DYNAMIC_UPDATE_ALPHA_X100))
+    model_last_score = score
+    return True
+
+_tx_target_candidate_buf = bytearray(12)
+_tx_target_candidate_buf[0] = 0xAA
+_tx_target_candidate_buf[1] = 0x55
+_tx_target_candidate_buf[2] = TARGET_CANDIDATE_PACKET_ID
+def send_target_candidate(sequence, candidate_index, candidate_total,
+                          color_id, world_point):
+    data = _tx_target_candidate_buf
+    wx_mm = 0 if world_point is None else world_cm_to_mm(world_point[0])
+    wy_mm = 0 if world_point is None else world_cm_to_mm(world_point[1])
+    data[3] = int(sequence) & 0xFF
+    data[4] = int(candidate_index) & 0xFF
+    data[5] = int(candidate_total) & 0xFF
+    data[6] = int(color_id) & 0xFF
+    data[7] = wx_mm & 0xFF
+    data[8] = (wx_mm >> 8) & 0xFF
+    data[9] = wy_mm & 0xFF
+    data[10] = (wy_mm >> 8) & 0xFF
+    checksum = 0
+    for index in range(2, 11):
+        checksum += data[index]
+    data[11] = checksum & 0xFF
+    uart.write(data)
+def process_target_scan_request(img):
+    global target_scan_requested, target_scan_result_sequence
+    if not target_scan_requested:
+        return False
+    target_scan_requested = False
+    candidates = collect_target_scan_candidates(img)
+    target_scan_candidates[:] = candidates
+    target_scan_result_sequence = target_scan_sequence
+    total = len(candidates)
+    if total <= 0:
+        send_target_candidate(target_scan_sequence, 0, 0,
+                              target_scan_color_id, None)
+        return True
+    for index in range(total):
+        candidate = candidates[index]
+        send_target_candidate(target_scan_sequence, index, total,
+                              target_scan_color_id, candidate[4])
+        img.draw_rectangle(candidate[1], color=(255, 255, 0), thickness=1)
+    return True
+
 _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)
 _tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
@@ -2391,52 +2465,39 @@ def receive_command_from_host():
         if len(_cmd_rx_buf) < 4:
             return
         command = _cmd_rx_buf[2]
-        if command == TARGET_ANCHOR_COMMAND:
-            if len(_cmd_rx_buf) < TARGET_ANCHOR_FRAME_SIZE:
-                return
-            param = _cmd_rx_buf[3]
-            x_mm = _cmd_rx_buf[4] | (_cmd_rx_buf[5] << 8)
-            y_mm = _cmd_rx_buf[6] | (_cmd_rx_buf[7] << 8)
-            if x_mm >= 0x8000:
-                x_mm -= 0x10000
-            if y_mm >= 0x8000:
-                y_mm -= 0x10000
-            anchor_radius_cm = _cmd_rx_buf[8]
-            anchor_sequence = _cmd_rx_buf[9]
-            checksum_recv = _cmd_rx_buf[10]
-            checksum_calc = 0
-            for i in range(2, TARGET_ANCHOR_FRAME_SIZE - 1):
-                checksum_calc = (checksum_calc + _cmd_rx_buf[i]) & 0xFF
-            frame_len = TARGET_ANCHOR_FRAME_SIZE
+        if command == TARGET_SCAN_COMMAND or command == TARGET_SELECT_COMMAND:
+            frame_len = TARGET_COMMAND_FRAME_SIZE
         elif command == 0x03 or command == 0x04:
-            if len(_cmd_rx_buf) < 5:
-                return
-            param = _cmd_rx_buf[3]
-            checksum_recv = _cmd_rx_buf[4]
-            checksum_calc = (command + param) & 0xFF
             frame_len = 5
         else:
-            param = 0
-            checksum_recv = _cmd_rx_buf[3]
-            checksum_calc = command & 0xFF
             frame_len = 4
+        if len(_cmd_rx_buf) < frame_len:
+            return
+        if frame_len == TARGET_COMMAND_FRAME_SIZE:
+            param = _cmd_rx_buf[3]
+            target_command_value = _cmd_rx_buf[4]
+            checksum_calc = 0
+            for i in range(2, frame_len - 1):
+                checksum_calc = (checksum_calc + _cmd_rx_buf[i]) & 0xFF
+        else:
+            param = _cmd_rx_buf[3] if frame_len == 5 else 0
+            checksum_calc = (command + param) & 0xFF
+        checksum_recv = _cmd_rx_buf[frame_len - 1]
         if checksum_calc != checksum_recv:
             _cmd_rx_buf = _cmd_rx_buf[2:]
             continue
         _cmd_rx_buf = _cmd_rx_buf[frame_len:]
-        if command == TARGET_ANCHOR_COMMAND:
-            apply_target_anchor_command(
-                param, x_mm, y_mm, anchor_radius_cm, anchor_sequence)
+        if command == TARGET_SCAN_COMMAND:
+            apply_target_scan_command(param, target_command_value)
+        elif command == TARGET_SELECT_COMMAND:
+            apply_target_selection_command(param, target_command_value)
         elif command == 0x03:
             if 1 <= param <= len(all_color_thresholds):
                 if not color_id_available_for_search(param):
                     reset_target_tracking_state()
                 else:
                     same_target = host_color_id_received and target_color_id == param
-                    if (target_anchor_active and
-                            (not ENABLE_TARGET_ANCHOR_LOCK or
-                             target_anchor_color_id != param)):
-                        clear_target_anchor()
+                    clear_target_scan()
                     target_color_id = param
                     host_color_id_received = True
                     lost_frame_count = 0
@@ -2467,7 +2528,7 @@ def receive_command_from_host():
         elif command == 0x07:
             first_lock_reset_cycle_active = False
             reset_first_lock_pending()
-            clear_target_anchor()
+            clear_target_scan()
             openart_mode = MODE_RETURN
             front_scan_requested = False
             reset_front_scan_state()
@@ -2500,6 +2561,11 @@ while True:
     # 额外的 lab_frame 条件只会多产生一次空调用，这里用同一条件即可。
     if frame_count % CUT_UPDATE_INTERVAL == 0:
         update_dynamic_cut(img, frame_count)
+    if process_target_scan_request(img):
+        if not send_front_scan_target_hold(img):
+            send_world_no_target()
+        maybe_collect(frame_count)
+        continue
     if process_front_scan_request(img):
         send_front_scan_target_hold(img)
         maybe_collect(frame_count)
