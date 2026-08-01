@@ -33,6 +33,17 @@
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
 
+### 2026-08-01 - 开发中 - 同色候选枚举与精确确认
+
+范围：`main.py`、`minimain.py` 与三份 README。该协议替代 2026-07-29 引入的试验性目标锚点方案；当前 RT1021 主控必须同步升级，旧 11 字节 `0x09` 帧不再兼容。
+
+- 删除 `ENABLE_TARGET_ANCHOR_LOCK`、坐标 / 半径锚点状态、锚点距离门控和锚点优先排名。未锁定时恢复原有按世界 Y 距离选择候选的规则。
+- 新的 `0x09` 为 6 字节枚举命令：`AA 55 09 CID SEQ CHECKSUM`。OpenART 对指定颜色执行一次独立模型推理，以模型类别、`0.25` 主控指定搜索门槛、LAB 颜色、网球黄线过滤和有效世界坐标筛选候选，并按图像水平中心从左到右排序。枚举结果只保存为事务快照，不直接提交某个候选。
+- 每个候选以 12 字节 `0xC9` 包上报：`AA 55 C9 SEQ INDEX TOTAL CID X_LO X_HI Y_LO Y_HI CHECKSUM`。坐标为当前相机局部世界坐标下的 little-endian 有符号毫米；无候选时发送一包 `INDEX=0`、`TOTAL=0`、X/Y 为 0 的结果。候选包之后仍发送现有 16 字节目标保持包或无目标包。
+- 新的 `0x0A` 为 6 字节确认命令：`AA 55 0A SEQ INDEX CHECKSUM`。仅当序号匹配最近一次完成的枚举且索引有效时，才以候选快照中的模型框和 LAB 样本建立跟踪锁；确认后清空事务。
+- 两种下行命令的校验均为 `sum(CMD..VALUE) & 0xFF`，候选上行包校验为 `sum(C9..Y_HI) & 0xFF`。新的枚举、普通 `0x03` 指定颜色、目标重置和回库都会使旧事务失效。
+- `main.py` 与 `minimain.py` 的 8 个新增扫描 / 确认函数 AST 完全一致；两份脚本通过语法检查、坏校验重同步与连续 `0x09` / `0x0A` 帧边界回归，6 项地面投影测试全绿。`world_coordinate_test.py` 以及 `test_model_blob_fusion.py` 中 4 项旧锚点测试和 2 项三方 AST 门禁尚待迁移。
+
 ### 2026-07-31 - 开发中 - 省赛式坐标跟随恢复与框架同步
 
 范围：`main.py`、`minimain.py`、`world_coordinate_test.py`、`test_model_blob_fusion.py`、README；只修改 OpenART 视觉端，保留当前 28 点 mesh，RT1021 主控端未修改。

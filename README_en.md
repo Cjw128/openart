@@ -33,6 +33,17 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
 
+### 2026-08-01 - In development - Same-color candidate enumeration and exact selection
+
+Scope: `main.py`, `minimain.py`, and the three READMEs. This protocol replaces the experimental target-anchor design introduced on 2026-07-29. The RT1021 controller must be updated with it; the old 11-byte `0x09` frame is no longer wire-compatible.
+
+- Removed `ENABLE_TARGET_ANCHOR_LOCK`, coordinate/radius anchor state, anchor-distance gating, and anchor-first ranking. Unlocked acquisition returns to the existing world-Y distance ordering.
+- The new `0x09` is a 6-byte enumeration command: `AA 55 09 CID SEQ CHECKSUM`. OpenART runs one dedicated inference for the requested color, filters candidates by model class, the `0.25` host-directed score threshold, LAB color, tennis yellow-line rejection, and a valid world coordinate, then orders them by image center from left to right. The result is retained as a transaction snapshot and does not itself commit a candidate.
+- Each candidate is reported in a 12-byte `0xC9` packet: `AA 55 C9 SEQ INDEX TOTAL CID X_LO X_HI Y_LO Y_HI CHECKSUM`. Coordinates are signed little-endian millimetres in the current camera-local world frame. An empty result still sends one packet with `INDEX=0`, `TOTAL=0`, and zero X/Y. The runtime then emits the existing 16-byte held-target or no-target packet after all candidate packets.
+- The new `0x0A` is a 6-byte selection command: `AA 55 0A SEQ INDEX CHECKSUM`. It establishes the tracking lock from the candidate snapshot's model box and LAB sample only when the sequence matches the most recently completed enumeration and the index is valid; a successful selection clears the transaction.
+- Both downlink checksums are `sum(CMD..VALUE) & 0xFF`; the candidate uplink checksum is `sum(C9..Y_HI) & 0xFF`. A new enumeration, ordinary `0x03` color selection, target reset, or return command invalidates the previous transaction.
+- The eight new scan/selection functions are AST-identical in `main.py` and `minimain.py`. Both scripts pass syntax checks and a protocol regression covering bad-checksum resynchronization plus adjacent `0x09` / `0x0A` frame boundaries; all 6 ground-projection tests pass. `world_coordinate_test.py`, four old anchor tests in `test_model_blob_fusion.py`, and two three-way AST gates still need migration.
+
 ### 2026-07-31 - In development - Provincial coordinate following and framework synchronization
 
 Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, and the READMEs. This is an OpenART-only change; the current 28-point mesh is retained and the RT1021 controller is unchanged.

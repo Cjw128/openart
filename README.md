@@ -6,9 +6,11 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 
 当前开发版将普通自由搜索的首次锁定由 `5/7` 调整为运动容错的 `3/5`，中心连续性容差由 `24 px` 放宽至 `36 px`，尺寸变化容差由 `35%` 放宽至 `50%`；首锁置信度仍为 `0.30`，曝光和颜色 IQR 不变。模型 / 色块融合恢复省赛冻结版的响应方式：模型几何作为锚点，颜色框只用中心位移带动显示框和坐标框，两者统一采用当前帧 `70%` 的单级平滑，中心移动超过 `36 px` 时当帧直接接管。锁定后的兼容模型结果首次出现即更新，近距离低分模型帧也不再冻结旧坐标。新增 `ENABLE_COMPLETED_COLOR_EXCLUSION` 独立控制已完成颜色是否排除，默认关闭，需要“第一个 ID2、之后只从未完成颜色中选最近目标”时再开启。28 点 mesh、36 个三角形、中心 X 修正和 UART 毫米协议保持不变；主车临时 ID2 坐标 watchdog 日志已完整删除，正式循环不做 SD 日志 I/O。
 
+2026-08-01 开发版已删除试验性的坐标 / 半径锚点协议，改为两阶段同色目标选择：主控用 `0x09` 请求 OpenART 枚举指定颜色的全部可用候选，OpenART 以 `0xC9` 包逐个回传候选索引与世界坐标，主控再用 `0x0A` 确认精确候选。该协议已在 `main.py` 与 `minimain.py` 同步，且与旧 11 字节 `0x09` 帧不兼容。
+
 ## 工程概览
 
-这是全国大学生智能汽车竞赛双车接力方案的**视觉侧**仓库。每辆车由两块板组成：NXP RT1021 底盘主控负责运动控制与任务调度（代码在独立工程维护，不在本仓库），OpenART Plus 视觉板运行本仓库脚本，负责物块识别与世界坐标解算。视觉板作为主控的 UART 从设备（两车均为 `UART12`、`115200 bps`）：接收主控的命令帧（`0xAA 0x55` 帧头 + 单字节命令码 + 参数 + 校验和，如 `0x03` 指定颜色、`0x06` 全色前扫、`0x08` 清零完成记录、`0x09` 指定同 ID 目标锚点），持续回发 16 字节坐标包，其中目标世界 X/Y 以**毫米**发送。
+这是全国大学生智能汽车竞赛双车接力方案的**视觉侧**仓库。每辆车由两块板组成：NXP RT1021 底盘主控负责运动控制与任务调度（代码在独立工程维护，不在本仓库），OpenART Plus 视觉板运行本仓库脚本，负责物块识别与世界坐标解算。视觉板作为主控的 UART 从设备（两车均为 `UART12`、`115200 bps`）：接收主控的命令帧（`0xAA 0x55` 帧头 + 单字节命令码 + 参数 + 校验和，如 `0x03` 指定颜色、`0x06` 全色前扫、`0x08` 清零完成记录、`0x09` 枚举同色候选、`0x0A` 确认候选），持续回发 16 字节坐标包；处理 `0x09` 时另以 12 字节 `0xC9` 包回传候选，所有世界 X/Y 均以**毫米**发送。
 
 双车角色：主车运行 `main.py`，负责搬运全流程，含越过黄线记完成、回库黄线引导；从车运行 `minimain.py`，为搬运从机，搬运结束后提交待完成 ID。两份入口为各自车辆的固定入口（不再保留 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关），检测管线一致：TFLite 模型负责发现、类别确认和重捕，动态 LAB 色块负责确认目标并提供中心位移，模型拥有的显示 / 坐标几何随该位移移动，平滑后的底边接触点再送入 28 点地面网格解算世界坐标。
 
@@ -18,8 +20,8 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 
 | 文件 | 运行位置 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v1.1.0 主车正式入口（2785 行） |
-| `minimain.py` | OpenART Plus / 从车 | v1.1.0 从车正式入口（2535 行） |
+| `main.py` | OpenART Plus / 主车 | v1.1.0 主车正式入口（2868 行） |
+| `minimain.py` | OpenART Plus / 从车 | v1.1.0 从车正式入口（2604 行） |
 | `world_coordinate_test.py` | OpenART Plus / IDE | 与主车完整检测对齐的全类别世界坐标观察脚本 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点（文件名沿用旧名） |
@@ -58,23 +60,34 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 
 设为 `True` 后启用候选排除，已完成颜色立即按现有记录退出普通搜索和主控指定；此时第一个仍为 ID2，ID2 完成后第二个由 ID1/ID3/ID4/ID5 中世界 Y 最近者产生，后续继续从未完成颜色中选择。再次关闭不会清空完成位。若希望从第一轮起所有颜色都参与竞争，需要同时将 `ID2_ABSOLUTE_PRIORITY=False`。
 
-## 同 ID 目标锚点开关
+## 同 ID 目标候选枚举与确认
 
-三份当前入口顶部均有 `ENABLE_TARGET_ANCHOR_LOCK`，默认值为 `True`。该值只表示允许使用锚点；在没有收到有效 `0x09` 帧时，候选筛选与原 `0x03` 最近目标模式完全一致。设为 `False` 后，程序仍会完整接收 `0x09` 并按其中的 `CID` 搜索，但忽略 X/Y、半径和序号，等价退回旧模式，不会破坏串口帧同步。`RADIUS_CM=0` 也可让单条 `0x09` 按旧模式处理。
+当前 `main.py` 与 `minimain.py` 使用两阶段事务选择同色物体。旧的 `ENABLE_TARGET_ANCHOR_LOCK`、坐标 / 半径锚点状态及 11 字节 `0x09` 帧均已删除。`0x09` 只触发一次专用模型推理并保存候选快照，不会直接确认其中某个候选；主控收到完整候选列表后，再通过 `0x0A` 提交精确索引。
 
-`0x09` 命令共 11 字节：
+两种下行命令均为 6 字节：
 
 ```text
-AA 55 09 CID X_LO X_HI Y_LO Y_HI RADIUS_CM SEQ CHECKSUM
+AA 55 09 CID SEQ CHECKSUM
+AA 55 0A SEQ INDEX CHECKSUM
 ```
 
-- X/Y 为 little-endian 有符号 `int16`，单位毫米，坐标系必须与接收该帧的 OpenART `box_to_world()` 相同，即该车相机当前局部坐标。
-- `RADIUS_CM` 为无符号单字节厘米半径。首次锁定只接纳半径内的同 ID 候选，并以锚点误差最小者优先；锁定后继续使用现有图像连续跟踪，丢失后再受锚点约束重捕。
-- `SEQ` 标识物理实例。同一 `CID+SEQ` 可随车辆平移持续更新 X/Y 和半径，不清空主控指定搜索的 `3/5` 首锁证据；新 `CID` 或新 `SEQ` 会释放旧视觉锁并重新获取。
-- `CHECKSUM = sum(09..SEQ) & 0xFF`，不包含 `AA 55` 和校验字节自身。
-- 重复发送同 CID 的旧 `0x03` 不会取消已生效锚点；切换到其他 CID、`0x00`、首次有效 `0x02`、`0x07` 或 `0x08` 会清除锚点。
+- `CID` 为要枚举的颜色 ID；它仍受 ID 范围、`ID2_ABSOLUTE_PRIORITY` 和已完成颜色排除开关约束。无效或当前不可搜索的 `CID` 不会启动枚举，也不会产生 `0xC9` 结果包。
+- `SEQ` 为主控分配的单字节事务号。新的 `0x09` 会覆盖尚未确认的旧候选列表；`0x0A` 只有在 `SEQ` 与最近一次已完成枚举一致且 `INDEX` 有效时才生效。
+- `INDEX` 从 `0` 开始。确认成功后，OpenART 以该候选的模型框和当次 LAB 颜色样本建立跟踪锁，并清空待确认列表；无效确认被静默忽略且没有专用确认回包，主控从后续常规 16 字节坐标包观察锁定结果。
+- `CHECKSUM = (CMD + PARAM + VALUE) & 0xFF`，不包含 `AA 55` 和校验字节自身。
 
-当前 RT1021 主控代码尚未发送 `0x09`，因此只烧录本次 OpenART 程序不会改变现有整车行为，也还不能保证两车锁定同一实例。后续主控接入时，应由主控根据本轮左右槽位、两车固定间距和各自实时局部里程计，分别换算出同一物体在两块相机当前局部坐标中的预期 X/Y；未看到目标而横移的车辆继续使用同一 `SEQ` 更新坐标。
+每个有效候选使用一个 12 字节上行包：
+
+```text
+AA 55 C9 SEQ INDEX TOTAL CID X_LO X_HI Y_LO Y_HI CHECKSUM
+```
+
+- `TOTAL` 是本次事务的候选总数，同一事务的所有包携带相同 `SEQ`、`TOTAL` 和 `CID`。候选按图像中的水平中心从左到右排序，因此索引在单次快照内稳定。
+- X/Y 为 OpenART 当前 `box_to_world()` 坐标系下的 little-endian 有符号 `int16`，单位毫米。
+- 没有候选时仍回发一个包：`INDEX=0`、`TOTAL=0`、X/Y 均为 0；主控不得对此发送 `0x0A`。
+- `CHECKSUM = sum(C9..Y_HI) & 0xFF`。全部 `0xC9` 包发送完毕后，OpenART 还会按现有协议发送一帧 16 字节目标保持包或无目标包。
+
+候选必须同时通过指定模型类别、主控指定搜索最低分数、LAB 颜色匹配、网球黄线过滤和有效世界坐标检查。普通 `0x03` 指定颜色、目标状态重置、回库或新的 `0x09` 都会使旧事务失效。RT1021 端必须按上述新长度升级；旧的 11 字节 `0x09` 锚点帧与当前解析器不兼容。
 
 ## 世界坐标
 
@@ -120,7 +133,7 @@ AA 55 09 CID X_LO X_HI Y_LO Y_HI RADIUS_CM SEQ CHECKSUM
 python calibrate_ground_camera.py --ground-csv ground_mesh_24_points_template.csv --role master --expected-points 28 --required-near-y-cm 6 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
 ```
 
-v1.1.0 门禁测试——改动 `main.py`、`minimain.py` 或 `world_coordinate_test.py` 后必须全绿再提交：
+检查命令（融合门禁中的旧锚点用例仍待迁移）：
 
 ```powershell
 python -m unittest -v test_model_blob_fusion.py
@@ -129,6 +142,6 @@ python -m py_compile main.py minimain.py world_coordinate_test.py calibrate_grou
 git diff --check
 ```
 
-`test_model_blob_fusion.py` 当前共 32 项，覆盖模型 / 色块中心锚定、省赛式单级跟随、模型首帧即时更新、近距离低分帧即时跟随、旧坐标滤波路径删除、运动首锁、已完成颜色排除开关、锚点门控、UART 边界，以及 `main.py` / `minimain.py` / `world_coordinate_test.py` 的三方 AST 同步（观察脚本剔除 `_world_coord_*` 插桩后必须与 `main.py` 一致）。`test_ground_projection.py` 共 6 项，覆盖三方地面投影代码块逐字节一致、28 个标定点回代精度、全幅 QVGA 坐标有界与毫米单位换算；两套测试合计 38 项，全绿方可提交。
+`test_ground_projection.py` 的 6 项地面投影测试当前全绿。`test_model_blob_fusion.py` 仍有 4 项旧锚点协议测试，以及 2 项依赖尚未同步 `world_coordinate_test.py` 的三方 AST 门禁；它们需要迁移到上述 `0x09` / `0x0A` 协议后才能重新作为全绿门禁。当前主从运行时已通过 Python 语法检查、新增扫描函数 AST 一致性检查，以及坏校验帧后连续解析 `0x09` / `0x0A` 的协议回归。
 
 `raw_ground_projection_test.py` 继续用于红沙包采点和标定复核；`world_coordinate_test.py` 用于按正式全类别检测流程观察最终坐标。完整版本说明、误差数据和历史记录见 [中文更新日志](README_ch.md) 与 [English changelog](README_en.md)。
