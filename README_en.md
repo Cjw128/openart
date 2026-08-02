@@ -16,6 +16,9 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 | `world_coordinate_test.py` | OpenART Plus / IDE | All-class world-coordinate observer aligned with the full master detector |
 | `test_ground_projection.py` | PC | Runtime projection regression tests |
 | `test_model_blob_fusion.py` | PC | Master/slave model-blob fusion regression tests |
+| `test_orbit_y_cut.py` | PC | Fixed-Y orbit crop and UART state regression tests |
+| `test_front_scan_id2_blob.py` | PC | ID2 horizontal-brick front-scan fallback regression tests |
+| `test_front_scan_bear_color.py` | PC | ID4/ID5 bear front-scan classification regression tests |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | Pre-carry front color-blob scan preview script |
 
@@ -32,6 +35,16 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-08-02 - In development - Orbit near-field crop and front-obstacle fallbacks
+
+Scope: `main.py`, `minimain.py`, `test_model_blob_fusion.py`, `test_orbit_y_cut.py`, `test_front_scan_id2_blob.py`, `test_front_scan_bear_color.py`, and the three READMEs. This is an OpenART-only change; the RT1021 controller must send the new short command when orbit begins.
+
+- Added the short `0x0B` frame `AA 55 0B 0B`. With a valid selected target, it enables the full-width `ORBIT_Y_CUT=140`: model candidates must reach `y=140` with their bottom edge, and blob search intersects `y=140..229`. Repeated commands are idempotent; there is no five-frame ROI collection and no added coordinate-output latency.
+- The crop lasts from orbit entry until carry entry. Commands `0x01`, `0x02`, and `0x07`, target reset, a new target enumeration, and target replacement clear it. A `0x06` scan bypasses the crop itself; ordinary tracking resumes with the crop afterward until a clearing command arrives.
+- The `0x06` scan still covers the part of the dynamic valid region above `y=150` and now adds an ID2 color-blob fallback independent of model output. An existing adaptive ID2 threshold is tried first and the base threshold is used when it finds no valid blob. Horizontal shapes with a `0.6..6.0` width/height ratio are allowed while retaining the 70-pixel, `100 px^2`, `0.40` density, dynamic-ground, and current-target filters.
+- Brown and white bears still share one model label, but front scan no longer forces an identity from one LAB median's distance to threshold centers. It counts pixels from the fixed ID4 and ID5 calibration thresholds separately inside the inset model box. A winner needs at least 12 pixels, a 6-pixel lead, and 1.3 times the opposing count; close results remain unknown. Adaptive bear thresholds are not used for identity, preventing an initial mistake from reinforcing itself.
+- The `0xC7` packet, current-target exclusion, distinct-color deduplication, six stable frames, and twelve-frame maximum remain unchanged. All 24 focused orbit/front-scan/projection tests pass. Full discovery passes 50 of 56 tests; the remaining failures are the four obsolete target-anchor tests and two observer three-way AST gates already awaiting migration. Python syntax checks and `git diff --check` pass.
 
 ### 2026-08-01 - In development - Same-color candidate enumeration and exact selection
 

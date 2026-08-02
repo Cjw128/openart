@@ -16,6 +16,9 @@
 | `world_coordinate_test.py` | OpenART Plus / IDE | 与主车完整检测对齐的全类别世界坐标观察脚本 |
 | `test_ground_projection.py` | PC | 运行时投影回归测试 |
 | `test_model_blob_fusion.py` | PC | 主从模型 / 色块融合回归测试 |
+| `test_orbit_y_cut.py` | PC | orbit 固定 Y 裁切与 UART 状态回归测试 |
+| `test_front_scan_id2_blob.py` | PC | ID2 横向红砖前扫补检回归测试 |
+| `test_front_scan_bear_color.py` | PC | ID4/ID5 熊类前扫判色回归测试 |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
 
@@ -32,6 +35,16 @@
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-08-02 - 开发中 - Orbit 近场裁切与前方障碍补检
+
+范围：`main.py`、`minimain.py`、`test_model_blob_fusion.py`、`test_orbit_y_cut.py`、`test_front_scan_id2_blob.py`、`test_front_scan_bear_color.py` 与三份 README。本轮只修改 OpenART 端；RT1021 需在进入 orbit 时发送新增短命令。
+
+- 新增 `0x0B` 短帧 `AA 55 0B 0B`。仅在已有有效选中目标时启用全宽 `ORBIT_Y_CUT=140`：模型候选底边必须到达 `y=140`，色块搜索 ROI 与 `y=140..229` 取交集。重复命令幂等，不采集五帧 ROI，不增加坐标输出延迟。
+- orbit 裁切从进入 orbit 持续到进入搬运；`0x01`、`0x02`、`0x07`、目标重置、新目标枚举和目标切换都会清除。`0x06` 前扫本身绕过裁切，扫描完成后普通跟踪继续保持裁切，直到收到解除命令。
+- `0x06` 继续扫描动态有效区域中 `y < 150` 的部分，并增加不依赖模型框的 ID2 色块补检。已有动态 ID2 阈值时优先使用，未命中再回退基础阈值；横向形状允许 `0.6..6.0` 宽高比，同时保留 70 像素、`100 px²`、`0.40` 密度、动态地面边界和当前目标排除。
+- 棕熊与白熊仍共用模型标签，但前扫不再按单个 LAB 中位数到阈值中心的距离强制二选一。程序在熊模型内缩框中分别统计 ID4、ID5 固定标定阈值像素；结果至少 12 像素、领先至少 6 像素且达到另一方的 1.3 倍才确认，接近时返回未知。动态熊阈值不参与身份判定，避免一次误分后持续强化。
+- `0xC7` 包结构、当前目标排除、不同颜色去重、连续稳定 6 帧和最多观察 12 帧的规则不变。24 项 orbit / 前扫 / 投影定向测试全绿；完整 56 项中 50 项通过，剩余仍是 4 项旧锚点测试与 2 项未同步观察脚本的三方 AST 门禁。Python 语法检查和 `git diff --check` 通过。
 
 ### 2026-08-01 - 开发中 - 同色候选枚举与精确确认
 

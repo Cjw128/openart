@@ -268,6 +268,7 @@ COLOR_TRACK_GATE_OVERLAP_PERCENT = 70
 COLOR_TRACK_AREA_MIN_PERCENT = 40
 COLOR_TRACK_AREA_MAX_PERCENT = 250
 COLOR_TRACK_CENTER_SCALE_X100 = 90
+ORBIT_Y_CUT = 140
 OUTPUT_SMOOTH_ALPHA_X100 = 70
 OUTPUT_SMOOTH_RESET_CENTER2 = 36 * 36
 CONTACT_JITTER_PX = 1.0
@@ -318,6 +319,7 @@ target_scan_color_id = 0
 target_scan_sequence = 0
 target_scan_result_sequence = -1
 target_scan_candidates = []
+orbit_y_cut_active = False
 color_track_active = False
 color_track_box = None
 color_track_coordinate_box = None
@@ -328,6 +330,7 @@ front_scan_requested = False
 CMD_CLEAR_COMPLETED = 0x08
 TARGET_SCAN_COMMAND = 0x09
 TARGET_SELECT_COMMAND = 0x0A
+ORBIT_ROI_COMMAND = 0x0B
 TARGET_COMMAND_FRAME_SIZE = 6
 TARGET_CANDIDATE_PACKET_ID = 0xC9
 FRONT_SCAN_PACKET_ID = 0xC7
@@ -338,6 +341,16 @@ FRONT_SCAN_Y_MAX = 150
 FRONT_SCAN_SCORE_MIN = FIRST_LOCK_SCORE_MIN
 FRONT_SCAN_STABLE_FRAMES = 6
 FRONT_SCAN_MAX_FRAMES = 12
+FRONT_SCAN_ID2_COLOR_ID = 2
+FRONT_SCAN_ID2_MIN_PIXELS = 70
+FRONT_SCAN_ID2_MIN_AREA = 100
+FRONT_SCAN_ID2_MIN_DENSITY = 0.40
+FRONT_SCAN_ID2_ASPECT_MIN_X100 = 60
+FRONT_SCAN_ID2_ASPECT_MAX_X100 = 600
+FRONT_SCAN_BEAR_COMPONENT_MIN_PIXELS = 5
+FRONT_SCAN_BEAR_MIN_PIXELS = 12
+FRONT_SCAN_BEAR_MIN_PIXEL_GAP = 6
+FRONT_SCAN_BEAR_DOMINANCE_X100 = 130
 front_scan_last_current_id = 0
 front_scan_last_mask = -1
 front_scan_last_count = 0
@@ -413,6 +426,20 @@ def clear_target_scan():
     target_scan_sequence = 0
     target_scan_result_sequence = -1
     target_scan_candidates[:] = []
+def orbit_y_cut_allows_box(box):
+    return (not orbit_y_cut_active or
+            box[1] + box[3] >= ORBIT_Y_CUT)
+def clear_orbit_y_cut():
+    global orbit_y_cut_active
+    orbit_y_cut_active = False
+def begin_orbit_y_cut():
+    global orbit_y_cut_active
+    if orbit_y_cut_active:
+        return True
+    if active_selected_color_id() <= 0:
+        return False
+    orbit_y_cut_active = True
+    return True
 def apply_target_scan_command(color_id, sequence):
     global lost_frame_count, target_color_id, host_color_id_received
     global target_scan_requested, target_scan_color_id
@@ -422,6 +449,7 @@ def apply_target_scan_command(color_id, sequence):
     if not color_id_available_for_search(color_id):
         reset_target_tracking_state()
         return False
+    clear_orbit_y_cut()
     same_target = host_color_id_received and target_color_id == color_id
     target_color_id = color_id
     host_color_id_received = True
@@ -457,6 +485,7 @@ def reset_target_tracking_state():
     color_track_coordinate_box = None
     color_track_color_id = 0
     color_lost_count = 0
+    clear_orbit_y_cut()
     clear_target_scan()
     reset_hybrid_tracking()
 def reset_return_yellow_state():
@@ -1082,6 +1111,7 @@ def restore_host_hybrid_lock():
     if color_id > 0:
         model_color[3] = True
 def apply_host_hybrid_color(color_id):
+    clear_orbit_y_cut()
     label = color_id_to_model_label(color_id)
     locked_color_id = (locally_trusted_model_color_id(model_lock[0])
                        if model_lock[1] is not None else 0)
@@ -1315,6 +1345,8 @@ def run_model_best(img):
                     w * h < MODEL_MIN_BOX_AREA):
                 continue
             box = raw_model_box(x, y, w, h)
+            if not orbit_y_cut_allows_box(box):
+                continue
             minimum_score = (model_score_minimum(label, box, True)
                              if locked else
                              (HOST_FORCED_FIRST_LOCK_SCORE_MIN
@@ -1609,6 +1641,10 @@ def union_rois(first, second):
 def color_tracking_gate(model_observed=False):
     field_roi = intersect_rois(
         dynamic_detect_roi, (0, 0, 320, COLOR_DETECT_Y_MAX))
+    if orbit_y_cut_active:
+        field_roi = intersect_rois(
+            field_roi, (0, ORBIT_Y_CUT, 320,
+                        COLOR_DETECT_Y_MAX - ORBIT_Y_CUT))
     if field_roi is None or model_lock[1] is None:
         return None
     model_gate = expand_tracking_box(
@@ -2084,23 +2120,113 @@ def front_scan_roi():
     if y2 <= y:
         return None
     return (x, y, w, y2 - y)
+def front_scan_bear_threshold_pixels(img, roi, threshold, margin):
+    try:
+        try:
+            blobs = img.find_blobs(
+                [threshold], roi=roi,
+                pixels_threshold=FRONT_SCAN_BEAR_COMPONENT_MIN_PIXELS,
+                area_threshold=FRONT_SCAN_BEAR_COMPONENT_MIN_PIXELS,
+                merge=True, margin=margin)
+        except TypeError:
+            blobs = img.find_blobs(
+                [threshold], roi=roi,
+                pixels_threshold=FRONT_SCAN_BEAR_COMPONENT_MIN_PIXELS,
+                area_threshold=FRONT_SCAN_BEAR_COMPONENT_MIN_PIXELS,
+                merge=True)
+    except Exception:
+        return -1
+    if not blobs:
+        return 0
+    pixels = 0
+    for blob in blobs:
+        pixels += blob.pixels()
+    return pixels
+def front_scan_bear_color_id(img, box):
+    roi = model_sample_roi(0, box)
+    if roi is None:
+        return 0
+    brown_pixels = front_scan_bear_threshold_pixels(
+        img, roi, all_color_thresholds[3], BRN_BEAR_MERGE_MARGIN)
+    white_pixels = front_scan_bear_threshold_pixels(
+        img, roi, all_color_thresholds[4], WHT_BEAR_MERGE_MARGIN)
+    if brown_pixels < 0 or white_pixels < 0:
+        return 0
+    if (brown_pixels >= FRONT_SCAN_BEAR_MIN_PIXELS and
+            brown_pixels - white_pixels >= FRONT_SCAN_BEAR_MIN_PIXEL_GAP and
+            brown_pixels * 100 >=
+            white_pixels * FRONT_SCAN_BEAR_DOMINANCE_X100):
+        return 4
+    if (white_pixels >= FRONT_SCAN_BEAR_MIN_PIXELS and
+            white_pixels - brown_pixels >= FRONT_SCAN_BEAR_MIN_PIXEL_GAP and
+            white_pixels * 100 >=
+            brown_pixels * FRONT_SCAN_BEAR_DOMINANCE_X100):
+        return 5
+    return 0
 def front_scan_color_id(img, label, box):
     if label < 0 or label >= len(MODEL_COLOR_IDS):
         return 0
     candidates = MODEL_COLOR_IDS[label]
     if len(candidates) == 1:
         return candidates[0]
+    if label == 0:
+        return front_scan_bear_color_id(img, box)
     sample = sample_box_lab_stats(img, label, box, COLOR_SAMPLE_MAX_IQR)
     if sample is None:
         return 0
     return sample_color_id_from_stats(label, sample)
+def front_scan_id2_blob_valid(blob, current_box):
+    w = blob.w()
+    h = blob.h()
+    if w <= 0 or h <= 0:
+        return False
+    if (blob.pixels() < FRONT_SCAN_ID2_MIN_PIXELS or
+            w * h < FRONT_SCAN_ID2_MIN_AREA or
+            blob.density() < FRONT_SCAN_ID2_MIN_DENSITY):
+        return False
+    if (w * 100 < h * FRONT_SCAN_ID2_ASPECT_MIN_X100 or
+            w * 100 > h * FRONT_SCAN_ID2_ASPECT_MAX_X100):
+        return False
+    box = (blob.x(), blob.y(), w, h)
+    if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
+        if box[1] + box[3] < dynamic_cut_left_y + CUT_BLOB_DELTA:
+            return False
+    return not front_scan_box_is_current(box, current_box)
+def front_scan_find_id2_blobs(img, roi, threshold):
+    try:
+        return img.find_blobs(
+            [threshold], roi=roi,
+            pixels_threshold=FRONT_SCAN_ID2_MIN_PIXELS,
+            area_threshold=FRONT_SCAN_ID2_MIN_AREA, merge=True)
+    except Exception:
+        return None
+def front_scan_has_id2_blob(img, roi, current_box):
+    threshold = adaptive_color_thresholds[FRONT_SCAN_ID2_COLOR_ID - 1]
+    if threshold is not None:
+        blobs = front_scan_find_id2_blobs(img, roi, threshold)
+        if blobs:
+            for blob in blobs:
+                if front_scan_id2_blob_valid(blob, current_box):
+                    return True
+    blobs = front_scan_find_id2_blobs(
+        img, roi, all_color_thresholds[FRONT_SCAN_ID2_COLOR_ID - 1])
+    if blobs:
+        for blob in blobs:
+            if front_scan_id2_blob_valid(blob, current_box):
+                return True
+    return False
 def scan_front_other_color_ids(img):
     global model_infer_error_count, model_last_frame
     current_box, current_id = front_scan_current_target()
     mask = 0
     count = 0
     roi = front_scan_roi()
-    if (roi is None or not model_runtime_enabled or model_net is None):
+    if roi is None:
+        return current_id, mask, count
+    if front_scan_has_id2_blob(img, roi, current_box):
+        mask |= 1 << (FRONT_SCAN_ID2_COLOR_ID - 1)
+        count += 1
+    if not model_runtime_enabled or model_net is None:
         return current_id, mask, count
     try:
         model_last_frame = frame_count
@@ -2491,6 +2617,8 @@ def receive_command_from_host():
             apply_target_scan_command(param, target_command_value)
         elif command == TARGET_SELECT_COMMAND:
             apply_target_selection_command(param, target_command_value)
+        elif command == ORBIT_ROI_COMMAND:
+            begin_orbit_y_cut()
         elif command == 0x03:
             if 1 <= param <= len(all_color_thresholds):
                 if not color_id_available_for_search(param):
@@ -2504,6 +2632,7 @@ def receive_command_from_host():
                     if not same_target:
                         apply_host_hybrid_color(param)
         elif command == 0x01:
+            clear_orbit_y_cut()
             first_lock_reset_cycle_active = False
             reset_first_lock_pending()
             begin_pending_carry()
@@ -2526,6 +2655,7 @@ def receive_command_from_host():
             reset_front_scan_state()
             front_scan_requested = True
         elif command == 0x07:
+            clear_orbit_y_cut()
             first_lock_reset_cycle_active = False
             reset_first_lock_pending()
             clear_target_scan()
@@ -2534,6 +2664,7 @@ def receive_command_from_host():
             reset_front_scan_state()
             reset_return_yellow_state()
         elif command == 0x02:
+            clear_orbit_y_cut()
             finish_pending_carry()
             if not first_lock_reset_cycle_active:
                 first_lock_reset_cycle_active = True

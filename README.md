@@ -8,9 +8,11 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 
 2026-08-01 开发版已删除试验性的坐标 / 半径锚点协议，改为两阶段同色目标选择：主控用 `0x09` 请求 OpenART 枚举指定颜色的全部可用候选，OpenART 以 `0xC9` 包逐个回传候选索引与世界坐标，主控再用 `0x0A` 确认精确候选。该协议已在 `main.py` 与 `minimain.py` 同步，且与旧 11 字节 `0x09` 帧不兼容。
 
+2026-08-02 开发版新增 orbit 近场裁切与前方障碍补检：主控以短帧 `AA 55 0B 0B` 通知 OpenART 进入 orbit 后，普通目标搜索限制在全宽 `y >= 140` 的近场区域，进入搬运、回库、重置或切换目标时解除；该状态不累积帧，不增加坐标输出延迟。`0x06` 前扫仍独立扫描 `y < 150`，新增不依赖模型框的 ID2 横向红砖色块补检，并将模型熊框内的 ID4/ID5 判色改为两套固定 LAB 阈值的像素竞争，判据接近时返回未知而不强猜颜色。
+
 ## 工程概览
 
-这是全国大学生智能汽车竞赛双车接力方案的**视觉侧**仓库。每辆车由两块板组成：NXP RT1021 底盘主控负责运动控制与任务调度（代码在独立工程维护，不在本仓库），OpenART Plus 视觉板运行本仓库脚本，负责物块识别与世界坐标解算。视觉板作为主控的 UART 从设备（两车均为 `UART12`、`115200 bps`）：接收主控的命令帧（`0xAA 0x55` 帧头 + 单字节命令码 + 参数 + 校验和，如 `0x03` 指定颜色、`0x06` 全色前扫、`0x08` 清零完成记录、`0x09` 枚举同色候选、`0x0A` 确认候选），持续回发 16 字节坐标包；处理 `0x09` 时另以 12 字节 `0xC9` 包回传候选，所有世界 X/Y 均以**毫米**发送。
+这是全国大学生智能汽车竞赛双车接力方案的**视觉侧**仓库。每辆车由两块板组成：NXP RT1021 底盘主控负责运动控制与任务调度（代码在独立工程维护，不在本仓库），OpenART Plus 视觉板运行本仓库脚本，负责物块识别与世界坐标解算。视觉板作为主控的 UART 从设备（两车均为 `UART12`、`115200 bps`）：接收主控的命令帧（`0xAA 0x55` 帧头 + 单字节命令码 + 参数 + 校验和，如 `0x03` 指定颜色、`0x06` 全色前扫、`0x08` 清零完成记录、`0x09` 枚举同色候选、`0x0A` 确认候选、`0x0B` 启用 orbit 近场裁切），持续回发 16 字节坐标包；处理 `0x09` 时另以 12 字节 `0xC9` 包回传候选，所有世界 X/Y 均以**毫米**发送。
 
 双车角色：主车运行 `main.py`，负责搬运全流程，含越过黄线记完成、回库黄线引导；从车运行 `minimain.py`，为搬运从机，搬运结束后提交待完成 ID。两份入口为各自车辆的固定入口（不再保留 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关），检测管线一致：TFLite 模型负责发现、类别确认和重捕，动态 LAB 色块负责确认目标并提供中心位移，模型拥有的显示 / 坐标几何随该位移移动，平滑后的底边接触点再送入 28 点地面网格解算世界坐标。
 
@@ -20,8 +22,8 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 
 | 文件 | 运行位置 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v1.1.0 主车正式入口（2868 行） |
-| `minimain.py` | OpenART Plus / 从车 | v1.1.0 从车正式入口（2604 行） |
+| `main.py` | OpenART Plus / 主车 | v1.1.0 主车正式入口（2986 行） |
+| `minimain.py` | OpenART Plus / 从车 | v1.1.0 从车正式入口（2732 行） |
 | `world_coordinate_test.py` | OpenART Plus / IDE | 与主车完整检测对齐的全类别世界坐标观察脚本 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点（文件名沿用旧名） |
@@ -29,6 +31,9 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 | `camera_ground_mesh_report.json` | PC | 当前网格质量报告 |
 | `test_model_blob_fusion.py` | PC | **门禁测试**：主从/观察脚本模型-色块融合回归与三方 AST 同步 |
 | `test_ground_projection.py` | PC | **门禁测试**：三方投影块逐字节一致与 28 点回代精度回归 |
+| `test_orbit_y_cut.py` | PC | orbit 固定 Y 裁切、状态清理与 `0x0B` UART 回归 |
+| `test_front_scan_id2_blob.py` | PC | `0x06` ID2 动态阈值优先、基础阈值回退与横砖补检回归 |
+| `test_front_scan_bear_color.py` | PC | `0x06` ID4/ID5 熊类阈值像素竞争回归 |
 | `raw_ground_projection_test.py` | OpenART Plus / IDE | 地面坐标采点和实地复核脚本 |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
@@ -89,6 +94,14 @@ AA 55 C9 SEQ INDEX TOTAL CID X_LO X_HI Y_LO Y_HI CHECKSUM
 
 候选必须同时通过指定模型类别、主控指定搜索最低分数、LAB 颜色匹配、网球黄线过滤和有效世界坐标检查。普通 `0x03` 指定颜色、目标状态重置、回库或新的 `0x09` 都会使旧事务失效。RT1021 端必须按上述新长度升级；旧的 11 字节 `0x09` 锚点帧与当前解析器不兼容。
 
+## Orbit 近场裁切与前方障碍扫描
+
+主控在进入 orbit 时发送短帧 `AA 55 0B 0B`。OpenART 仅在已有有效选中目标时启用 `ORBIT_Y_CUT=140`：模型候选的底边必须到达 `y=140`，色块搜索 ROI 则与 `y=140..229` 的全宽区域取交集。重复 `0x0B` 幂等，不采集前五帧 ROI，也不改变坐标包时序。`0x01` 进入搬运、`0x02` 结束搬运、`0x07` 回库、目标重置、新的目标枚举或切换到其它目标都会解除裁切。
+
+`0x06` 前方扫描不使用上述 orbit 裁切，仍扫描动态有效区域中 `y < 150` 的部分；扫描结束后，若尚未收到解除命令，普通目标跟踪继续使用 orbit 裁切。当前目标按 `IoU >= 0.20` 或中心距离 `<= 35 px` 排除，结果连续稳定 6 帧时发送，最多观察 12 帧，回包保持 `AA 55 C7 current_id mask count checksum`，其中 `count` 是不同颜色 ID 的数量。
+
+前扫以模型结果为主，同时增加 ID2 色块补检。补检优先使用 `adaptive_color_thresholds[1]`，没有有效横砖时回退到基础 ID2 阈值；宽高比允许 `0.6..6.0`，并要求至少 70 个命中像素、`100 px²` 包围面积和 `0.40` 密度，因此即使模型不能识别横放红砖也能置位 ID2。棕熊与白熊共用模型标签，前扫改在模型内缩框中分别统计 ID4/ID5 固定阈值像素；获胜方至少 12 像素、领先至少 6 像素且达到另一方的 1.3 倍才确认，否则返回未知，避免把模糊熊框强行归错 ID。动态熊阈值只用于既有跟踪，不参与身份竞争。
+
 ## 世界坐标
 
 - 标定源为 `ground_mesh_24_points_template.csv`，文件名沿用旧名，实际包含 `7 x 4 = 28` 个点。
@@ -138,10 +151,11 @@ python calibrate_ground_camera.py --ground-csv ground_mesh_24_points_template.cs
 ```powershell
 python -m unittest -v test_model_blob_fusion.py
 python -m unittest -v test_ground_projection.py
+python -m unittest -v test_orbit_y_cut.py test_front_scan_id2_blob.py test_front_scan_bear_color.py
 python -m py_compile main.py minimain.py world_coordinate_test.py calibrate_ground_camera.py raw_ground_projection_test.py test_model_blob_fusion.py test_ground_projection.py
 git diff --check
 ```
 
-`test_ground_projection.py` 的 6 项地面投影测试当前全绿。`test_model_blob_fusion.py` 仍有 4 项旧锚点协议测试，以及 2 项依赖尚未同步 `world_coordinate_test.py` 的三方 AST 门禁；它们需要迁移到上述 `0x09` / `0x0A` 协议后才能重新作为全绿门禁。当前主从运行时已通过 Python 语法检查、新增扫描函数 AST 一致性检查，以及坏校验帧后连续解析 `0x09` / `0x0A` 的协议回归。
+orbit、前扫与地面投影的 24 项定向测试当前全绿。完整 `unittest discover` 共 56 项，其中 50 项通过；剩余 4 项旧锚点协议测试和 2 项依赖尚未同步 `world_coordinate_test.py` 的三方 AST 门禁需要迁移到上述 `0x09` / `0x0A` 协议后才能重新作为全绿门禁。当前主从运行时已通过 Python 语法检查、主从新增函数 AST 一致性检查和 `git diff --check`。
 
 `raw_ground_projection_test.py` 继续用于红沙包采点和标定复核；`world_coordinate_test.py` 用于按正式全类别检测流程观察最终坐标。完整版本说明、误差数据和历史记录见 [中文更新日志](README_ch.md) 与 [English changelog](README_en.md)。
