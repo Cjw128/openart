@@ -14,6 +14,7 @@ SELECTED_ASSIGNMENTS = {
 }
 
 SELECTED_FUNCTIONS = {
+    "sample_model_color",
     "front_scan_bear_threshold_pixels",
     "front_scan_bear_color_id",
     "front_scan_color_id",
@@ -50,9 +51,16 @@ def load_runtime(source_path):
         "BRN_BEAR_MERGE_MARGIN": 12,
         "WHT_BEAR_MERGE_MARGIN": 10,
         "COLOR_SAMPLE_MAX_IQR": (50, 55, 65),
+        "HOST_FORCED_COLOR_SAMPLE_MAX_IQR": (65, 70, 85),
+        "target_color_id": 0,
+        "host_forced_target_active": lambda: False,
+        "color_id_available_for_search": lambda color_id: 1 <= color_id <= 5,
         "model_sample_roi": lambda label, box: box,
         "sample_box_lab_stats": lambda img, label, box, limit: None,
-        "sample_color_id_from_stats": lambda label, sample: 0,
+        "sample_color_id_from_stats": (
+            lambda label, sample, forced_color_id=0: 0),
+        "build_dynamic_threshold": (
+            lambda color_id, sample: ("dynamic", color_id)),
     })
     return namespace
 
@@ -108,6 +116,60 @@ class FrontScanBearColorTests(unittest.TestCase):
                 FakeImage({"brown": 50, "white": 45}), 0, box), 0)
             self.assertEqual(classify(
                 FakeImage({"brown": 10, "white": 4}), 0, box), 0)
+
+    def test_regular_bear_lock_uses_pixel_dominance(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_runtime(source_path)
+            runtime["sample_box_lab_stats"] = (
+                lambda img, label, box, limit: "background-biased")
+            runtime["sample_color_id_from_stats"] = (
+                lambda label, sample, forced_color_id=0: 5)
+
+            result = runtime["sample_model_color"](
+                FakeImage({"brown": 80, "white": 20}),
+                0, (80, 40, 60, 60))
+
+            self.assertEqual(result, (4, "brown"))
+
+    def test_regular_bear_lock_keeps_matching_dynamic_threshold(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_runtime(source_path)
+            runtime["sample_box_lab_stats"] = (
+                lambda img, label, box, limit: "brown-sample")
+            runtime["sample_color_id_from_stats"] = (
+                lambda label, sample, forced_color_id=0: 4)
+
+            result = runtime["sample_model_color"](
+                FakeImage({"brown": 80, "white": 20}),
+                0, (80, 40, 60, 60))
+
+            self.assertEqual(result, (4, ("dynamic", 4)))
+
+    def test_regular_bear_lock_keeps_ambiguous_pixels_unknown(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_runtime(source_path)
+
+            result = runtime["sample_model_color"](
+                FakeImage({"brown": 50, "white": 45}),
+                0, (80, 40, 60, 60))
+
+            self.assertEqual(result, (0, None))
+
+    def test_forced_bear_id_must_win_pixel_competition(self):
+        for source_path in RUNTIME_FILES:
+            runtime = load_runtime(source_path)
+            runtime["target_color_id"] = 4
+            runtime["host_forced_target_active"] = lambda: True
+
+            brown = runtime["sample_model_color"](
+                FakeImage({"brown": 80, "white": 20}),
+                0, (80, 40, 60, 60))
+            white = runtime["sample_model_color"](
+                FakeImage({"brown": 18, "white": 90}),
+                0, (80, 40, 60, 60))
+
+            self.assertEqual(brown, (4, "brown"))
+            self.assertEqual(white, (0, None))
 
     def test_other_model_classes_keep_existing_color_path(self):
         for source_path in RUNTIME_FILES:

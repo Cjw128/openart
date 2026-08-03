@@ -18,7 +18,7 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 | `test_model_blob_fusion.py` | PC | Master/slave model-blob fusion regression tests |
 | `test_orbit_y_cut.py` | PC | Fixed-Y orbit crop and UART state regression tests |
 | `test_front_scan_id2_blob.py` | PC | ID2 horizontal-brick front-scan fallback regression tests |
-| `test_front_scan_bear_color.py` | PC | ID4/ID5 bear front-scan classification regression tests |
+| `test_front_scan_bear_color.py` | PC | ID4/ID5 front-scan and ordinary-lock regression tests |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | Pre-carry front color-blob scan preview script |
 
@@ -35,6 +35,15 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-08-03 - In development - Pixel competition for ordinary bear locking
+
+Scope: `main.py`, `minimain.py`, `calib_ide_autocalib_competition.py`, `test_front_scan_bear_color.py`, and the three READMEs. The UART protocol and RT1021 controller are unchanged.
+
+- Reused the front-scan ID4/ID5 fixed-LAB pixel competition for ordinary automatic locking, locked-target reclassification, host-forced targets, and `0x09` candidate enumeration. A winner still needs at least 12 pixels, a 6-pixel lead, and 1.3 times the opposing count; otherwise identity remains unknown.
+- Bear identity is no longer forced from the whole-box LAB median's distance to threshold centers. Whole-box statistics build an adaptive tracking threshold only when they agree with the pixel winner. A disagreement, excessive IQR, or dynamic-threshold failure falls back to the winner's fixed calibration threshold, preventing distant background samples from reinforcing a wrong identity. Non-bear classification is unchanged.
+- Changed the field auto-calibration white balance from `(101,64,97)` to the runtime value `(92,64,101)`. Existing `/sd/color_thr.txt` files are not converted automatically and must be regenerated after deployment. Brown and white bears must be checked at the actual initial-detection distance so downscaling and ground mixing do not move ID4 pixels into the ID5 threshold. The calibration model path remains unchanged in this revision.
+- `test_front_scan_bear_color.py` now extracts the master/slave `sample_model_color` functions for AST parity and covers background bias, ambiguous competition, forced IDs, retained adaptive thresholds, and the existing front-scan path. All nine focused tests pass.
 
 ### 2026-08-02 - In development - Orbit near-field crop and front-obstacle fallbacks
 

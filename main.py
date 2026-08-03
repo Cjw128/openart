@@ -1664,6 +1664,23 @@ def sample_model_color(img, label, box):
                        if host_forced_target_active() else 0)
     max_iqr = (HOST_FORCED_COLOR_SAMPLE_MAX_IQR
                if forced_color_id > 0 else COLOR_SAMPLE_MAX_IQR)
+    if label == 0:
+        color_id = front_scan_bear_color_id(img, box)
+        if (color_id <= 0 or
+                (forced_color_id > 0 and color_id != forced_color_id) or
+                not color_id_available_for_search(color_id)):
+            return 0, None
+        base_threshold = all_color_thresholds[color_id - 1]
+        sample = sample_box_lab_stats(img, label, box, max_iqr)
+        if sample is None:
+            return color_id, base_threshold
+        stats_color_id = sample_color_id_from_stats(
+            label, sample, forced_color_id)
+        if stats_color_id != color_id:
+            return color_id, base_threshold
+        dynamic_threshold = build_dynamic_threshold(color_id, sample)
+        return (color_id, dynamic_threshold
+                if dynamic_threshold is not None else base_threshold)
     sample = sample_box_lab_stats(img, label, box, max_iqr)
     if sample is None:
         return 0, None

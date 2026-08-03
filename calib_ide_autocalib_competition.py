@@ -198,7 +198,7 @@ WHT_BEAR_BOX_EMA_NEW_NUM = 1
 WHT_BEAR_BOX_EMA_DEN = 3
 WHT_BEAR_SMOOTH_MAX_JUMP_PX = 55
 WHT_BEAR_SMOOTH_MAX_JUMP2 = WHT_BEAR_SMOOTH_MAX_JUMP_PX * WHT_BEAR_SMOOTH_MAX_JUMP_PX
-WB_GAINS        = (101.00, 64.00, 97.00)
+WB_GAINS        = (92.00, 64.00, 101.00)
 MODEL_PATH      = '/sd/dataset_25000_exposure.tflite'
 # =====================================================
 

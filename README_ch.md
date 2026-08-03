@@ -18,7 +18,7 @@
 | `test_model_blob_fusion.py` | PC | 主从模型 / 色块融合回归测试 |
 | `test_orbit_y_cut.py` | PC | orbit 固定 Y 裁切与 UART 状态回归测试 |
 | `test_front_scan_id2_blob.py` | PC | ID2 横向红砖前扫补检回归测试 |
-| `test_front_scan_bear_color.py` | PC | ID4/ID5 熊类前扫判色回归测试 |
+| `test_front_scan_bear_color.py` | PC | ID4/ID5 熊类前扫与普通锁色回归测试 |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
 | `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
 
@@ -35,6 +35,15 @@
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-08-03 - 开发中 - 普通熊类锁色同步像素竞争
+
+范围：`main.py`、`minimain.py`、`calib_ide_autocalib_competition.py`、`test_front_scan_bear_color.py` 与三份 README。UART 协议与 RT1021 主控无需修改。
+
+- 将前扫已有的 ID4/ID5 固定 LAB 阈值像素竞争同步到普通自动锁色、锁定后重判、主控强制目标和 `0x09` 候选枚举。获胜方仍须至少 12 像素、领先至少 6 像素并达到另一方的 1.3 倍，否则身份保持未知。
+- 熊类身份不再由整框 LAB 中位数到阈值中心的距离强制二选一。整框统计仅在与像素赢家一致时生成动态跟踪阈值；不一致、IQR 超限或动态阈值构建失败时回退赢家的固定标定阈值，避免远距离背景样本继续强化错误身份。非熊类别判色不变。
+- 现场自动标定脚本的固定白平衡由 `(101,64,97)` 同步为正式运行使用的 `(92,64,101)`。已有 `/sd/color_thr.txt` 不会随代码自动转换，部署后必须重新标定；棕熊和白熊应在实际首次识别距离复核，防止远处缩小与地面混色使 ID4 像素落入 ID5 阈值。标定脚本模型路径本轮保持原值。
+- `test_front_scan_bear_color.py` 现同时抽取主从 `sample_model_color` 做 AST 一致性检查，并覆盖背景偏置、模糊竞争、强制 ID、动态阈值保留和原有前扫路径；9 项定向测试通过。
 
 ### 2026-08-02 - 开发中 - Orbit 近场裁切与前方障碍补检
 
