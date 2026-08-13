@@ -4,13 +4,15 @@
 
 v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热路径优化：地面网格逆透视改为从上次命中三角形续扫、新增 `u=160` 中心线按行懒缓存、`model_track` 状态由 14 槽缩到 11 槽、LAB 采样与三通道阈值计算消除逐次堆分配、删除一批从未被读取的死代码，并削减导入期峰值内存。除一条行为变更外，全部改动与 v1.0.0 行为逐位等价，由门禁 `test_model_blob_fusion.py` 的 13 项测试（含 `main.py` / `minimain.py` / `world_coordinate_test.py` 三方 AST 同步）保护。**唯一行为变更**：`0x06` 全色前扫命令处理现在额外调用 `reset_yellow_state()`——搬运中收到前扫请求会清空黄线拟合与进度标志，扫描后需重新捕获黄线（v1.0.0 会把黄线状态带进 `MODE_SEARCH`）。检测参数、状态机其余部分、坐标结果与 UART 协议均未改变；模型仍为 `/sd/80lite0.5SS.tflite`，默认曝光仍为 `880 us`。
 
-当前开发版将普通自由搜索的首次锁定由 `5/7` 调整为运动容错的 `3/5`，中心连续性容差由 `24 px` 放宽至 `36 px`，尺寸变化容差由 `35%` 放宽至 `50%`；首锁置信度仍为 `0.30`，曝光和颜色 IQR 不变。模型 / 色块融合恢复省赛冻结版的响应方式：模型几何作为锚点，颜色框只用中心位移带动显示框和坐标框，两者统一采用当前帧 `70%` 的单级平滑，中心移动超过 `36 px` 时当帧直接接管。锁定后的兼容模型结果首次出现即更新，近距离低分模型帧也不再冻结旧坐标。新增 `ENABLE_COMPLETED_COLOR_EXCLUSION` 独立控制已完成颜色是否排除，默认关闭，需要“第一个 ID2、之后只从未完成颜色中选最近目标”时再开启。28 点 mesh、36 个三角形、中心 X 修正和 UART 毫米协议保持不变；主车临时 ID2 坐标 watchdog 日志已完整删除，正式循环不做 SD 日志 I/O。
+当前开发版将普通自由搜索与主控强制搜索的首次锁定统一为 `2/3`，中心连续性容差为 `36 px`，尺寸变化容差为 `50%`；自由搜索与强制搜索首锁置信度分别为 `0.30` 和 `0.25`。模型 / 色块融合保持省赛冻结版的响应方式：模型几何作为锚点，颜色框只用中心位移带动显示框和坐标框，两者统一采用当前帧 `70%` 的单级平滑，中心移动超过 `36 px` 时当帧直接接管。`ENABLE_COMPLETED_COLOR_EXCLUSION=True`，每个物理 ID 每轮完成一次后退出候选，`0x08` 清空完成记录。28 点 mesh、36 个三角形、中心 X 修正和 UART 毫米协议保持不变。
 
 2026-08-01 开发版已删除试验性的坐标 / 半径锚点协议，改为两阶段同色目标选择：主控用 `0x09` 请求 OpenART 枚举指定颜色的全部可用候选，OpenART 以 `0xC9` 包逐个回传候选索引与世界坐标，主控再用 `0x0A` 确认精确候选。该协议已在 `main.py` 与 `minimain.py` 同步，且与旧 11 字节 `0x09` 帧不兼容。
 
 2026-08-02 开发版新增 orbit 近场裁切与前方障碍补检：主控以短帧 `AA 55 0B 0B` 通知 OpenART 进入 orbit 后，普通目标搜索限制在全宽 `y >= 140` 的近场区域，进入搬运、回库、重置或切换目标时解除；该状态不累积帧，不增加坐标输出延迟。`0x06` 前扫仍独立扫描 `y < 150`，新增不依赖模型框的 ID2 横向红砖色块补检，并将模型熊框内的 ID4/ID5 判色改为两套固定 LAB 阈值的像素竞争，判据接近时返回未知而不强猜颜色。
 
 2026-08-03 开发版将同一套 ID4/ID5 固定阈值像素竞争同步到普通自动锁色、锁定后重判、主控强制目标和 `0x09` 候选枚举。熊类身份不再由整框 LAB 中位数强制二选一；整框统计仅在与像素赢家一致时生成动态跟踪阈值，否则回退对应固定阈值。现场自动标定的固定白平衡同步为正式运行值 `(92,64,101)`；已有 `/sd/color_thr.txt` 不会自动转换，必须在实际首次识别距离重新标定并复核远距离 ID4/ID5 像素数。
+
+2026-08-13 开发版允许 `color_thr.txt` 通过 `wb_gains=R,G,B` 固定每块相机的白平衡，标定脚本会读取并原样写回该行。主车搬运黄线使用三段横向 ROI、`35/10` 首次/保持像素阈值、2 帧出现确认和 2 帧丢失退出；ID3 网球额外按当前网球框切分受遮挡 ROI，并在黄线触底后拒绝轨迹大跳变和反向伪候选，避免网球与黄线阈值接近时持续把 `lost` 清零。正式入口不包含黄线逐帧日志，只保留低频 `/sd/runtime.log` 检查点；黄线调试方法见下文。所有 `*test*.py` 与 `tests/` 均为本地文件，不再由 Git 跟踪。
 
 ## 工程概览
 
@@ -24,23 +26,16 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 
 | 文件 | 运行位置 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v1.1.0 主车正式入口（2986 行） |
-| `minimain.py` | OpenART Plus / 从车 | v1.1.0 从车正式入口（2732 行） |
-| `world_coordinate_test.py` | OpenART Plus / IDE | 与主车完整检测对齐的全类别世界坐标观察脚本 |
+| `main.py` | OpenART Plus / 主车 | 主车正式入口，含搬运黄线和受控运行检查点 |
+| `minimain.py` | OpenART Plus / 从车 | 从车正式入口 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点（文件名沿用旧名） |
 | `calibrate_ground_camera.py` | PC | 网格生成、校验和报告工具 |
 | `camera_ground_mesh_report.json` | PC | 当前网格质量报告 |
-| `test_model_blob_fusion.py` | PC | **门禁测试**：主从/观察脚本模型-色块融合回归与三方 AST 同步 |
-| `test_ground_projection.py` | PC | **门禁测试**：三方投影块逐字节一致与 28 点回代精度回归 |
-| `test_orbit_y_cut.py` | PC | orbit 固定 Y 裁切、状态清理与 `0x0B` UART 回归 |
-| `test_front_scan_id2_blob.py` | PC | `0x06` ID2 动态阈值优先、基础阈值回退与横砖补检回归 |
-| `test_front_scan_bear_color.py` | PC | `0x06` 前扫与普通锁色 ID4/ID5 像素竞争回归 |
-| `raw_ground_projection_test.py` | OpenART Plus / IDE | 地面坐标采点和实地复核脚本 |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
-| `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
-| `openart_test_3class.py` | OpenART Plus / IDE | 三类模型测试脚本 |
 | `fast_blob_backup/`、`stable_confirm/`、`stable_no_priority/`、`mainbak` | — | 历史对照存档，不是当前入口 |
+
+测试与诊断脚本放在仓库外或系统临时目录，不属于发布内容；`.gitignore` 的 `*test*.py` 与 `tests/` 规则仅用于防止误提交。
 
 ## 部署文件
 
@@ -51,7 +46,7 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 | `camera_ground_mesh.txt` | 两车 `/sd/camera_ground_mesh.txt` | 28 点地面坐标网格 |
 | `80lite0.5SS.tflite` | 两车 `/sd/80lite0.5SS.tflite` | 最终 SS 模型，模型文件不纳入 Git |
 
-若板端保留 `/sd/color_thr.txt`，其中的 `exposure_us=` 会覆盖默认 `880 us`。主从均为 OpenART Plus，使用 `UART12`、`115200 bps`。
+若板端保留 `/sd/color_thr.txt`，其中的 `exposure_us=` 会覆盖默认 `880 us`，`wb_gains=R,G,B` 会覆盖内置白平衡 `(92.00,64.00,101.00)`。白平衡三项必须是 `0..255` 的数值；缺失或无效时使用内置值。主从均为 OpenART Plus，使用 `UART12`、`115200 bps`。
 
 当前主从程序共用 `role=master` 网格；若两块相机的安装几何不同，必须分别采点并为从车生成独立网格。
 
@@ -63,9 +58,22 @@ v1.1.0 基于 v1.0.0（提交 `d83b6d6`，2026-07-25），是一轮内存与热�
 
 ## 已完成颜色排除开关
 
-三份入口顶部的 `ENABLE_COMPLETED_COLOR_EXCLUSION` 默认为 `False`：程序仍记录 `completed_color_mask`，但完成颜色不会因此退出候选。配合 `ID2_ABSOLUTE_PRIORITY=True`，第一个目标依旧固定为 ID2；ID2 完成后绝对优先解除，ID1~ID5（包含 ID2）全部按世界 Y 竞争，因此第二个可能再次是 ID2。
+主从入口顶部的 `ENABLE_COMPLETED_COLOR_EXCLUSION` 默认为 `True`。已完成颜色立即退出普通搜索和主控指定；配合 `ID2_ABSOLUTE_PRIORITY=True`，第一个目标仍为 ID2，之后从 ID1/ID3/ID4/ID5 中按世界 Y 选择最近目标，并继续只从未完成颜色中选择。`0x08` 清空完成位。
 
-设为 `True` 后启用候选排除，已完成颜色立即按现有记录退出普通搜索和主控指定；此时第一个仍为 ID2，ID2 完成后第二个由 ID1/ID3/ID4/ID5 中世界 Y 最近者产生，后续继续从未完成颜色中选择。再次关闭不会清空完成位。若希望从第一轮起所有颜色都参与竞争，需要同时将 `ID2_ABSOLUTE_PRIORITY=False`。
+设为 `False` 后仍会记录 `completed_color_mask`，但完成颜色继续参与候选；再次开启会立即按现有记录恢复排除。若希望从第一轮起所有颜色都参与竞争，还需要同时设置 `ID2_ABSOLUTE_PRIORITY=False`。
+
+## 主车搬运黄线与调试方法
+
+`main.py` 使用 `y=90..109`、`110..129`、`130..149` 三段全宽 ROI，任意两段形成满足水平斜率限制的拟合线即可命中。首次进入需要至少 35 个像素，跟踪后最低为 10 个像素和 `10 px²` 连通面积；连续 2 帧命中后确认见线，拟合线到达画面底部后进入过线待定状态，再连续 2 帧没有有效原始命中即发送 `POS_CROSSED`。进入搬运后的前 4 帧不累计退出。
+
+ID3 网球搬运会保存并更新网球框。只有与网球框纵向相交的黄线 ROI 才按网球框左右各扩 `15 px`、上下各扩 `5 px` 后拆成左右两段检测，未相交 ROI 保持全宽。黄线触底后，以 `y=120` 处的拟合交点跟踪运动：单帧跳变超过 `60 px` 或反向超过 `15 px` 的候选不再清空丢线计数；方向由至少 `4 px` 的首次有效位移建立。
+
+正式 `main.py` 不创建 `/sd/yellow_carry.log`，也不执行黄线逐帧格式化和写卡。需要现场观测时：
+
+1. 将 `main.py` 复制到仓库外或系统临时目录并命名为 `yellow_carry_test.py`，不要把测试文件放进 `openart`，也不要直接修改正式入口加入长期日志。
+2. 优先通过 OpenART IDE 串口打印，每帧至少记录帧号、目标 ID/框、三段 ROI 的 blob 像素与中心、采用的 ROI 对、`dx/dy/k/b`、`raw/shown/armed/confirm/lost/pos`，以及网球框、`track_x/delta/direction` 和候选拒绝原因。
+3. 若脱机复现必须写 SD，只在诊断副本中短时启用；先在内存累计至少 4 行，批量写入前后调用 `feed_watchdog()`，禁止每个检测阶段或每帧多次 `open/write/close`。复现结束后立即恢复正式 `main.py`。
+4. 结合 `POS_CROSSED` 前后的连续帧判断问题：`armed=0` 表示尚未触底，`armed=1` 且 `raw=1` 持续出现通常是物体污染，`armed=1` 且 `raw=0` 时 `lost` 应在第二帧到达 2 并退出。
 
 ## 同 ID 目标候选枚举与确认
 
@@ -148,16 +156,13 @@ AA 55 C9 SEQ INDEX TOTAL CID X_LO X_HI Y_LO Y_HI CHECKSUM
 python calibrate_ground_camera.py --ground-csv ground_mesh_24_points_template.csv --role master --expected-points 28 --required-near-y-cm 6 --max-y-cm 164 --output camera_ground_mesh.txt --report camera_ground_mesh_report.json
 ```
 
-检查命令（融合门禁中的旧锚点用例仍待迁移）：
+发布前检查：
 
 ```powershell
-python -m unittest -v test_model_blob_fusion.py
-python -m unittest -v test_ground_projection.py
-python -m unittest -v test_orbit_y_cut.py test_front_scan_id2_blob.py test_front_scan_bear_color.py
-python -m py_compile main.py minimain.py world_coordinate_test.py calibrate_ground_camera.py raw_ground_projection_test.py test_model_blob_fusion.py test_ground_projection.py
+python -m py_compile main.py minimain.py calib_ide_autocalib_competition.py calibrate_ground_camera.py
+mpy-cross main.py -o main.mpy
+mpy-cross minimain.py -o minimain.mpy
 git diff --check
 ```
 
-orbit、前扫与地面投影的 24 项定向测试当前全绿。完整 `unittest discover` 共 56 项，其中 50 项通过；剩余 4 项旧锚点协议测试和 2 项依赖尚未同步 `world_coordinate_test.py` 的三方 AST 门禁需要迁移到上述 `0x09` / `0x0A` 协议后才能重新作为全绿门禁。当前主从运行时已通过 Python 语法检查、主从新增函数 AST 一致性检查和 `git diff --check`。
-
-`raw_ground_projection_test.py` 继续用于红沙包采点和标定复核；`world_coordinate_test.py` 用于按正式全类别检测流程观察最终坐标。完整版本说明、误差数据和历史记录见 [中文更新日志](README_ch.md) 与 [English changelog](README_en.md)。
+测试脚本只在本地或临时目录运行且不纳入 Git。当前主从运行时已通过 Python 语法检查、`mpy-cross` 编译和 `git diff --check`；网球黄线的 ROI 切分、方向抗抖与 2 帧退出另以纯内存提取测试和历史日志回放验证。完整版本说明、误差数据和历史记录见 [中文更新日志](README_ch.md) 与 [English changelog](README_en.md)。

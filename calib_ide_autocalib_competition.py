@@ -202,6 +202,33 @@ WB_GAINS        = (92.00, 64.00, 101.00)
 MODEL_PATH      = '/sd/dataset_25000_exposure.tflite'
 # =====================================================
 
+def validate_wb_gains(values):
+    if len(values) != 3:
+        raise ValueError('wb_gains must contain R,G,B')
+    gains = (float(values[0]), float(values[1]), float(values[2]))
+    for gain in gains:
+        if gain < 0 or gain > 255:
+            raise ValueError('wb_gains out of range')
+    return gains
+
+def load_wb_gains(path=RESULT_PATH):
+    try:
+        with open(path, 'r') as fp:
+            for line in fp:
+                line = line.strip()
+                if line.startswith('wb_gains='):
+                    gains = validate_wb_gains(
+                        line.split('=', 1)[1].split(','))
+                    print('[WB] loaded R=%.2f G=%.2f B=%.2f from %s' %
+                          (gains[0], gains[1], gains[2], path))
+                    return gains
+    except Exception as error:
+        print('[WB] load failed: ' + str(error))
+    print('[WB] using fallback R=%.2f G=%.2f B=%.2f' % WB_GAINS)
+    return WB_GAINS
+
+startup_wb_gains = load_wb_gains()
+
 SLOT_NAMES = {1: "blue_bag", 2: "red_bag", 3: "ball", 4: "brn_bear", 5: "wht_bear"}
 LABEL_NAMES = {0: "bear", 1: "ball", 2: "bag"}
 DRAW_COLORS = {1: (0, 170, 255), 2: (255, 0, 0), 3: (0, 255, 0),
@@ -212,7 +239,7 @@ sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
 sensor.set_framerate(60)
-sensor.set_auto_whitebal(False, rgb_gain_db=WB_GAINS)
+sensor.set_auto_whitebal(False, rgb_gain_db=startup_wb_gains)
 sensor.set_auto_gain(False, gain_db=0)
 sensor.set_auto_exposure(False, exposure_us=EXPOSURE_INIT)
 sensor.skip_frames(time=800)
@@ -2040,6 +2067,7 @@ separate_bear_thresholds()
 
 print("=" * 46)
 print("最终结果  exposure_us=%d" % exposure)
+print("wb_gains=(%.2f, %.2f, %.2f)" % startup_wb_gains)
 print("ground=%s" % (gnd_box,))
 print("ground_far=%s" % (gnd_box_far,))
 for slot in sorted(thresholds):
@@ -2060,10 +2088,17 @@ def format_calibration_lab(values, tag):
         text += str(int(values[i]))
     return text
 
-def write_calibration_result(path, exposure_us, near_ground, far_ground, rows):
+def format_wb_gains(values):
+    gains = validate_wb_gains(values)
+    return "%.2f,%.2f,%.2f" % gains
+
+def write_calibration_result(path, exposure_us, wb_gains,
+                             near_ground, far_ground, rows):
     expected_exposure = "exposure_us=" + str(int(exposure_us))
+    expected_wb = "wb_gains=" + format_wb_gains(wb_gains)
     with open(path, 'w') as fp:
         fp.write(expected_exposure + "\n")
+        fp.write(expected_wb + "\n")
         fp.write("ground=" + format_calibration_lab(near_ground, "ground") + "\n")
         if far_ground:
             fp.write("ground2=" + format_calibration_lab(far_ground, "ground2") + "\n")
@@ -2072,18 +2107,23 @@ def write_calibration_result(path, exposure_us, near_ground, far_ground, rows):
                 rows[slot], "slot " + str(slot)) + "\n")
     with open(path, 'r') as fp:
         saved_exposure = fp.readline().strip()
+        saved_wb = fp.readline().strip()
     if saved_exposure != expected_exposure:
         raise Exception("曝光写入校验失败: %s" % path)
-    print("已写并校验 %s: %s, colors=%d/5" % (
-        path, saved_exposure, len(rows)))
+    if saved_wb != expected_wb:
+        raise Exception("白平衡写入校验失败: %s" % path)
+    print("已写并校验 %s: %s, %s, colors=%d/5" % (
+        path, saved_exposure, saved_wb, len(rows)))
 
 if WRITE_FILE:
     if len(thresholds) == 5:
         write_calibration_result(
-            RESULT_PATH, exposure, gnd_box, gnd_box_far, thresholds)
+            RESULT_PATH, exposure, startup_wb_gains,
+            gnd_box, gnd_box_far, thresholds)
     else:
         write_calibration_result(
-            PARTIAL_RESULT_PATH, exposure, gnd_box, gnd_box_far, thresholds)
+            PARTIAL_RESULT_PATH, exposure, startup_wb_gains,
+            gnd_box, gnd_box_far, thresholds)
         print("正式配置未覆盖: 需要完整 5 个颜色槽位，当前=%d" % len(thresholds))
 
 # ---------- 动态分界线(与 main.py/minimain.py 的 ground 平均方式一致) ----------

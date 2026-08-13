@@ -7,7 +7,8 @@ COLOR_THR_PATH = '/sd/color_thr.txt'
 EXPOSURE_INIT = 880
 EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
-ENABLE_COMPLETED_COLOR_EXCLUSION = False
+# Provincial rule: each physical ID appears once per round.
+ENABLE_COMPLETED_COLOR_EXCLUSION = True
 ID2_ABSOLUTE_PRIORITY = True
 # 0x09 enumerates every visible candidate of one color without changing the
 # active tracker. The controller selects an exact candidate with 0x0A.
@@ -26,7 +27,31 @@ sensor.set_hmirror(False)
 sensor.set_vflip(True)
 def snapshot_frame():
     return sensor.snapshot().replace(hmirror=True)
-sensor.set_auto_whitebal(False, rgb_gain_db=WB_GAINS)
+def validate_wb_gains(values):
+    if len(values) != 3:
+        raise ValueError('wb_gains must contain R,G,B')
+    gains = (float(values[0]), float(values[1]), float(values[2]))
+    for gain in gains:
+        if gain < 0 or gain > 255:
+            raise ValueError('wb_gains out of range')
+    return gains
+def load_startup_wb_gains(path=COLOR_THR_PATH):
+    try:
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('wb_gains='):
+                    gains = validate_wb_gains(
+                        line.split('=', 1)[1].split(','))
+                    print('[WB] loaded R=%.2f G=%.2f B=%.2f from %s' %
+                          (gains[0], gains[1], gains[2], path))
+                    return gains
+    except Exception as error:
+        print('[WB] load failed: ' + str(error))
+    print('[WB] using fallback R=%.2f G=%.2f B=%.2f' % WB_GAINS)
+    return WB_GAINS
+startup_wb_gains = load_startup_wb_gains()
+sensor.set_auto_whitebal(False, rgb_gain_db=startup_wb_gains)
 sensor.set_auto_gain(False, gain_db=0)
 def validate_exposure(value):
     if value < EXPOSURE_MIN or value > EXPOSURE_MAX:
@@ -95,7 +120,8 @@ def _load_calibrated_params(path=COLOR_THR_PATH):
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                if line.startswith('exposure_us='):
+                if (line.startswith('exposure_us=') or
+                        line.startswith('wb_gains=')):
                     continue
                 if line.startswith('ground=') or line.startswith('ground2='):
                     try:
@@ -206,15 +232,15 @@ MODEL_MIN_BOX_AREA = 24
 MODEL_MATCH_CENTER2 = 130 * 130
 MODEL_PENDING_CENTER2 = 80 * 80
 FIRST_LOCK_SCORE_MIN = 0.30
-FIRST_LOCK_WINDOW_FRAMES = 5
-FIRST_LOCK_REQUIRED_HITS = 3
+FIRST_LOCK_WINDOW_FRAMES = 3
+FIRST_LOCK_REQUIRED_HITS = 2
 FIRST_LOCK_MATCH_CENTER_PX = 36
 FIRST_LOCK_MATCH_CENTER2 = FIRST_LOCK_MATCH_CENTER_PX * FIRST_LOCK_MATCH_CENTER_PX
 FIRST_LOCK_SIZE_DELTA_PERCENT = 50
 FIRST_LOCK_NEARER_MARGIN_CM = 0.0
 HOST_FORCED_FIRST_LOCK_SCORE_MIN = 0.25
-HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 5
-HOST_FORCED_FIRST_LOCK_REQUIRED_HITS = 3
+HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 3
+HOST_FORCED_FIRST_LOCK_REQUIRED_HITS = 2
 HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX = 36
 HOST_FORCED_FIRST_LOCK_MATCH_CENTER2 = (
     HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX *

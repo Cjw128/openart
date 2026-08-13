@@ -7,12 +7,13 @@ COLOR_THR_PATH = '/sd/color_thr.txt'
 EXPOSURE_INIT = 880
 EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
-ENABLE_COMPLETED_COLOR_EXCLUSION = False
+# Provincial rule: each physical ID appears once per round.
+ENABLE_COMPLETED_COLOR_EXCLUSION = True
 ID2_ABSOLUTE_PRIORITY = True
 # 0x09 enumerates every visible candidate of one color without changing the
 # active tracker. The controller selects an exact candidate with 0x0A.
 # ================== END QUICK MATCH SETTINGS ==================
-import sensor, gc, math
+import sensor, gc, math, time
 try:
     import tf
 except Exception:
@@ -24,7 +25,32 @@ except Exception:
     WDT = None
 ENABLE_WATCHDOG = True
 WATCHDOG_TIMEOUT_MS = 8000
+ENABLE_SD_LOG = True
+LOG_PATH = '/sd/runtime.log'
+LOG_INTERVAL_MS = 1000
 wdt = None
+last_log_ms = 0
+def log_checkpoint(stage, frame=-1, force=False):
+    global last_log_ms
+    if not ENABLE_SD_LOG:
+        return
+    now = time.ticks_ms()
+    if (not force and
+            time.ticks_diff(now, last_log_ms) < LOG_INTERVAL_MS):
+        return
+    last_log_ms = now
+    try:
+        free = gc.mem_free()
+    except Exception:
+        free = -1
+    try:
+        feed_watchdog()
+        with open(LOG_PATH, 'a') as f:
+            f.write('%d frame=%d stage=%s free=%d\n' %
+                    (now, frame, stage, free))
+        feed_watchdog()
+    except Exception:
+        pass
 def init_watchdog():
     global wdt
     if not ENABLE_WATCHDOG or WDT is None:
@@ -40,6 +66,7 @@ def feed_watchdog():
         wdt.feed()
     except Exception:
         pass
+log_checkpoint('boot', force=True)
 init_watchdog()
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
@@ -49,7 +76,31 @@ sensor.set_hmirror(False)
 sensor.set_vflip(True)
 def snapshot_frame():
     return sensor.snapshot().replace(hmirror=True)
-sensor.set_auto_whitebal(False, rgb_gain_db=WB_GAINS)
+def validate_wb_gains(values):
+    if len(values) != 3:
+        raise ValueError('wb_gains must contain R,G,B')
+    gains = (float(values[0]), float(values[1]), float(values[2]))
+    for gain in gains:
+        if gain < 0 or gain > 255:
+            raise ValueError('wb_gains out of range')
+    return gains
+def load_startup_wb_gains(path=COLOR_THR_PATH):
+    try:
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('wb_gains='):
+                    gains = validate_wb_gains(
+                        line.split('=', 1)[1].split(','))
+                    print('[WB] loaded R=%.2f G=%.2f B=%.2f from %s' %
+                          (gains[0], gains[1], gains[2], path))
+                    return gains
+    except Exception as error:
+        print('[WB] load failed: ' + str(error))
+    print('[WB] using fallback R=%.2f G=%.2f B=%.2f' % WB_GAINS)
+    return WB_GAINS
+startup_wb_gains = load_startup_wb_gains()
+sensor.set_auto_whitebal(False, rgb_gain_db=startup_wb_gains)
 sensor.set_auto_gain(False, gain_db=0)
 def validate_exposure(value):
     if value < EXPOSURE_MIN or value > EXPOSURE_MAX:
@@ -118,7 +169,8 @@ def _load_calibrated_params(path=COLOR_THR_PATH):
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                if line.startswith('exposure_us='):
+                if (line.startswith('exposure_us=') or
+                        line.startswith('wb_gains=')):
                     continue
                 if line.startswith('ground=') or line.startswith('ground2='):
                     try:
@@ -231,15 +283,15 @@ MODEL_MIN_BOX_AREA = 24
 MODEL_MATCH_CENTER2 = 130 * 130
 MODEL_PENDING_CENTER2 = 80 * 80
 FIRST_LOCK_SCORE_MIN = 0.30
-FIRST_LOCK_WINDOW_FRAMES = 5
-FIRST_LOCK_REQUIRED_HITS = 3
+FIRST_LOCK_WINDOW_FRAMES = 3
+FIRST_LOCK_REQUIRED_HITS = 2
 FIRST_LOCK_MATCH_CENTER_PX = 36
 FIRST_LOCK_MATCH_CENTER2 = FIRST_LOCK_MATCH_CENTER_PX * FIRST_LOCK_MATCH_CENTER_PX
 FIRST_LOCK_SIZE_DELTA_PERCENT = 50
 FIRST_LOCK_NEARER_MARGIN_CM = 0.0
 HOST_FORCED_FIRST_LOCK_SCORE_MIN = 0.25
-HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 5
-HOST_FORCED_FIRST_LOCK_REQUIRED_HITS = 3
+HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 3
+HOST_FORCED_FIRST_LOCK_REQUIRED_HITS = 2
 HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX = 36
 HOST_FORCED_FIRST_LOCK_MATCH_CENTER2 = (
     HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX *
@@ -380,7 +432,7 @@ front_scan_last_mask = -1
 front_scan_last_count = 0
 front_scan_stable_count = 0
 front_scan_total_count = 0
-yellow_threshold = [(27, 100, -55, 16, 21, 105)]
+yellow_threshold = [(26, 100, -48, 32, 16, 127)]
 ENABLE_YELLOW_DRAW = True
 TENNIS_LINE_THRESHOLD = yellow_threshold
 RETURN_YELLOW_PACKET_ID = 0xC8
@@ -400,26 +452,45 @@ return_yellow_y = 0
 return_stop_y = -1
 return_stop_requested = False
 YELLOW_ROI_TOP = (0, 90, 320, 20)
+YELLOW_ROI_MIDDLE = (0, 110, 320, 20)
 YELLOW_ROI_BOTTOM = (0, 130, 320, 20)
-YELLOW_ENTER_PIXELS = 70
-YELLOW_KEEP_PIXELS = 20
-YELLOW_CARRY_CONFIRM_FRAMES = 2
+YELLOW_ENTER_PIXELS = 35
+YELLOW_KEEP_PIXELS = 10
+YELLOW_MIN_AREA = 10
+YELLOW_HOLD_FRAMES = 2
 YELLOW_MIN_FIT_DX = 30
 YELLOW_MAX_FIT_SLOPE_X100 = 100
 YELLOW_TARGET_OVERLAP_PERCENT = 60
 YELLOW_BOTTOM_Y = 220
+YELLOW_CARRY_CONFIRM_FRAMES = 2
 YELLOW_LOST_THRESHOLD = 2
+YELLOW_CARRY_IGNORE_FRAMES = 4
+TENNIS_COLOR_ID = 3
+YELLOW_TENNIS_EXCLUDE_PAD_X = 15
+YELLOW_TENNIS_EXCLUDE_PAD_Y = 5
+YELLOW_TRACK_Y = 120
+YELLOW_TRACK_MAX_JUMP = 60
+YELLOW_TRACK_REVERSE_TOLERANCE = 15
+YELLOW_TRACK_DIRECTION_MIN_DELTA = 4
 yellow_line_k = 0.0
 yellow_line_b = 0.0
 yellow_bottom_visible = False
 yellow_detected = False
+yellow_raw_detected = False
+yellow_raw_bottom_visible = False
+yellow_sample_valid = False
+yellow_hold_count = 0
 yellow_tracking = False
-yellow_lost_count = 0
 yellow_seen_in_carry = False
 yellow_bottom_reached_in_carry = False
 yellow_carry_confirm_count = 0
-YELLOW_CARRY_IGNORE_FRAMES = 4
+yellow_lost_count = 0
 carry_start_frame = -1
+carry_tennis_active = False
+carry_tennis_box = None
+yellow_track_detected = False
+yellow_track_x = None
+yellow_track_direction = 0
 MODE_SEARCH = 0
 MODE_CARRY = 1
 MODE_WAIT_TURN = 2
@@ -530,18 +601,46 @@ def reset_target_tracking_state():
     clear_target_scan()
     reset_hybrid_tracking()
 def reset_yellow_state():
-    global yellow_lost_count, yellow_seen_in_carry, yellow_tracking, yellow_detected
+    global yellow_lost_count, yellow_seen_in_carry
+    global yellow_tracking, yellow_detected, yellow_raw_detected
+    global yellow_raw_bottom_visible, yellow_sample_valid, yellow_hold_count
     global yellow_bottom_reached_in_carry, yellow_carry_confirm_count
     global yellow_bottom_visible, yellow_line_k, yellow_line_b
-    yellow_lost_count = 0
+    global carry_tennis_active, carry_tennis_box
+    global yellow_track_detected, yellow_track_x, yellow_track_direction
     yellow_seen_in_carry = False
     yellow_bottom_reached_in_carry = False
     yellow_carry_confirm_count = 0
+    yellow_lost_count = 0
     yellow_tracking = False
     yellow_detected = False
+    yellow_raw_detected = False
+    yellow_raw_bottom_visible = False
+    yellow_sample_valid = False
+    yellow_hold_count = 0
     yellow_bottom_visible = False
     yellow_line_k = 0.0
     yellow_line_b = 0.0
+    carry_tennis_active = False
+    carry_tennis_box = None
+    yellow_track_detected = False
+    yellow_track_x = None
+    yellow_track_direction = 0
+def latch_carry_yellow_object():
+    global carry_tennis_active, carry_tennis_box
+    carry_tennis_active = active_selected_color_id() == TENNIS_COLOR_ID
+    if carry_tennis_active and color_track_box is not None:
+        carry_tennis_box = color_track_box
+    elif (carry_tennis_active and model_lock[1] is not None):
+        carry_tennis_box = model_lock[1]
+    else:
+        carry_tennis_box = None
+def refresh_carry_tennis_box():
+    global carry_tennis_box
+    if (carry_tennis_active and color_track_active and
+            color_track_color_id == TENNIS_COLOR_ID and
+            color_track_box is not None):
+        carry_tennis_box = color_track_box
 def reset_return_yellow_state():
     global return_yellow_last_y, return_yellow_stable_count
     global return_yellow_detected, return_yellow_y
@@ -971,7 +1070,6 @@ def world_cm_to_mm(value_cm):
 def pick_top_y_from_strip(blobs):
     if not blobs:
         return None
-    # Hoist the invariants and read each blob accessor once per blob.
     min_h = CUT_BLOB_MIN_H
     bottom_limit = CUT_SCAN_Y_MAX - CUT_BLOB_BOTTOM_MARGIN
     top_y = None
@@ -1246,6 +1344,7 @@ def init_model_runtime():
         model_net = tf.load(MODEL_PATH)
         model_fb = sensor.alloc_extra_fb(240, 240, sensor.RGB565)
         feed_watchdog()
+        log_checkpoint('model_loaded', force=True)
         print('[MODEL] loaded ' + MODEL_PATH)
     except Exception as error:
         disable_model_runtime('load failed: ' + str(error))
@@ -2793,6 +2892,7 @@ def receive_command_from_host():
             openart_mode = MODE_CARRY
             carry_start_frame = frame_count
             reset_yellow_state()
+            latch_carry_yellow_object()
         elif command == CMD_CLEAR_COMPLETED:
             clear_completed_carry_state()
             openart_mode = MODE_SEARCH
@@ -2858,13 +2958,72 @@ def pick_yellow_blob(blobs):
             best = blob
             best_pixels = pixels
     return best
+def find_yellow_blobs_outside_tennis(img, roi, minimum):
+    if not carry_tennis_active or carry_tennis_box is None:
+        return img.find_blobs(
+            yellow_threshold, roi=roi, pixels_threshold=minimum,
+            area_threshold=YELLOW_MIN_AREA, merge=True)
+    roi_x, roi_y, roi_w, roi_h = roi
+    box_x, box_y, box_w, box_h = carry_tennis_box
+    if (box_y - YELLOW_TENNIS_EXCLUDE_PAD_Y >= roi_y + roi_h or
+            box_y + box_h + YELLOW_TENNIS_EXCLUDE_PAD_Y <= roi_y):
+        return img.find_blobs(
+            yellow_threshold, roi=roi, pixels_threshold=minimum,
+            area_threshold=YELLOW_MIN_AREA, merge=True)
+    cut_left = clamp_int(
+        box_x - YELLOW_TENNIS_EXCLUDE_PAD_X, roi_x, roi_x + roi_w)
+    cut_right = clamp_int(
+        box_x + box_w + YELLOW_TENNIS_EXCLUDE_PAD_X,
+        roi_x, roi_x + roi_w)
+    blobs = []
+    left_w = cut_left - roi_x
+    if left_w > 0:
+        found = img.find_blobs(
+            yellow_threshold, roi=(roi_x, roi_y, left_w, roi_h),
+            pixels_threshold=minimum, area_threshold=YELLOW_MIN_AREA,
+            merge=True)
+        if found:
+            blobs.extend(found)
+    right_w = roi_x + roi_w - cut_right
+    if right_w > 0:
+        found = img.find_blobs(
+            yellow_threshold, roi=(cut_right, roi_y, right_w, roi_h),
+            pixels_threshold=minimum, area_threshold=YELLOW_MIN_AREA,
+            merge=True)
+        if found:
+            blobs.extend(found)
+    return blobs
+def yellow_candidate_track_x(slope, intercept):
+    if abs(slope) < 0.0001:
+        return None
+    x = int((YELLOW_TRACK_Y - intercept) / slope)
+    if x < 0 or x > 319:
+        return None
+    return x
+def accept_yellow_track_candidate(track_x):
+    global yellow_track_x, yellow_track_direction
+    if track_x is None:
+        return False
+    if yellow_track_x is None:
+        yellow_track_x = track_x
+        return True
+    delta = track_x - yellow_track_x
+    if abs(delta) > YELLOW_TRACK_MAX_JUMP:
+        return False
+    if yellow_track_direction > 0 and delta < 0:
+        return delta >= -YELLOW_TRACK_REVERSE_TOLERANCE
+    if yellow_track_direction < 0 and delta > 0:
+        return delta <= YELLOW_TRACK_REVERSE_TOLERANCE
+    if (yellow_track_direction == 0 and
+            abs(delta) >= YELLOW_TRACK_DIRECTION_MIN_DELTA):
+        yellow_track_direction = 1 if delta > 0 else -1
+    yellow_track_x = track_x
+    return True
 def draw_carry_yellow_line(img):
     if (not ENABLE_YELLOW_DRAW or
             (openart_mode != MODE_SEARCH and openart_mode != MODE_CARRY) or
             not yellow_detected):
         return
-    # 用四个标量代替 points 列表：每帧少一个列表和最多四个坐标元组。
-    # px<0 表示该点尚未取到（合法 x 恒在 0..319）。
     px0 = -1
     py0 = 0
     px1 = -1
@@ -2878,7 +3037,6 @@ def draw_carry_yellow_line(img):
             elif px1 < 0:
                 px1 = x
                 py1 = int(y)
-    # 左右边界已凑满两点时，上下边界交点原本也只会落在不被使用的下标上
     if px1 < 0 and abs(yellow_line_k) > 0.0001:
         for y in (0, 239):
             x = (y - yellow_line_b) / yellow_line_k
@@ -2896,18 +3054,26 @@ def draw_carry_yellow_line(img):
 def current_pos_flag(frame_index):
     global yellow_lost_count, yellow_seen_in_carry
     global yellow_bottom_reached_in_carry, yellow_carry_confirm_count
+    global yellow_track_x, yellow_track_direction
     global openart_mode
     if openart_mode == MODE_CARRY:
         if carry_start_frame >= 0 and frame_index - carry_start_frame < YELLOW_CARRY_IGNORE_FRAMES:
             yellow_lost_count = 0
             return POS_NO_BOUNDARY
-        if yellow_detected:
+        if yellow_raw_detected:
             if not yellow_seen_in_carry:
                 yellow_carry_confirm_count += 1
                 yellow_seen_in_carry = yellow_carry_confirm_count >= YELLOW_CARRY_CONFIRM_FRAMES
             yellow_lost_count = 0
-            if yellow_seen_in_carry and yellow_bottom_visible:
+            if (yellow_seen_in_carry and yellow_raw_bottom_visible and
+                    not yellow_bottom_reached_in_carry):
                 yellow_bottom_reached_in_carry = True
+                if carry_tennis_active:
+                    yellow_track_x = yellow_candidate_track_x(
+                        yellow_line_k, yellow_line_b)
+                    yellow_track_direction = 0
+            return POS_NO_BOUNDARY
+        if not yellow_sample_valid:
             return POS_NO_BOUNDARY
         if not yellow_seen_in_carry:
             yellow_carry_confirm_count = 0
@@ -2925,35 +3091,104 @@ def current_pos_flag(frame_index):
         return POS_RIGHT_SIDE if yellow_detected else POS_NO_BOUNDARY
     return POS_NO_BOUNDARY
 def update_yellow_detection(img):
-    global yellow_tracking, yellow_detected, yellow_bottom_visible
+    global yellow_tracking, yellow_detected, yellow_raw_detected
+    global yellow_bottom_visible, yellow_raw_bottom_visible
+    global yellow_sample_valid, yellow_hold_count
     global yellow_line_k, yellow_line_b
+    global yellow_track_detected
+    refresh_carry_tennis_box()
     minimum = YELLOW_KEEP_PIXELS if yellow_tracking else YELLOW_ENTER_PIXELS
-    top = pick_yellow_blob(img.find_blobs(
-        yellow_threshold, roi=YELLOW_ROI_TOP, pixels_threshold=minimum,
-        area_threshold=20, merge=True))
-    bottom = pick_yellow_blob(img.find_blobs(
-        yellow_threshold, roi=YELLOW_ROI_BOTTOM, pixels_threshold=minimum,
-        area_threshold=20, merge=True))
-    valid = top is not None and bottom is not None
-    if valid:
+    try:
+        top_blobs = find_yellow_blobs_outside_tennis(
+            img, YELLOW_ROI_TOP, minimum)
+        middle_blobs = find_yellow_blobs_outside_tennis(
+            img, YELLOW_ROI_MIDDLE, minimum)
+        bottom_blobs = find_yellow_blobs_outside_tennis(
+            img, YELLOW_ROI_BOTTOM, minimum)
+        top = pick_yellow_blob(top_blobs)
+        middle = pick_yellow_blob(middle_blobs)
+        bottom = pick_yellow_blob(bottom_blobs)
+    except Exception:
+        yellow_tracking = False
+        yellow_detected = False
+        yellow_raw_detected = False
+        yellow_bottom_visible = False
+        yellow_raw_bottom_visible = False
+        yellow_sample_valid = False
+        yellow_track_detected = False
+        yellow_hold_count = 0
+        gc.collect()
+        return
+    yellow_sample_valid = True
+    first = None
+    second = None
+    dx = 0
+    dy = 0
+    if top is not None and bottom is not None:
         dx = bottom.cx() - top.cx()
         dy = bottom.cy() - top.cy()
-        valid = (abs(dx) >= YELLOW_MIN_FIT_DX and
-                 abs(dy) * 100 <= abs(dx) * YELLOW_MAX_FIT_SLOPE_X100)
-    yellow_detected = valid
-    yellow_bottom_visible = False
+        if (abs(dx) >= YELLOW_MIN_FIT_DX and
+                abs(dy) * 100 <= abs(dx) * YELLOW_MAX_FIT_SLOPE_X100):
+            first = top
+            second = bottom
+    if first is None and top is not None and middle is not None:
+        dx = middle.cx() - top.cx()
+        dy = middle.cy() - top.cy()
+        if (abs(dx) >= YELLOW_MIN_FIT_DX and
+                abs(dy) * 100 <= abs(dx) * YELLOW_MAX_FIT_SLOPE_X100):
+            first = top
+            second = middle
+    if first is None and middle is not None and bottom is not None:
+        dx = bottom.cx() - middle.cx()
+        dy = bottom.cy() - middle.cy()
+        if (abs(dx) >= YELLOW_MIN_FIT_DX and
+                abs(dy) * 100 <= abs(dx) * YELLOW_MAX_FIT_SLOPE_X100):
+            first = middle
+            second = bottom
+    valid = first is not None
+    yellow_track_detected = valid
+    yellow_raw_bottom_visible = False
     if valid:
-        yellow_tracking = True
         slope = dy / dx
-        intercept = top.cy() - slope * top.cx()
-        yellow_line_k = slope
-        yellow_line_b = intercept
-        yellow_bottom_visible = (intercept >= YELLOW_BOTTOM_Y or
-                                 slope * 319 + intercept >= YELLOW_BOTTOM_Y)
-    elif openart_mode == MODE_SEARCH or not yellow_seen_in_carry:
-        yellow_tracking = False
-        yellow_line_k = 0.0
-        yellow_line_b = 0.0
+        intercept = first.cy() - slope * first.cx()
+        track_x = yellow_candidate_track_x(slope, intercept)
+        track_delta = (0 if yellow_track_x is None or track_x is None
+                       else track_x - yellow_track_x)
+        if carry_tennis_active and yellow_bottom_reached_in_carry:
+            if track_x is None:
+                yellow_track_detected = False
+            elif abs(track_delta) > YELLOW_TRACK_MAX_JUMP:
+                yellow_track_detected = False
+            elif (yellow_track_direction > 0 and
+                    track_delta < -YELLOW_TRACK_REVERSE_TOLERANCE):
+                yellow_track_detected = False
+            elif (yellow_track_direction < 0 and
+                    track_delta > YELLOW_TRACK_REVERSE_TOLERANCE):
+                yellow_track_detected = False
+        if yellow_track_detected:
+            if carry_tennis_active and yellow_bottom_reached_in_carry:
+                accept_yellow_track_candidate(track_x)
+            yellow_tracking = True
+            yellow_line_k = slope
+            yellow_line_b = intercept
+            yellow_raw_bottom_visible = (
+                intercept >= YELLOW_BOTTOM_Y or
+                slope * 319 + intercept >= YELLOW_BOTTOM_Y)
+            yellow_bottom_visible = yellow_raw_bottom_visible
+            yellow_detected = True
+            yellow_hold_count = YELLOW_HOLD_FRAMES
+    yellow_raw_detected = yellow_track_detected
+    if not yellow_track_detected:
+        if yellow_hold_count > 0:
+            yellow_hold_count -= 1
+            yellow_detected = True
+        else:
+            yellow_detected = False
+            yellow_bottom_visible = False
+            if openart_mode == MODE_SEARCH or not yellow_seen_in_carry:
+                yellow_tracking = False
+                yellow_line_k = 0.0
+                yellow_line_b = 0.0
 frame_count = 0
 init_model_runtime()
 while True:
@@ -2996,7 +3231,8 @@ while True:
         world_x, world_y = world_point
         wx_mm = world_cm_to_mm(world_x)
         wy_mm = world_cm_to_mm(world_y)
-        send_world_data(send_color_id, wx_mm, wy_mm, w, yellow_detected, pos_flag)
+        send_world_data(send_color_id, wx_mm, wy_mm, w,
+                        yellow_detected, pos_flag)
         img.draw_rectangle(output_box,
                            color=TARGET_BOX_COLORS[send_color_id - 1], thickness=2)
     else:
@@ -3013,4 +3249,5 @@ while True:
                 reset_target_tracking_state()
         send_world_no_target(yellow_detected, pos_flag)
     maybe_collect(frame_count)
+    log_checkpoint('loop', frame_count)
     feed_watchdog()

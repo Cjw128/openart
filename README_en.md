@@ -12,15 +12,7 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 | `ground_mesh_24_points_template.csv` | PC | Current 28 pixel/world calibration points |
 | `calibrate_ground_camera.py` | PC | Mesh generation, validation, and reporting tool |
 | `camera_ground_mesh_report.json` | PC | Current mesh quality report |
-| `raw_ground_projection_test.py` | OpenART Plus / IDE | Ground-coordinate collection and field verification tool |
-| `world_coordinate_test.py` | OpenART Plus / IDE | All-class world-coordinate observer aligned with the full master detector |
-| `test_ground_projection.py` | PC | Runtime projection regression tests |
-| `test_model_blob_fusion.py` | PC | Master/slave model-blob fusion regression tests |
-| `test_orbit_y_cut.py` | PC | Fixed-Y orbit crop and UART state regression tests |
-| `test_front_scan_id2_blob.py` | PC | ID2 horizontal-brick front-scan fallback regression tests |
-| `test_front_scan_bear_color.py` | PC | ID4/ID5 front-scan and ordinary-lock regression tests |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | Competition field auto-calibration and preview script |
-| `front_obstacle_scan_test.py` | OpenART Plus / IDE | Pre-carry front color-blob scan preview script |
 
 ## Structure Notes
 
@@ -29,12 +21,28 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 - Color detection, yellow-line state, the UART protocol, and the main loop remain in each single-file runtime. Ground-mesh generation and field verification remain standalone tools.
 - Shared model/blob fusion and coordinate-following nodes must remain synchronized across `main.py`, `minimain.py`, and `world_coordinate_test.py`. Role-specific differences stay limited to yellow-line, return, and task-state behavior, while the AST gate prevents drift in the shared framework.
 - `fast_blob_backup/`, `stable_confirm/`, `stable_no_priority/`, and `mainbak` are historical references, not deployment entrypoints.
+- Test and diagnostic files live outside the repository or in a system temporary directory. The `*test*.py` and `tests/` ignore rules only prevent accidental commits.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
 - The root `README.md` stays as a concise deployment guide; detailed changes live in `README_ch.md` and `README_en.md`.
 
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-08-13 - In development - Tennis carry-line isolation, configurable white balance, and logging cleanup
+
+Scope: `main.py`, `minimain.py`, `calib_ide_autocalib_competition.py`, `.gitignore`, and the three READMEs. The UART packet layout and RT1021 controller are unchanged.
+
+- Changed first model confirmation for ordinary and host-forced search to `2/3`; the `36 px` centre-continuity and `50%` size-change tolerances remain. `ENABLE_COMPLETED_COLOR_EXCLUSION` now defaults to `True`, excluding each completed ID until command `0x08` clears the record.
+- Master carry-line detection uses three ROIs at `y=90..109`, `110..129`, and `130..149`. Initial/hold thresholds are `35/10` pixels with a 10-pixel minimum component area. Two detected frames confirm the line; after it reaches the bottom, two consecutive frames without a valid raw hit emit `POS_CROSSED`. Display hysteresis does not reset the loss counter.
+- During ID3 tennis carry, only ROIs vertically intersecting the current tennis box are split around it, with `15 px` horizontal and `5 px` vertical padding. This prevents tennis and line pixels from merging before component selection. After arming, the fit intersection at `y=120` is tracked; candidates jumping over `60 px` or reversing over `15 px` are rejected, and the first displacement of at least `4 px` establishes direction.
+- At startup, `main.py` and `minimain.py` read `wb_gains=R,G,B` from `/sd/color_thr.txt`, falling back to `(92.00,64.00,101.00)` when absent or invalid. The field calibration script reads and writes the same row so each camera can keep its own white balance.
+- Removed `/sd/yellow_carry.log`, its buffer, per-frame formatting, extra blob diagnostics, and every write call from the production runtime. Yellow-line diagnosis is performed only in a `yellow_carry_test.py` copy outside the repository or in a system temporary directory, preferably through IDE/UART output. If offline SD capture is unavoidable, buffer at least four lines and feed the watchdog before and after each batch write.
+- The master retains only low-rate `/sd/runtime.log` checkpoints: at most one per second, with watchdog feeds around the single write. This log locates offline freeze stages and does not contain per-frame yellow-line data.
+- `.gitignore` now excludes `*test*.py` and `tests/`; historical tests and diagnostic scripts remain local but are no longer tracked. Validation runs in memory or a temporary directory.
+- Python syntax, `mpy-cross`, `git diff --check`, ROI splitting, track-jitter handling, two-frame exit, and replay of the recorded failure passed. Desktop checks do not replace on-board carry and long offline runtime tests.
+
+Recommended diagnostic fields are frame, target ID/box, blob pixels/centres for all three ROIs, chosen ROI pair, `dx/dy/k/b`, `raw/shown/armed/confirm/lost/pos`, tennis box, `track_x/delta/direction`, and rejection reason. Once `armed=1`, `raw=0` should raise `lost` to 2 on the second frame; persistent `raw=1` indicates object contamination or a trajectory-gating issue.
 
 ### 2026-08-03 - In development - Pixel competition for ordinary bear locking
 

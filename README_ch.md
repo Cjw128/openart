@@ -12,15 +12,7 @@
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点 |
 | `calibrate_ground_camera.py` | PC | 网格生成、校验和报告工具 |
 | `camera_ground_mesh_report.json` | PC | 当前网格质量报告 |
-| `raw_ground_projection_test.py` | OpenART Plus / IDE | 地面坐标采点和实地复核脚本 |
-| `world_coordinate_test.py` | OpenART Plus / IDE | 与主车完整检测对齐的全类别世界坐标观察脚本 |
-| `test_ground_projection.py` | PC | 运行时投影回归测试 |
-| `test_model_blob_fusion.py` | PC | 主从模型 / 色块融合回归测试 |
-| `test_orbit_y_cut.py` | PC | orbit 固定 Y 裁切与 UART 状态回归测试 |
-| `test_front_scan_id2_blob.py` | PC | ID2 横向红砖前扫补检回归测试 |
-| `test_front_scan_bear_color.py` | PC | ID4/ID5 熊类前扫与普通锁色回归测试 |
 | `calib_ide_autocalib_competition.py` | OpenART Plus / IDE | 比赛现场自动标定与预览脚本 |
-| `front_obstacle_scan_test.py` | OpenART Plus / IDE | 搬运前前方色块扫描预览脚本 |
 
 ## 结构说明
 
@@ -29,12 +21,28 @@
 - 颜色检测、黄线状态、UART 协议和主循环仍在单文件主程序内；地面网格生成和实地复核保留为独立工具。
 - 模型 / 色块融合与坐标跟随的公共节点必须在 `main.py`、`minimain.py`、`world_coordinate_test.py` 三方同步；主从角色差异只保留在黄线、回库和任务状态等角色逻辑中，并由 AST 门禁防止公共框架漂移。
 - `fast_blob_backup/`、`stable_confirm/`、`stable_no_priority/` 与 `mainbak` 仅作历史对照，不是当前入口。
+- 测试/诊断文件放在仓库外或系统临时目录，不属于 Git 发布内容；`.gitignore` 的 `*test*.py` 与 `tests/` 规则只负责防止误提交。
 - 多文件版本曾导致 TFLite 检测卡死，原因和维护约束见 v0.4.0 日志；不要把 v0.3.0 的模块化结构重新作为比赛部署结构。
 - 根目录 `README.md` 只保留当前部署摘要，完整迭代记录写入 `README_ch.md` / `README_en.md`。
 
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-08-13 - 开发中 - 网球搬运黄线分离、白平衡配置与日志收敛
+
+范围：`main.py`、`minimain.py`、`calib_ide_autocalib_competition.py`、`.gitignore` 与三份 README。UART 包结构与 RT1021 主控无需修改。
+
+- 普通自由搜索和主控强制搜索的首次模型确认统一改为 `2/3`；中心连续性仍为 `36 px`，尺寸变化容差仍为 `50%`。`ENABLE_COMPLETED_COLOR_EXCLUSION` 默认改为 `True`，每个已完成 ID 从后续候选中排除，`0x08` 清空记录。
+- `main.py` 搬运黄线使用 `y=90..109`、`110..129`、`130..149` 三段 ROI；首次/保持最小像素为 `35/10`，最小连通面积为 10，连续 2 帧见线确认，触底后连续 2 帧无有效原始命中即发送 `POS_CROSSED`。显示保持状态不参与丢线计数。
+- ID3 网球搬运按当前网球框只切分纵向相交的 ROI，排除框左右各扩 `15 px`、上下各扩 `5 px`，避免网球与黄线先合并为同一连通域。触底后按拟合线在 `y=120` 的交点跟踪，拒绝超过 `60 px` 的跳变和超过 `15 px` 的反向候选；至少 `4 px` 的首次位移建立方向。
+- `main.py`、`minimain.py` 上电读取 `/sd/color_thr.txt` 的 `wb_gains=R,G,B`，无效或缺失时回退 `(92.00,64.00,101.00)`；现场标定脚本读取并写回同一格式，使两块镜头可保存各自白平衡。
+- 删除正式入口的 `/sd/yellow_carry.log`、缓存、逐帧格式化、额外 blob 统计及全部写卡调用。黄线调试只在仓库外或系统临时目录的 `yellow_carry_test.py` 副本中进行，优先用 IDE/UART 输出；必须脱机写卡时至少 4 行批量写入，并在写入前后喂看门狗。
+- 主车只保留低频 `/sd/runtime.log`：每秒最多一个检查点，单次写入前后喂看门狗。它用于定位脱机卡死阶段，不包含黄线逐帧参数。
+- `.gitignore` 新增 `*test*.py` 和 `tests/`；历史测试/诊断脚本停止 Git 跟踪但保留本地。验证在临时目录或内存中运行，不向仓库新增测试文件。
+- Python 语法、`mpy-cross`、`git diff --check`、黄线 ROI 切分、轨迹抗抖、2 帧退出与历史失败日志回放均通过；桌面验证不能替代 OpenART 实机搬运和长时间脱机运行。
+
+调试观测字段建议：帧号、目标 ID/框、三段 ROI 的 blob 像素/中心、采用的 ROI 对、`dx/dy/k/b`、`raw/shown/armed/confirm/lost/pos`、网球框、`track_x/delta/direction` 和候选拒绝原因。`armed=1` 后 `raw=0` 时，`lost` 应在第二帧到达 2 并退出；若 `raw=1` 持续出现，应先检查物体污染与轨迹拒绝状态。
 
 ### 2026-08-03 - 开发中 - 普通熊类锁色同步像素竞争
 
