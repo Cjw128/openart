@@ -9,7 +9,8 @@ EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
 # Provincial rule: each physical ID appears once per round.
 ENABLE_COMPLETED_COLOR_EXCLUSION = True
-ID2_ABSOLUTE_PRIORITY = True
+# The Mini uses an ID3-only fallback until a controller policy is received.
+ID2_ABSOLUTE_PRIORITY = False
 # 0x09 enumerates every visible candidate of one color without changing the
 # active tracker. The controller selects an exact candidate with 0x0A.
 # ================== END QUICK MATCH SETTINGS ==================
@@ -19,6 +20,30 @@ try:
 except Exception:
     tf = None
 from machine import UART
+ENABLE_RUNTIME_LOG = True
+RUNTIME_LOG_PATH = '/sd/minimain_runtime.log'
+RUNTIME_LOG_INTERVAL_FRAMES = 120
+RUNTIME_LOG_ERROR_INTERVAL_FRAMES = 120
+frame_count = 0
+runtime_log_failure_reported = False
+def runtime_log(event, detail=''):
+    global runtime_log_failure_reported
+    if not ENABLE_RUNTIME_LOG:
+        return
+    try:
+        free_heap = gc.mem_free()
+    except Exception:
+        free_heap = -1
+    try:
+        clean_detail = str(detail).replace('\r', ' ').replace('\n', ' ')
+        with open(RUNTIME_LOG_PATH, 'a') as log_file:
+            log_file.write('f=%d event=%s heap=%d %s\n' %
+                           (frame_count, event, free_heap, clean_detail))
+    except Exception as error:
+        if not runtime_log_failure_reported:
+            print('[RUNTIME LOG] write failed: ' + str(error))
+            runtime_log_failure_reported = True
+runtime_log('BOOT', 'startup')
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
@@ -247,8 +272,18 @@ HOST_FORCED_FIRST_LOCK_MATCH_CENTER2 = (
     HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX)
 HOST_FORCED_FIRST_LOCK_SIZE_DELTA_PERCENT = 50
 HOST_FORCED_COLOR_SAMPLE_MAX_IQR = (65, 70, 85)
+TENNIS_COLOR_ID = 3
+FORCED_TENNIS_FIRST_LOCK_SCORE_MIN = 0.18
+FORCED_TENNIS_LOCK_SCORE_MIN = 0.15
 TENNIS_TRACK_MIN_PIXELS = 30
 TENNIS_TRACK_MIN_AREA = 36
+TENNIS_FALLBACK_MIN_DENSITY_X100 = 35
+TENNIS_FALLBACK_ASPECT_MIN_X100 = 50
+TENNIS_FALLBACK_ASPECT_MAX_X100 = 200
+TENNIS_FALLBACK_LOCK_PAD_PERCENT = 90
+TENNIS_FALLBACK_LOCK_MIN_PAD = 16
+TENNIS_FALLBACK_INTERVAL_FRAMES = 2
+TENNIS_FALLBACK_SCORE = 1.0
 ENABLE_TENNIS_LINE_FILTER = False
 TENNIS_MODEL_ASPECT_MIN_X100 = 20
 TENNIS_MODEL_ASPECT_MAX_X100 = 500
@@ -308,6 +343,7 @@ model_fb = None
 model_runtime_enabled = True
 model_copy_to_fb_supported = True
 model_infer_error_count = 0
+tennis_fallback_last_frame = -TENNIS_FALLBACK_INTERVAL_FRAMES
 model_lock = [-1, None, -1, None, 0, 0]
 model_color = [0, 0, 0, False]
 model_track = [False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -352,12 +388,53 @@ color_track_coordinate_box = None
 color_track_color_id = 0
 color_lost_count = 0
 _cmd_rx_buf = bytearray()
+cmd_rx_bytes = 0
+cmd_rx_valid_frames = 0
+cmd_rx_bad_frames = 0
+cmd_rx_dropped_bytes = 0
+cmd_rx_policy_frames = 0
+cmd_rx_last_command = -1
+cmd_rx_last_param = -1
+cmd_rx_last_bad_log_frame = -RUNTIME_LOG_ERROR_INTERVAL_FRAMES
+cmd_rx_last_policy_log_frame = -RUNTIME_LOG_ERROR_INTERVAL_FRAMES
+world_tx_target_count = 0
+world_tx_no_target_count = 0
+world_tx_error_count = 0
+world_tx_last_error_log_frame = -RUNTIME_LOG_ERROR_INTERVAL_FRAMES
+world_tx_last_has_target = False
+world_tx_last_color_id = 0
+world_tx_last_wx_mm = 0
+world_tx_last_wy_mm = 0
+world_tx_last_pw = 0
+world_tx_last_frame = -1
 front_scan_requested = False
 CMD_CLEAR_COMPLETED = 0x08
 TARGET_SCAN_COMMAND = 0x09
 TARGET_SELECT_COMMAND = 0x0A
 ORBIT_ROI_COMMAND = 0x0B
+LOCK_POLICY_COMMAND = 0x0C
 TARGET_COMMAND_FRAME_SIZE = 6
+LOCK_POLICY_RED_FIRST = 0x01
+LOCK_POLICY_TENNIS_FIRST = 0x02
+LOCK_POLICY_DELAY_BAGS = 0x04
+LOCK_POLICY_RED_FIRST_BLUE_LAST = (LOCK_POLICY_RED_FIRST |
+                                   LOCK_POLICY_DELAY_BAGS)
+LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS = (
+    LOCK_POLICY_TENNIS_FIRST | LOCK_POLICY_DELAY_BAGS)
+DEFAULT_LOCK_POLICY_FLAGS = LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS
+LOCK_POLICY_VALID_VALUES = (0, LOCK_POLICY_RED_FIRST,
+                            LOCK_POLICY_TENNIS_FIRST,
+                            LOCK_POLICY_RED_FIRST_BLUE_LAST,
+                            LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS)
+ALL_COLOR_MASK = (1 << len(all_color_thresholds)) - 1
+BLUE_BAG_BIT = 1 << 0
+BEAR_COLOR_MASK = (1 << 3) | (1 << 4)
+RED_MIDDLE_COLOR_MASK = (1 << 2) | BEAR_COLOR_MASK
+lock_policy_flags = (LOCK_POLICY_RED_FIRST if ID2_ABSOLUTE_PRIORITY
+                     else DEFAULT_LOCK_POLICY_FLAGS)
+# Keep receipt state separate from the safe ID3-only fallback for diagnostics.
+lock_policy_received = bool(ID2_ABSOLUTE_PRIORITY)
+search_color_mask = 0
 TARGET_CANDIDATE_PACKET_ID = 0xC9
 FRONT_SCAN_PACKET_ID = 0xC7
 FRONT_SCAN_EXCLUDE_IOU = 0.20
@@ -405,15 +482,34 @@ openart_mode = MODE_SEARCH
 def color_id_completed(color_id):
     return (1 <= color_id <= len(all_color_thresholds) and
             bool(completed_color_mask & (1 << (color_id - 1))))
+def forced_first_color_id():
+    if (lock_policy_flags & LOCK_POLICY_RED_FIRST and
+            not color_id_completed(2)):
+        return 2
+    if (lock_policy_flags & LOCK_POLICY_TENNIS_FIRST and
+            not color_id_completed(3)):
+        return 3
+    return 0
+def rebuild_search_color_mask():
+    global search_color_mask
+    available = ALL_COLOR_MASK
+    if ENABLE_COMPLETED_COLOR_EXCLUSION:
+        available &= ~completed_color_mask
+    forced_id = forced_first_color_id()
+    if forced_id:
+        available &= 1 << (forced_id - 1)
+    elif lock_policy_flags == LOCK_POLICY_RED_FIRST_BLUE_LAST:
+        if RED_MIDDLE_COLOR_MASK & ~completed_color_mask:
+            available &= ~BLUE_BAG_BIT
+    elif (lock_policy_flags ==
+          LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS):
+        unfinished_bears = BEAR_COLOR_MASK & ~completed_color_mask
+        if unfinished_bears:
+            available &= unfinished_bears
+    search_color_mask = available & ALL_COLOR_MASK
 def color_id_available_for_search(color_id):
-    if color_id < 1 or color_id > len(all_color_thresholds):
-        return False
-    if (ENABLE_COMPLETED_COLOR_EXCLUSION and
-            color_id_completed(color_id)):
-        return False
-    if ID2_ABSOLUTE_PRIORITY and not color_id_completed(2):
-        return color_id == 2
-    return True
+    return (1 <= color_id <= len(all_color_thresholds) and
+            bool(search_color_mask & (1 << (color_id - 1))))
 def host_forced_target_active():
     return (host_color_id_received and
             1 <= target_color_id <= len(all_color_thresholds) and
@@ -422,19 +518,47 @@ def mark_color_completed(color_id):
     global completed_color_mask
     if color_id_available_for_search(color_id):
         completed_color_mask |= 1 << (color_id - 1)
+        rebuild_search_color_mask()
 def clear_completed_carry_state():
     global completed_color_mask, pending_carry_color_id
     completed_color_mask = 0
     pending_carry_color_id = 0
+    rebuild_search_color_mask()
+def apply_lock_policy_command(flags):
+    global lock_policy_flags, lock_policy_received
+    if flags not in LOCK_POLICY_VALID_VALUES:
+        return None
+    if lock_policy_received and flags == lock_policy_flags:
+        return False
+    lock_policy_flags = flags
+    lock_policy_received = True
+    rebuild_search_color_mask()
+    return True
+rebuild_search_color_mask()
+if not lock_policy_received:
+    runtime_log('POLICY_DEFAULT', 'flags=%d mask=%d' %
+                (lock_policy_flags, search_color_mask))
 def begin_pending_carry():
     global pending_carry_color_id
     color_id = active_selected_color_id()
     pending_carry_color_id = (
         color_id if 1 <= color_id <= len(all_color_thresholds) else 0)
-def finish_pending_carry():
+    if pending_carry_color_id:
+        runtime_log(
+            'CARRY_BEGIN',
+            'id=%d done=%d mask=%d' %
+            (pending_carry_color_id, completed_color_mask,
+             search_color_mask))
+def finish_pending_carry(source=''):
     global pending_carry_color_id
-    if 1 <= pending_carry_color_id <= len(all_color_thresholds):
-        mark_color_completed(pending_carry_color_id)
+    carried_id = pending_carry_color_id
+    if 1 <= carried_id <= len(all_color_thresholds):
+        mark_color_completed(carried_id)
+        runtime_log(
+            'CARRY_DONE',
+            'source=%s id=%d done=%d mask=%d' %
+            (source, carried_id, completed_color_mask,
+             search_color_mask))
     pending_carry_color_id = 0
 def active_selected_color_id():
     if host_color_id_received and 1 <= target_color_id <= len(all_color_thresholds):
@@ -1154,6 +1278,7 @@ def disable_model_runtime(reason):
     global model_runtime_enabled, model_net, model_fb
     if model_runtime_enabled:
         print('[MODEL ALARM] ' + reason + '; target output disabled')
+        runtime_log('MODEL_OFF', 'reason=' + str(reason))
     model_runtime_enabled = False
     had_buffer = model_fb is not None
     model_net = None
@@ -1176,6 +1301,7 @@ def init_model_runtime():
         model_net = tf.load(MODEL_PATH)
         model_fb = sensor.alloc_extra_fb(240, 240, sensor.RGB565)
         print('[MODEL] loaded ' + MODEL_PATH)
+        runtime_log('MODEL_ON', 'path=' + MODEL_PATH)
     except Exception as error:
         disable_model_runtime('load failed: ' + str(error))
 def raw_model_box(x, y, w, h):
@@ -1339,7 +1465,9 @@ def model_copy_frame(img):
         raise RuntimeError('copy_to_fb unsupported')
 def run_model_best(img):
     global model_infer_error_count, model_last_frame
-    desired_label = color_id_to_model_label(target_color_id)
+    forced_id = forced_first_color_id()
+    desired_label = color_id_to_model_label(
+        forced_id if forced_id else target_color_id)
     if desired_label < 0 and model_lock[1] is not None:
         desired_label = model_lock[0]
     try:
@@ -1373,11 +1501,16 @@ def run_model_best(img):
             box = raw_model_box(x, y, w, h)
             if not orbit_y_cut_allows_box(box):
                 continue
-            minimum_score = (model_score_minimum(label, box, True)
-                             if locked else
-                             (HOST_FORCED_FIRST_LOCK_SCORE_MIN
-                              if host_forced_target_active()
-                              else FIRST_LOCK_SCORE_MIN))
+            if locked and forced_id == TENNIS_COLOR_ID:
+                minimum_score = FORCED_TENNIS_LOCK_SCORE_MIN
+            elif locked:
+                minimum_score = model_score_minimum(label, box, True)
+            elif forced_id == TENNIS_COLOR_ID:
+                minimum_score = FORCED_TENNIS_FIRST_LOCK_SCORE_MIN
+            else:
+                minimum_score = (HOST_FORCED_FIRST_LOCK_SCORE_MIN
+                                 if host_forced_target_active()
+                                 else FIRST_LOCK_SCORE_MIN)
             if score < minimum_score:
                 continue
             if (ENABLE_TENNIS_LINE_FILTER and label == 1 and
@@ -1417,6 +1550,70 @@ def run_model_best(img):
         if model_infer_error_count >= 3:
             disable_model_runtime('three inference failures: ' + str(error))
         return None
+def forced_tennis_fallback_roi():
+    field_roi = intersect_rois(
+        dynamic_detect_roi, (0, 0, 320, COLOR_DETECT_Y_MAX))
+    if orbit_y_cut_active:
+        field_roi = intersect_rois(
+            field_roi, (0, ORBIT_Y_CUT, 320,
+                        COLOR_DETECT_Y_MAX - ORBIT_Y_CUT))
+    if field_roi is None or model_lock[1] is None:
+        return field_roi
+    anchor = color_blob_box
+    if anchor is None:
+        anchor = color_track_box
+    if anchor is None:
+        anchor = model_lock[1]
+    local_roi = expand_tracking_box(
+        anchor, TENNIS_FALLBACK_LOCK_PAD_PERCENT,
+        TENNIS_FALLBACK_LOCK_MIN_PAD)
+    return intersect_rois(field_roi, local_roi)
+def forced_tennis_fallback_candidate(img):
+    global tennis_fallback_last_frame
+    if (openart_mode != MODE_SEARCH or
+            forced_first_color_id() != TENNIS_COLOR_ID or
+            not color_id_available_for_search(TENNIS_COLOR_ID) or
+            frame_count - tennis_fallback_last_frame <
+            TENNIS_FALLBACK_INTERVAL_FRAMES):
+        return None
+    tennis_fallback_last_frame = frame_count
+    roi = forced_tennis_fallback_roi()
+    if roi is None:
+        return None
+    threshold = all_color_thresholds[TENNIS_COLOR_ID - 1]
+    try:
+        blobs = img.find_blobs(
+            [threshold], roi=roi,
+            pixels_threshold=TENNIS_TRACK_MIN_PIXELS,
+            area_threshold=TENNIS_TRACK_MIN_AREA, merge=True)
+    except Exception:
+        return None
+    best_box = None
+    best_rank = None
+    if blobs:
+        for blob in blobs:
+            if not valid_color_blob(
+                    blob, TENNIS_COLOR_ID, TENNIS_TRACK_MIN_PIXELS):
+                continue
+            width = blob.w()
+            height = blob.h()
+            if (width * 100 < height * TENNIS_FALLBACK_ASPECT_MIN_X100 or
+                    width * 100 >
+                    height * TENNIS_FALLBACK_ASPECT_MAX_X100 or
+                    blob.density() * 100 <
+                    TENNIS_FALLBACK_MIN_DENSITY_X100):
+                continue
+            box = raw_model_box(blob.x(), blob.y(), width, height)
+            if not orbit_y_cut_allows_box(box):
+                continue
+            rank = model_acquire_rank(box, TENNIS_FALLBACK_SCORE)
+            if best_box is None or rank > best_rank:
+                best_box = box
+                best_rank = rank
+    if best_box is None:
+        return None
+    return (1, best_box, TENNIS_FALLBACK_SCORE, 2,
+            TENNIS_COLOR_ID, threshold)
 def rect_intersection_area(a, b):
     x1 = max(a[0], b[0])
     y1 = max(a[1], b[1])
@@ -2099,6 +2296,8 @@ def process_model_only_target(img, frame_index, run_model):
     observed = False
     if run_model:
         candidate = run_model_best(img)
+        if candidate is None:
+            candidate = forced_tennis_fallback_candidate(img)
         acquiring = model_lock[1] is None
         observed = accept_model_candidate(candidate)
         color_confirmed = False
@@ -2576,7 +2775,26 @@ _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)
 _tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
 _tx_world_buf[1] = _tx_world_no_target_buf[1] = 0x55
+def runtime_log_rx_bad(detail):
+    global cmd_rx_last_bad_log_frame
+    if (cmd_rx_bad_frames == 1 or
+            frame_count - cmd_rx_last_bad_log_frame >=
+            RUNTIME_LOG_ERROR_INTERVAL_FRAMES):
+        runtime_log('RX_BAD', detail)
+        cmd_rx_last_bad_log_frame = frame_count
+def runtime_log_tx_error(kind, error):
+    global world_tx_error_count, world_tx_last_error_log_frame
+    world_tx_error_count += 1
+    if (world_tx_error_count == 1 or
+            frame_count - world_tx_last_error_log_frame >=
+            RUNTIME_LOG_ERROR_INTERVAL_FRAMES):
+        runtime_log('TX_ERR', 'kind=%s error=%s' % (kind, str(error)))
+        world_tx_last_error_log_frame = frame_count
 def send_world_data(color_id, wx_mm, wy_mm, pw):
+    global world_tx_target_count
+    global world_tx_last_has_target, world_tx_last_color_id
+    global world_tx_last_wx_mm, world_tx_last_wy_mm
+    global world_tx_last_pw, world_tx_last_frame
     wx_mm = clamp_int(wx_mm, -32768, 32767)
     wy_mm = clamp_int(wy_mm, -32768, 32767)
     data = _tx_world_buf
@@ -2589,11 +2807,45 @@ def send_world_data(color_id, wx_mm, wy_mm, pw):
     data[8] = (pw >> 8) & 0xFF
     data[15] = (data[2] + data[3] + data[4] + data[5] + data[6] +
                 data[7] + data[8]) & 0xFF
-    uart.write(data)
+    world_tx_target_count += 1
+    world_tx_last_has_target = True
+    world_tx_last_color_id = color_id
+    world_tx_last_wx_mm = wx_mm
+    world_tx_last_wy_mm = wy_mm
+    world_tx_last_pw = pw
+    world_tx_last_frame = frame_count
+    try:
+        written = uart.write(data)
+        if written is not None and written != len(data):
+            runtime_log_tx_error(
+                'target', 'short_write=%s expected=%d' %
+                (str(written), len(data)))
+    except Exception as error:
+        runtime_log_tx_error('target', error)
 def send_world_no_target():
-    uart.write(_tx_world_no_target_buf)
+    global world_tx_no_target_count
+    global world_tx_last_has_target, world_tx_last_color_id
+    global world_tx_last_wx_mm, world_tx_last_wy_mm
+    global world_tx_last_pw, world_tx_last_frame
+    world_tx_no_target_count += 1
+    world_tx_last_has_target = False
+    world_tx_last_color_id = 0
+    world_tx_last_wx_mm = 0
+    world_tx_last_wy_mm = 0
+    world_tx_last_pw = 0
+    world_tx_last_frame = frame_count
+    try:
+        written = uart.write(_tx_world_no_target_buf)
+        if (written is not None and
+                written != len(_tx_world_no_target_buf)):
+            runtime_log_tx_error(
+                'no_target', 'short_write=%s expected=%d' %
+                (str(written), len(_tx_world_no_target_buf)))
+    except Exception as error:
+        runtime_log_tx_error('no_target', error)
 def send_front_scan_target_hold(img):
     if (not color_track_active or color_track_color_id <= 0 or
+            not color_id_available_for_search(color_track_color_id) or
             color_track_box is None or color_track_coordinate_box is None):
         return False
     world_point = tracking_world_point(
@@ -2613,12 +2865,27 @@ def receive_command_from_host():
     global target_color_id, host_color_id_received
     global _cmd_rx_buf, front_scan_requested
     global first_lock_reset_cycle_active
-    available = uart.any()
-    if available:
-        chunk = uart.read(available)
-        if chunk:
-            _cmd_rx_buf.extend(chunk)
+    global cmd_rx_bytes, cmd_rx_valid_frames, cmd_rx_bad_frames
+    global cmd_rx_dropped_bytes, cmd_rx_policy_frames
+    global cmd_rx_last_command, cmd_rx_last_param
+    global cmd_rx_last_policy_log_frame
+    try:
+        available = uart.any()
+        if available:
+            chunk = uart.read(available)
+            if chunk:
+                cmd_rx_bytes += len(chunk)
+                _cmd_rx_buf.extend(chunk)
+    except Exception as error:
+        cmd_rx_bad_frames += 1
+        runtime_log_rx_bad('uart_read=' + str(error))
+        return
     if len(_cmd_rx_buf) > 64:
+        dropped = len(_cmd_rx_buf) - 32
+        cmd_rx_dropped_bytes += dropped
+        cmd_rx_bad_frames += 1
+        runtime_log_rx_bad('overflow_drop=%d buf=%d' %
+                           (dropped, len(_cmd_rx_buf)))
         _cmd_rx_buf = _cmd_rx_buf[-32:]
     while len(_cmd_rx_buf) >= 4:
         idx = -1
@@ -2627,16 +2894,24 @@ def receive_command_from_host():
                 idx = i
                 break
         if idx < 0:
+            dropped = len(_cmd_rx_buf)
+            cmd_rx_dropped_bytes += dropped
+            cmd_rx_bad_frames += 1
+            runtime_log_rx_bad('header_missing_drop=%d' % dropped)
             _cmd_rx_buf = bytearray()
             return
         if idx > 0:
+            cmd_rx_dropped_bytes += idx
+            cmd_rx_bad_frames += 1
+            runtime_log_rx_bad('header_skip=%d' % idx)
             _cmd_rx_buf = _cmd_rx_buf[idx:]
         if len(_cmd_rx_buf) < 4:
             return
         command = _cmd_rx_buf[2]
         if command == TARGET_SCAN_COMMAND or command == TARGET_SELECT_COMMAND:
             frame_len = TARGET_COMMAND_FRAME_SIZE
-        elif command == 0x03 or command == 0x04:
+        elif (command == 0x03 or command == 0x04 or
+                command == LOCK_POLICY_COMMAND):
             frame_len = 5
         else:
             frame_len = 4
@@ -2653,15 +2928,44 @@ def receive_command_from_host():
             checksum_calc = (command + param) & 0xFF
         checksum_recv = _cmd_rx_buf[frame_len - 1]
         if checksum_calc != checksum_recv:
+            cmd_rx_bad_frames += 1
+            cmd_rx_dropped_bytes += 2
+            runtime_log_rx_bad(
+                'checksum cmd=%d len=%d calc=%d recv=%d' %
+                (command, frame_len, checksum_calc, checksum_recv))
             _cmd_rx_buf = _cmd_rx_buf[2:]
             continue
         _cmd_rx_buf = _cmd_rx_buf[frame_len:]
+        cmd_rx_valid_frames += 1
+        cmd_rx_last_command = command
+        cmd_rx_last_param = param
         if command == TARGET_SCAN_COMMAND:
             apply_target_scan_command(param, target_command_value)
         elif command == TARGET_SELECT_COMMAND:
             apply_target_selection_command(param, target_command_value)
         elif command == ORBIT_ROI_COMMAND:
             begin_orbit_y_cut()
+        elif command == LOCK_POLICY_COMMAND:
+            cmd_rx_policy_frames += 1
+            policy_applied = apply_lock_policy_command(param)
+            if (cmd_rx_policy_frames == 1 or policy_applied is True or
+                    frame_count - cmd_rx_last_policy_log_frame >=
+                    RUNTIME_LOG_ERROR_INTERVAL_FRAMES):
+                runtime_log(
+                    'POLICY',
+                    ('param=%d applied=%s received=%d flags=%d '
+                     'mask=%d done=%d') %
+                    (param, str(policy_applied), int(lock_policy_received),
+                     lock_policy_flags, search_color_mask,
+                     completed_color_mask))
+                cmd_rx_last_policy_log_frame = frame_count
+            if policy_applied:
+                first_lock_reset_cycle_active = False
+                openart_mode = MODE_SEARCH
+                front_scan_requested = False
+                reset_front_scan_state()
+                reset_target_tracking_state()
+                reset_return_yellow_state()
         elif command == 0x03:
             if 1 <= param <= len(all_color_thresholds):
                 if not color_id_available_for_search(param):
@@ -2708,20 +3012,55 @@ def receive_command_from_host():
             reset_return_yellow_state()
         elif command == 0x02:
             clear_orbit_y_cut()
-            finish_pending_carry()
+            finish_pending_carry('0x02')
             if not first_lock_reset_cycle_active:
                 first_lock_reset_cycle_active = True
                 openart_mode = MODE_SEARCH
                 reset_target_tracking_state()
                 reset_return_yellow_state()
         elif command == 0x00:
-            finish_pending_carry()
+            finish_pending_carry('0x00')
             first_lock_reset_cycle_active = False
             openart_mode = MODE_SEARCH
             reset_target_tracking_state()
             reset_return_yellow_state()
         return
-frame_count = 0
+def log_runtime_state(path, result=None, has_target=False,
+                      world_point=None):
+    if frame_count % RUNTIME_LOG_INTERVAL_FRAMES != 0:
+        return
+    result_id = 0
+    if result is not None:
+        try:
+            result_id = result[0]
+        except Exception:
+            result_id = -1
+    output_id = 0
+    if has_target:
+        output_id = result_id if result_id > 0 else color_track_color_id
+    runtime_log(
+        'STATE',
+        ('path=%s mode=%d policy=%d flags=%d mask=%d done=%d forced=%d '
+         'rx_bytes=%d rx_valid=%d rx_bad=%d rx_drop=%d rx_policy=%d '
+         'last_cmd=%d last_param=%d rx_buf=%d model=%d model_err=%d '
+         'lock_label=%d track=%d track_id=%d target_id=%d host_id=%d '
+         'result_id=%d output_id=%d target=%d world=%d lost=%d '
+         'color_lost=%d tx_target=%d tx_none=%d tx_err=%d '
+         'tx_has=%d tx_id=%d tx_wx=%d tx_wy=%d tx_pw=%d tx_frame=%d') %
+        (path, openart_mode, int(lock_policy_received), lock_policy_flags,
+         search_color_mask, completed_color_mask, forced_first_color_id(),
+         cmd_rx_bytes, cmd_rx_valid_frames, cmd_rx_bad_frames,
+         cmd_rx_dropped_bytes, cmd_rx_policy_frames, cmd_rx_last_command,
+         cmd_rx_last_param, len(_cmd_rx_buf), int(model_runtime_enabled),
+         model_infer_error_count, model_lock[0], int(color_track_active),
+         color_track_color_id, target_color_id,
+         int(host_color_id_received), result_id, output_id,
+         int(has_target), int(world_point is not None), lost_frame_count,
+         color_lost_count, world_tx_target_count,
+         world_tx_no_target_count, world_tx_error_count,
+         int(world_tx_last_has_target), world_tx_last_color_id,
+         world_tx_last_wx_mm, world_tx_last_wy_mm, world_tx_last_pw,
+         world_tx_last_frame))
 init_model_runtime()
 while True:
     frame_count += 1
@@ -2729,6 +3068,7 @@ while True:
     img = snapshot_frame()
     if openart_mode == MODE_RETURN:
         process_return_yellow(img)
+        log_runtime_state('return')
         maybe_collect(frame_count)
         continue
     # update_dynamic_cut 内部同样按 CUT_UPDATE_INTERVAL 取模后直接返回，
@@ -2736,20 +3076,32 @@ while True:
     if frame_count % CUT_UPDATE_INTERVAL == 0:
         update_dynamic_cut(img, frame_count)
     if process_target_scan_request(img):
-        if not send_front_scan_target_hold(img):
+        target_scan_hold = send_front_scan_target_hold(img)
+        if not target_scan_hold:
             send_world_no_target()
+        log_runtime_state(
+            'target_scan', has_target=target_scan_hold,
+            world_point=((0, 0) if target_scan_hold else None))
         maybe_collect(frame_count)
         continue
     if process_front_scan_request(img):
-        send_front_scan_target_hold(img)
+        front_scan_hold = send_front_scan_target_hold(img)
+        log_runtime_state(
+            'front_scan', has_target=front_scan_hold,
+            world_point=((0, 0) if front_scan_hold else None))
         maybe_collect(frame_count)
         continue
     result = process_model_only_target(
         img, frame_count, should_run_model(frame_count))
+    world_point = None
     has_target = result is not None
     if has_target:
         send_color_id, output_box, coordinate_box, _ = result
-        w = output_box[2]
+        if color_id_available_for_search(send_color_id):
+            w = output_box[2]
+        else:
+            reset_target_tracking_state()
+            has_target = False
     if has_target:
         world_point = tracking_world_point(send_color_id, coordinate_box)
         if world_point is None:
@@ -2775,4 +3127,5 @@ while True:
             else:
                 reset_target_tracking_state()
         send_world_no_target()
+    log_runtime_state('search', result, has_target, world_point)
     maybe_collect(frame_count)
