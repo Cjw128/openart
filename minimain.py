@@ -2,14 +2,14 @@
 # ==================== QUICK MATCH SETTINGS ====================
 # Edit this block first when changing cameras, models, or SD files.
 WB_GAINS = (92.00, 64.00, 101.00)
-MODEL_PATH = '/sd/80lite0.5SS.tflite'
+MODEL_PATH = '/sd/80lite0.5V57.tflite'
 COLOR_THR_PATH = '/sd/color_thr.txt'
 EXPOSURE_INIT = 880
 EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
 # Provincial rule: each physical ID appears once per round.
 ENABLE_COMPLETED_COLOR_EXCLUSION = True
-# The Mini uses an ID3-only fallback until a controller policy is received.
+# Match main.py: search normally until the controller policy is received.
 ID2_ABSOLUTE_PRIORITY = False
 # 0x09 enumerates every visible candidate of one color without changing the
 # active tracker. The controller selects an exact candidate with 0x0A.
@@ -20,30 +20,7 @@ try:
 except Exception:
     tf = None
 from machine import UART
-ENABLE_RUNTIME_LOG = True
-RUNTIME_LOG_PATH = '/sd/minimain_runtime.log'
-RUNTIME_LOG_INTERVAL_FRAMES = 120
-RUNTIME_LOG_ERROR_INTERVAL_FRAMES = 120
 frame_count = 0
-runtime_log_failure_reported = False
-def runtime_log(event, detail=''):
-    global runtime_log_failure_reported
-    if not ENABLE_RUNTIME_LOG:
-        return
-    try:
-        free_heap = gc.mem_free()
-    except Exception:
-        free_heap = -1
-    try:
-        clean_detail = str(detail).replace('\r', ' ').replace('\n', ' ')
-        with open(RUNTIME_LOG_PATH, 'a') as log_file:
-            log_file.write('f=%d event=%s heap=%d %s\n' %
-                           (frame_count, event, free_heap, clean_detail))
-    except Exception as error:
-        if not runtime_log_failure_reported:
-            print('[RUNTIME LOG] write failed: ' + str(error))
-            runtime_log_failure_reported = True
-runtime_log('BOOT', 'startup')
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
@@ -388,25 +365,6 @@ color_track_coordinate_box = None
 color_track_color_id = 0
 color_lost_count = 0
 _cmd_rx_buf = bytearray()
-cmd_rx_bytes = 0
-cmd_rx_valid_frames = 0
-cmd_rx_bad_frames = 0
-cmd_rx_dropped_bytes = 0
-cmd_rx_policy_frames = 0
-cmd_rx_last_command = -1
-cmd_rx_last_param = -1
-cmd_rx_last_bad_log_frame = -RUNTIME_LOG_ERROR_INTERVAL_FRAMES
-cmd_rx_last_policy_log_frame = -RUNTIME_LOG_ERROR_INTERVAL_FRAMES
-world_tx_target_count = 0
-world_tx_no_target_count = 0
-world_tx_error_count = 0
-world_tx_last_error_log_frame = -RUNTIME_LOG_ERROR_INTERVAL_FRAMES
-world_tx_last_has_target = False
-world_tx_last_color_id = 0
-world_tx_last_wx_mm = 0
-world_tx_last_wy_mm = 0
-world_tx_last_pw = 0
-world_tx_last_frame = -1
 front_scan_requested = False
 CMD_CLEAR_COMPLETED = 0x08
 TARGET_SCAN_COMMAND = 0x09
@@ -421,7 +379,6 @@ LOCK_POLICY_RED_FIRST_BLUE_LAST = (LOCK_POLICY_RED_FIRST |
                                    LOCK_POLICY_DELAY_BAGS)
 LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS = (
     LOCK_POLICY_TENNIS_FIRST | LOCK_POLICY_DELAY_BAGS)
-DEFAULT_LOCK_POLICY_FLAGS = LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS
 LOCK_POLICY_VALID_VALUES = (0, LOCK_POLICY_RED_FIRST,
                             LOCK_POLICY_TENNIS_FIRST,
                             LOCK_POLICY_RED_FIRST_BLUE_LAST,
@@ -430,11 +387,9 @@ ALL_COLOR_MASK = (1 << len(all_color_thresholds)) - 1
 BLUE_BAG_BIT = 1 << 0
 BEAR_COLOR_MASK = (1 << 3) | (1 << 4)
 RED_MIDDLE_COLOR_MASK = (1 << 2) | BEAR_COLOR_MASK
-lock_policy_flags = (LOCK_POLICY_RED_FIRST if ID2_ABSOLUTE_PRIORITY
-                     else DEFAULT_LOCK_POLICY_FLAGS)
-# Keep receipt state separate from the safe ID3-only fallback for diagnostics.
-lock_policy_received = bool(ID2_ABSOLUTE_PRIORITY)
-search_color_mask = 0
+lock_policy_flags = (LOCK_POLICY_RED_FIRST
+                     if ID2_ABSOLUTE_PRIORITY else 0)
+search_color_mask = ALL_COLOR_MASK
 TARGET_CANDIDATE_PACKET_ID = 0xC9
 FRONT_SCAN_PACKET_ID = 0xC7
 FRONT_SCAN_EXCLUDE_IOU = 0.20
@@ -516,7 +471,7 @@ def host_forced_target_active():
             color_id_available_for_search(target_color_id))
 def mark_color_completed(color_id):
     global completed_color_mask
-    if color_id_available_for_search(color_id):
+    if 1 <= color_id <= len(all_color_thresholds):
         completed_color_mask |= 1 << (color_id - 1)
         rebuild_search_color_mask()
 def clear_completed_carry_state():
@@ -525,41 +480,27 @@ def clear_completed_carry_state():
     pending_carry_color_id = 0
     rebuild_search_color_mask()
 def apply_lock_policy_command(flags):
-    global lock_policy_flags, lock_policy_received
+    global lock_policy_flags
     if flags not in LOCK_POLICY_VALID_VALUES:
         return None
-    if lock_policy_received and flags == lock_policy_flags:
+    if flags == lock_policy_flags:
         return False
     lock_policy_flags = flags
-    lock_policy_received = True
     rebuild_search_color_mask()
     return True
 rebuild_search_color_mask()
-if not lock_policy_received:
-    runtime_log('POLICY_DEFAULT', 'flags=%d mask=%d' %
-                (lock_policy_flags, search_color_mask))
 def begin_pending_carry():
     global pending_carry_color_id
     color_id = active_selected_color_id()
     pending_carry_color_id = (
         color_id if 1 <= color_id <= len(all_color_thresholds) else 0)
-    if pending_carry_color_id:
-        runtime_log(
-            'CARRY_BEGIN',
-            'id=%d done=%d mask=%d' %
-            (pending_carry_color_id, completed_color_mask,
-             search_color_mask))
 def finish_pending_carry(source=''):
     global pending_carry_color_id
     carried_id = pending_carry_color_id
+    pending_carry_color_id = 0
     if 1 <= carried_id <= len(all_color_thresholds):
         mark_color_completed(carried_id)
-        runtime_log(
-            'CARRY_DONE',
-            'source=%s id=%d done=%d mask=%d' %
-            (source, carried_id, completed_color_mask,
-             search_color_mask))
-    pending_carry_color_id = 0
+    return carried_id
 def active_selected_color_id():
     if host_color_id_received and 1 <= target_color_id <= len(all_color_thresholds):
         return target_color_id
@@ -1278,7 +1219,6 @@ def disable_model_runtime(reason):
     global model_runtime_enabled, model_net, model_fb
     if model_runtime_enabled:
         print('[MODEL ALARM] ' + reason + '; target output disabled')
-        runtime_log('MODEL_OFF', 'reason=' + str(reason))
     model_runtime_enabled = False
     had_buffer = model_fb is not None
     model_net = None
@@ -1301,7 +1241,6 @@ def init_model_runtime():
         model_net = tf.load(MODEL_PATH)
         model_fb = sensor.alloc_extra_fb(240, 240, sensor.RGB565)
         print('[MODEL] loaded ' + MODEL_PATH)
-        runtime_log('MODEL_ON', 'path=' + MODEL_PATH)
     except Exception as error:
         disable_model_runtime('load failed: ' + str(error))
 def raw_model_box(x, y, w, h):
@@ -2775,26 +2714,7 @@ _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)
 _tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
 _tx_world_buf[1] = _tx_world_no_target_buf[1] = 0x55
-def runtime_log_rx_bad(detail):
-    global cmd_rx_last_bad_log_frame
-    if (cmd_rx_bad_frames == 1 or
-            frame_count - cmd_rx_last_bad_log_frame >=
-            RUNTIME_LOG_ERROR_INTERVAL_FRAMES):
-        runtime_log('RX_BAD', detail)
-        cmd_rx_last_bad_log_frame = frame_count
-def runtime_log_tx_error(kind, error):
-    global world_tx_error_count, world_tx_last_error_log_frame
-    world_tx_error_count += 1
-    if (world_tx_error_count == 1 or
-            frame_count - world_tx_last_error_log_frame >=
-            RUNTIME_LOG_ERROR_INTERVAL_FRAMES):
-        runtime_log('TX_ERR', 'kind=%s error=%s' % (kind, str(error)))
-        world_tx_last_error_log_frame = frame_count
 def send_world_data(color_id, wx_mm, wy_mm, pw):
-    global world_tx_target_count
-    global world_tx_last_has_target, world_tx_last_color_id
-    global world_tx_last_wx_mm, world_tx_last_wy_mm
-    global world_tx_last_pw, world_tx_last_frame
     wx_mm = clamp_int(wx_mm, -32768, 32767)
     wy_mm = clamp_int(wy_mm, -32768, 32767)
     data = _tx_world_buf
@@ -2807,42 +2727,15 @@ def send_world_data(color_id, wx_mm, wy_mm, pw):
     data[8] = (pw >> 8) & 0xFF
     data[15] = (data[2] + data[3] + data[4] + data[5] + data[6] +
                 data[7] + data[8]) & 0xFF
-    world_tx_target_count += 1
-    world_tx_last_has_target = True
-    world_tx_last_color_id = color_id
-    world_tx_last_wx_mm = wx_mm
-    world_tx_last_wy_mm = wy_mm
-    world_tx_last_pw = pw
-    world_tx_last_frame = frame_count
     try:
-        written = uart.write(data)
-        if written is not None and written != len(data):
-            runtime_log_tx_error(
-                'target', 'short_write=%s expected=%d' %
-                (str(written), len(data)))
-    except Exception as error:
-        runtime_log_tx_error('target', error)
+        uart.write(data)
+    except Exception:
+        pass
 def send_world_no_target():
-    global world_tx_no_target_count
-    global world_tx_last_has_target, world_tx_last_color_id
-    global world_tx_last_wx_mm, world_tx_last_wy_mm
-    global world_tx_last_pw, world_tx_last_frame
-    world_tx_no_target_count += 1
-    world_tx_last_has_target = False
-    world_tx_last_color_id = 0
-    world_tx_last_wx_mm = 0
-    world_tx_last_wy_mm = 0
-    world_tx_last_pw = 0
-    world_tx_last_frame = frame_count
     try:
-        written = uart.write(_tx_world_no_target_buf)
-        if (written is not None and
-                written != len(_tx_world_no_target_buf)):
-            runtime_log_tx_error(
-                'no_target', 'short_write=%s expected=%d' %
-                (str(written), len(_tx_world_no_target_buf)))
-    except Exception as error:
-        runtime_log_tx_error('no_target', error)
+        uart.write(_tx_world_no_target_buf)
+    except Exception:
+        pass
 def send_front_scan_target_hold(img):
     if (not color_track_active or color_track_color_id <= 0 or
             not color_id_available_for_search(color_track_color_id) or
@@ -2865,27 +2758,15 @@ def receive_command_from_host():
     global target_color_id, host_color_id_received
     global _cmd_rx_buf, front_scan_requested
     global first_lock_reset_cycle_active
-    global cmd_rx_bytes, cmd_rx_valid_frames, cmd_rx_bad_frames
-    global cmd_rx_dropped_bytes, cmd_rx_policy_frames
-    global cmd_rx_last_command, cmd_rx_last_param
-    global cmd_rx_last_policy_log_frame
     try:
         available = uart.any()
         if available:
             chunk = uart.read(available)
             if chunk:
-                cmd_rx_bytes += len(chunk)
                 _cmd_rx_buf.extend(chunk)
-    except Exception as error:
-        cmd_rx_bad_frames += 1
-        runtime_log_rx_bad('uart_read=' + str(error))
+    except Exception:
         return
     if len(_cmd_rx_buf) > 64:
-        dropped = len(_cmd_rx_buf) - 32
-        cmd_rx_dropped_bytes += dropped
-        cmd_rx_bad_frames += 1
-        runtime_log_rx_bad('overflow_drop=%d buf=%d' %
-                           (dropped, len(_cmd_rx_buf)))
         _cmd_rx_buf = _cmd_rx_buf[-32:]
     while len(_cmd_rx_buf) >= 4:
         idx = -1
@@ -2894,16 +2775,9 @@ def receive_command_from_host():
                 idx = i
                 break
         if idx < 0:
-            dropped = len(_cmd_rx_buf)
-            cmd_rx_dropped_bytes += dropped
-            cmd_rx_bad_frames += 1
-            runtime_log_rx_bad('header_missing_drop=%d' % dropped)
             _cmd_rx_buf = bytearray()
             return
         if idx > 0:
-            cmd_rx_dropped_bytes += idx
-            cmd_rx_bad_frames += 1
-            runtime_log_rx_bad('header_skip=%d' % idx)
             _cmd_rx_buf = _cmd_rx_buf[idx:]
         if len(_cmd_rx_buf) < 4:
             return
@@ -2928,17 +2802,9 @@ def receive_command_from_host():
             checksum_calc = (command + param) & 0xFF
         checksum_recv = _cmd_rx_buf[frame_len - 1]
         if checksum_calc != checksum_recv:
-            cmd_rx_bad_frames += 1
-            cmd_rx_dropped_bytes += 2
-            runtime_log_rx_bad(
-                'checksum cmd=%d len=%d calc=%d recv=%d' %
-                (command, frame_len, checksum_calc, checksum_recv))
             _cmd_rx_buf = _cmd_rx_buf[2:]
             continue
         _cmd_rx_buf = _cmd_rx_buf[frame_len:]
-        cmd_rx_valid_frames += 1
-        cmd_rx_last_command = command
-        cmd_rx_last_param = param
         if command == TARGET_SCAN_COMMAND:
             apply_target_scan_command(param, target_command_value)
         elif command == TARGET_SELECT_COMMAND:
@@ -2946,19 +2812,7 @@ def receive_command_from_host():
         elif command == ORBIT_ROI_COMMAND:
             begin_orbit_y_cut()
         elif command == LOCK_POLICY_COMMAND:
-            cmd_rx_policy_frames += 1
             policy_applied = apply_lock_policy_command(param)
-            if (cmd_rx_policy_frames == 1 or policy_applied is True or
-                    frame_count - cmd_rx_last_policy_log_frame >=
-                    RUNTIME_LOG_ERROR_INTERVAL_FRAMES):
-                runtime_log(
-                    'POLICY',
-                    ('param=%d applied=%s received=%d flags=%d '
-                     'mask=%d done=%d') %
-                    (param, str(policy_applied), int(lock_policy_received),
-                     lock_policy_flags, search_color_mask,
-                     completed_color_mask))
-                cmd_rx_last_policy_log_frame = frame_count
             if policy_applied:
                 first_lock_reset_cycle_active = False
                 openart_mode = MODE_SEARCH
@@ -3025,42 +2879,6 @@ def receive_command_from_host():
             reset_target_tracking_state()
             reset_return_yellow_state()
         return
-def log_runtime_state(path, result=None, has_target=False,
-                      world_point=None):
-    if frame_count % RUNTIME_LOG_INTERVAL_FRAMES != 0:
-        return
-    result_id = 0
-    if result is not None:
-        try:
-            result_id = result[0]
-        except Exception:
-            result_id = -1
-    output_id = 0
-    if has_target:
-        output_id = result_id if result_id > 0 else color_track_color_id
-    runtime_log(
-        'STATE',
-        ('path=%s mode=%d policy=%d flags=%d mask=%d done=%d forced=%d '
-         'rx_bytes=%d rx_valid=%d rx_bad=%d rx_drop=%d rx_policy=%d '
-         'last_cmd=%d last_param=%d rx_buf=%d model=%d model_err=%d '
-         'lock_label=%d track=%d track_id=%d target_id=%d host_id=%d '
-         'result_id=%d output_id=%d target=%d world=%d lost=%d '
-         'color_lost=%d tx_target=%d tx_none=%d tx_err=%d '
-         'tx_has=%d tx_id=%d tx_wx=%d tx_wy=%d tx_pw=%d tx_frame=%d') %
-        (path, openart_mode, int(lock_policy_received), lock_policy_flags,
-         search_color_mask, completed_color_mask, forced_first_color_id(),
-         cmd_rx_bytes, cmd_rx_valid_frames, cmd_rx_bad_frames,
-         cmd_rx_dropped_bytes, cmd_rx_policy_frames, cmd_rx_last_command,
-         cmd_rx_last_param, len(_cmd_rx_buf), int(model_runtime_enabled),
-         model_infer_error_count, model_lock[0], int(color_track_active),
-         color_track_color_id, target_color_id,
-         int(host_color_id_received), result_id, output_id,
-         int(has_target), int(world_point is not None), lost_frame_count,
-         color_lost_count, world_tx_target_count,
-         world_tx_no_target_count, world_tx_error_count,
-         int(world_tx_last_has_target), world_tx_last_color_id,
-         world_tx_last_wx_mm, world_tx_last_wy_mm, world_tx_last_pw,
-         world_tx_last_frame))
 init_model_runtime()
 while True:
     frame_count += 1
@@ -3068,7 +2886,6 @@ while True:
     img = snapshot_frame()
     if openart_mode == MODE_RETURN:
         process_return_yellow(img)
-        log_runtime_state('return')
         maybe_collect(frame_count)
         continue
     # update_dynamic_cut 内部同样按 CUT_UPDATE_INTERVAL 取模后直接返回，
@@ -3079,16 +2896,10 @@ while True:
         target_scan_hold = send_front_scan_target_hold(img)
         if not target_scan_hold:
             send_world_no_target()
-        log_runtime_state(
-            'target_scan', has_target=target_scan_hold,
-            world_point=((0, 0) if target_scan_hold else None))
         maybe_collect(frame_count)
         continue
     if process_front_scan_request(img):
         front_scan_hold = send_front_scan_target_hold(img)
-        log_runtime_state(
-            'front_scan', has_target=front_scan_hold,
-            world_point=((0, 0) if front_scan_hold else None))
         maybe_collect(frame_count)
         continue
     result = process_model_only_target(
@@ -3127,5 +2938,4 @@ while True:
             else:
                 reset_target_tracking_state()
         send_world_no_target()
-    log_runtime_state('search', result, has_target, world_point)
     maybe_collect(frame_count)
