@@ -2,7 +2,7 @@
 # ==================== QUICK MATCH SETTINGS ====================
 # Edit this block first when changing cameras, models, or SD files.
 WB_GAINS = (92.00, 64.00, 101.00)
-MODEL_PATH = '/sd/80lite0.5V57.tflite'
+MODEL_PATH = '/sd/80lite0.5SS.tflite'
 COLOR_THR_PATH = '/sd/color_thr.txt'
 EXPOSURE_INIT = 880
 EXPOSURE_MIN = 100
@@ -33,11 +33,11 @@ WATCHDOG_TIMEOUT_MS = 8000
 MAIN_LOG_PATH = '/sd/main_runtime.log'
 MAIN_LOG_INTERVAL_MS = 1000
 # Temporary yellow-line diagnostics; restore all three switches after capture.
-ENABLE_MAIN_SD_LOG = True
-ENABLE_YELLOW_FRAME_TRACE = True
+ENABLE_MAIN_SD_LOG = False
+ENABLE_YELLOW_FRAME_TRACE = False
 # Diagnostic JPEGs are written before any debug overlays are drawn. A new
 # /sd/capNNN directory is selected lazily on the first carry frame.
-ENABLE_CARRY_FRAME_CAPTURE = True
+ENABLE_CARRY_FRAME_CAPTURE = False
 CARRY_CAPTURE_DIR_PREFIX = '/sd/cap'
 CARRY_CAPTURE_INTERVAL_MS = 300
 CARRY_CAPTURE_MAX_FRAMES = 120
@@ -71,10 +71,8 @@ sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
 sensor.set_framerate(60)
-sensor.set_hmirror(False)
-sensor.set_vflip(True)
 def snapshot_frame():
-    return sensor.snapshot().replace(hmirror=True)
+    return sensor.snapshot()
 def validate_wb_gains(values):
     if len(values) != 3:
         raise ValueError('wb_gains must contain R,G,B')
@@ -122,6 +120,9 @@ def load_startup_exposure(path=COLOR_THR_PATH):
     return EXPOSURE_INIT
 startup_exposure_us = load_startup_exposure()
 sensor.set_auto_exposure(False, exposure_us=startup_exposure_us)
+sensor.set_vflip(True)
+sensor.skip_frames(time=200)
+sensor.set_hmirror(True)
 sensor.skip_frames(time=800)
 uart = UART(12, baudrate=115200)
 all_color_thresholds = [
@@ -277,26 +278,30 @@ MODEL_LOCK_CONFIRM_FRAMES = 5
 MODEL_LOST_FRAMES = 5
 MODEL_HOLD_FRAMES = 5
 MODEL_REFRESH_INTERVAL = 4
+MODEL_RETRY_INTERVAL_FRAMES = 60
+MODEL_RETRY_MAX_INTERVAL_FRAMES = 600
 MODEL_MIN_BOX_SIDE = 4
 MODEL_MIN_BOX_AREA = 24
 MODEL_MATCH_CENTER2 = 130 * 130
 MODEL_PENDING_CENTER2 = 80 * 80
 FIRST_LOCK_SCORE_MIN = 0.30
-FIRST_LOCK_WINDOW_FRAMES = 3
-FIRST_LOCK_REQUIRED_HITS = 2
+FIRST_LOCK_WINDOW_FRAMES = 5
+FIRST_LOCK_REQUIRED_HITS = 3
 FIRST_LOCK_MATCH_CENTER_PX = 36
 FIRST_LOCK_MATCH_CENTER2 = FIRST_LOCK_MATCH_CENTER_PX * FIRST_LOCK_MATCH_CENTER_PX
 FIRST_LOCK_SIZE_DELTA_PERCENT = 50
 FIRST_LOCK_NEARER_MARGIN_CM = 0.0
 HOST_FORCED_FIRST_LOCK_SCORE_MIN = 0.25
-HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 3
-HOST_FORCED_FIRST_LOCK_REQUIRED_HITS = 2
+HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 5
+HOST_FORCED_FIRST_LOCK_REQUIRED_HITS = 3
 HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX = 36
 HOST_FORCED_FIRST_LOCK_MATCH_CENTER2 = (
     HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX *
     HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX)
 HOST_FORCED_FIRST_LOCK_SIZE_DELTA_PERCENT = 50
 HOST_FORCED_COLOR_SAMPLE_MAX_IQR = (65, 70, 85)
+BAG_RELAXED_MAX_IQR = (100, 255, 255)
+BAG_DIRECT_TRUST_SCORE = 0.60
 FORCED_TENNIS_FIRST_LOCK_SCORE_MIN = 0.18
 FORCED_TENNIS_LOCK_SCORE_MIN = 0.15
 TENNIS_TRACK_MIN_PIXELS = 30
@@ -367,6 +372,9 @@ model_fb = None
 model_runtime_enabled = True
 model_copy_to_fb_supported = True
 model_infer_error_count = 0
+model_retry_pending = False
+model_retry_frame = 0
+model_retry_interval_frames = MODEL_RETRY_INTERVAL_FRAMES
 tennis_fallback_last_frame = -TENNIS_FALLBACK_INTERVAL_FRAMES
 model_lock = [-1, None, -1, None, 0, 0]
 model_color = [0, 0, 0, False]
@@ -1540,9 +1548,24 @@ def apply_host_hybrid_color(color_id):
         reset_color_adaptation_pending()
         reset_color_blob_tracking()
     model_color[:] = [0, 0, 0, True]
-def disable_model_runtime(reason):
+def disable_model_runtime(reason, retryable=True):
     global model_runtime_enabled, model_net, model_fb
-    if model_runtime_enabled:
+    global model_retry_pending, model_retry_frame
+    global model_retry_interval_frames
+    # A transient load/inference failure must not leave the car permanently
+    # blind. A missing TF runtime or unsupported framebuffer copy is a real
+    # capability failure and still remains disabled for this boot.
+    if not model_copy_to_fb_supported:
+        retryable = False
+    if retryable:
+        current_frame = globals().get('frame_count', 0)
+        model_retry_pending = True
+        model_retry_frame = current_frame + model_retry_interval_frames
+        print('[MODEL ALARM] ' + reason +
+              '; retry scheduled in %d frames' %
+              model_retry_interval_frames)
+    else:
+        model_retry_pending = False
         print('[MODEL ALARM] ' + reason + '; target output disabled')
     model_runtime_enabled = False
     had_buffer = model_fb is not None
@@ -1556,20 +1579,36 @@ def disable_model_runtime(reason):
     gc.collect()
     reset_hybrid_tracking()
 def init_model_runtime():
-    global model_net, model_fb
-    if not model_runtime_enabled:
+    global model_net, model_fb, model_runtime_enabled
+    global model_retry_pending, model_retry_interval_frames
+    global model_infer_error_count
+    if not model_runtime_enabled and not model_retry_pending:
         return
     if tf is None:
-        disable_model_runtime('tf module unavailable')
+        disable_model_runtime('tf module unavailable', retryable=False)
         return
     try:
         feed_watchdog()
         model_net = tf.load(MODEL_PATH)
         model_fb = sensor.alloc_extra_fb(240, 240, sensor.RGB565)
         feed_watchdog()
+        model_runtime_enabled = True
+        model_retry_pending = False
+        model_retry_interval_frames = MODEL_RETRY_INTERVAL_FRAMES
+        model_infer_error_count = 0
         print('[MODEL] loaded ' + MODEL_PATH)
     except Exception as error:
         disable_model_runtime('load failed: ' + str(error))
+def maybe_retry_model_runtime(frame_index):
+    global model_retry_pending, model_retry_interval_frames
+    if (not model_retry_pending or frame_index < model_retry_frame):
+        return
+    # Keep the latch set through init_model_runtime: a failed attempt schedules
+    # the next one with the updated backoff interval, while a success clears it.
+    model_retry_interval_frames = min(
+        model_retry_interval_frames * 2,
+        MODEL_RETRY_MAX_INTERVAL_FRAMES)
+    init_model_runtime()
 def raw_model_box(x, y, w, h):
     x = clamp_int(x, 0, 319)
     y = clamp_int(y, 0, 239)
@@ -1638,7 +1677,7 @@ def model_acquire_rank(box, score):
     center_x = box[0] + box[2] // 2
     return (-distance_mm, box[1] + box[3], box[2] * box[3],
             -abs(center_x - 160))
-def model_candidate_matches_requested_color(img, label, box):
+def model_candidate_matches_requested_color(img, label, box, score):
     # Returns (matches, sampled); sampled is the (color_id, threshold)
     # pair when a color sample was taken, so callers can reuse it.
     candidates = MODEL_COLOR_IDS[label]
@@ -1646,14 +1685,31 @@ def model_candidate_matches_requested_color(img, label, box):
         if (not color_id_available_for_search(target_color_id) or
                 target_color_id not in candidates):
             return False, None
+        if label == 2 and score > BAG_DIRECT_TRUST_SCORE:
+            sampled = sample_direct_trust_bag_color(img, box)
+            return sampled[0] == target_color_id, sampled
         sampled = sample_model_color(img, label, box)
-        return sampled[0] == target_color_id, sampled
+        if sampled[0] == target_color_id:
+            return True, sampled
+        if label != 2:
+            return False, sampled
+        relaxed_sample = sample_box_lab_stats(
+            img, label, box, BAG_RELAXED_MAX_IQR)
+        if relaxed_sample is None:
+            return True, (target_color_id, None)
+        relaxed_color_id = sample_color_id_from_stats(label, relaxed_sample)
+        if relaxed_color_id > 0 and relaxed_color_id != target_color_id:
+            return False, (relaxed_color_id, None)
+        return True, (target_color_id, None)
     available_count = 0
     for color_id in candidates:
         if color_id_available_for_search(color_id):
             available_count += 1
     if available_count <= 0:
         return False, None
+    if label == 2 and score > BAG_DIRECT_TRUST_SCORE:
+        sampled = sample_direct_trust_bag_color(img, box)
+        return color_id_available_for_search(sampled[0]), sampled
     if available_count == len(candidates):
         return True, None
     sampled = sample_model_color(img, label, box)
@@ -1797,7 +1853,7 @@ def run_model_best(img):
                     box, anchor, MODEL_MATCH_CENTER2):
                 continue
             matches, sampled = model_candidate_matches_requested_color(
-                img, label, box)
+                img, label, box, score)
             if not matches:
                 continue
             if locked:
@@ -2076,6 +2132,9 @@ def sample_model_color(img, label, box):
         return (color_id, dynamic_threshold
                 if dynamic_threshold is not None else base_threshold)
     sample = sample_box_lab_stats(img, label, box, max_iqr)
+    if sample is None and label == 2:
+        sample = sample_box_lab_stats(
+            img, label, box, BAG_RELAXED_MAX_IQR)
     if sample is None:
         return 0, None
     color_id = sample_color_id_from_stats(
@@ -2084,7 +2143,22 @@ def sample_model_color(img, label, box):
         return 0, None
     if not color_id_available_for_search(color_id):
         return 0, None
-    return color_id, build_dynamic_threshold(color_id, sample)
+    dynamic_threshold = build_dynamic_threshold(color_id, sample)
+    if dynamic_threshold is None and label == 2:
+        dynamic_threshold = all_color_thresholds[color_id - 1]
+    return color_id, dynamic_threshold
+def sample_direct_trust_bag_color(img, box):
+    sample = sample_box_lab_stats(img, 2, box, BAG_RELAXED_MAX_IQR)
+    if sample is None:
+        return 0, None
+    lab = sample[6:9]
+    blue_distance = threshold_center_distance(lab, all_color_thresholds[0])
+    red_distance = threshold_center_distance(lab, all_color_thresholds[1])
+    color_id = 1 if blue_distance <= red_distance else 2
+    dynamic_threshold = build_dynamic_threshold(color_id, sample)
+    if dynamic_threshold is None:
+        dynamic_threshold = all_color_thresholds[color_id - 1]
+    return color_id, dynamic_threshold
 def confirm_model_color(observed_id, observed_threshold):
     global color_adapt_pending_id, color_adapt_pending_threshold
     global color_adapt_pending_count
@@ -2400,6 +2474,7 @@ def first_lock_median_box():
 def first_lock_color_consensus():
     best_id = 0
     best_count = 0
+    required_frames = COLOR_CONFIRM_FRAMES
     for color_id in range(1, len(all_color_thresholds) + 1):
         count = 0
         for observed_id in first_lock_pending_color_ids:
@@ -2408,7 +2483,7 @@ def first_lock_color_consensus():
         if count > best_count:
             best_id = color_id
             best_count = count
-    if (best_count < COLOR_CONFIRM_FRAMES or
+    if (best_count < required_frames or
             not color_id_available_for_search(best_id)):
         return 0, None
     selected = []
@@ -2416,7 +2491,7 @@ def first_lock_color_consensus():
         if (first_lock_pending_color_ids[index] == best_id and
                 first_lock_pending_color_thresholds[index] is not None):
             selected.append(first_lock_pending_color_thresholds[index])
-    if len(selected) < COLOR_CONFIRM_FRAMES:
+    if len(selected) < required_frames:
         return 0, None
     values = []
     middle = len(selected) // 2
@@ -2501,6 +2576,11 @@ def accept_first_lock_candidate(candidate):
                      if forced
                      else FIRST_LOCK_WINDOW_FRAMES)
     if first_lock_pending_hits >= required_hits:
+        if (not forced and first_lock_pending_label == 2 and
+                first_lock_color_consensus()[0] <= 0):
+            if first_lock_pending_samples >= window_frames:
+                reset_first_lock_pending()
+            return False
         return commit_first_lock()
     if first_lock_pending_samples >= window_frames:
         reset_first_lock_pending()
@@ -2744,13 +2824,6 @@ def front_scan_find_id2_blobs(img, roi, threshold):
     except Exception:
         return None
 def front_scan_has_id2_blob(img, roi, current_box):
-    threshold = adaptive_color_thresholds[FRONT_SCAN_ID2_COLOR_ID - 1]
-    if threshold is not None:
-        blobs = front_scan_find_id2_blobs(img, roi, threshold)
-        if blobs:
-            for blob in blobs:
-                if front_scan_id2_blob_valid(blob, current_box):
-                    return True
     blobs = front_scan_find_id2_blobs(
         img, roi, all_color_thresholds[FRONT_SCAN_ID2_COLOR_ID - 1])
     if blobs:
@@ -2993,7 +3066,7 @@ def collect_target_scan_candidates(img):
                 tennis_candidate_is_yellow_line(img, box)):
             continue
         matches, sampled = model_candidate_matches_requested_color(
-            img, label, box)
+            img, label, box, score)
         if not matches or sampled is None:
             continue
         coordinate_box = target_candidate_coordinate_box(label, box)
@@ -3775,9 +3848,14 @@ def yellow_bottom_evidence_mask():
         evidence |= 2
     if yellow_tennis_pair_bridge:
         evidence |= 4
+    # A fast turn can move a bottom-linked line to the frame edge for only one
+    # sample before it disappears. The completed sweep keeps that sample from
+    # being confused with an isolated yellow object at the edge.
     if (yellow_sweep_detected and
-            yellow_sweep_candidate_pair == 45 and
-            yellow_sweep_span >= YELLOW_SWEEP_MIN_TRAVEL):
+            yellow_sweep_span >= YELLOW_SWEEP_MIN_TRAVEL and
+            (yellow_sweep_candidate_pair == 45 or
+             (yellow_sweep_edge_count > 0 and
+              yellow_crossline_bottom_visible))):
         evidence |= 8
     return evidence
 def yellow_bottom_evidence():
@@ -3821,6 +3899,10 @@ def current_pos_flag(frame_index):
                     yellow_track_x = yellow_candidate_track_x(
                         yellow_line_k, yellow_line_b)
                     yellow_track_direction = 0
+                finish_pending_carry()
+                reset_target_tracking_state()
+                openart_mode = MODE_WAIT_TURN
+                return POS_CROSSED
             yellow_lost_count = 0
             return POS_NO_BOUNDARY
         if yellow_keep_evidence():
@@ -4526,6 +4608,8 @@ while True:
     try:
         main_loop_stage = 'frame_start'
         frame_count += 1
+        main_loop_stage = 'model_retry'
+        maybe_retry_model_runtime(frame_count)
         main_loop_stage = 'receive_command'
         receive_command_from_host()
         main_loop_stage = 'snapshot'
@@ -4545,6 +4629,20 @@ while True:
             update_yellow_detection(img)
         main_loop_stage = 'yellow_state'
         pos_flag = current_pos_flag(frame_count)
+        if pos_flag == POS_CROSSED:
+            main_loop_stage = 'crossed_transmit'
+            send_world_no_target(yellow_detected, pos_flag)
+            main_loop_stage = 'yellow_log'
+            log_yellow_trace(pos_flag)
+            main_loop_stage = 'carry_capture'
+            capture_carry_frame(img, pos_flag)
+            main_loop_stage = 'state_log'
+            log_main_state('wait_turn')
+            main_loop_stage = 'collect'
+            maybe_collect(frame_count)
+            main_loop_stage = 'watchdog'
+            feed_watchdog()
+            continue
         main_loop_stage = 'yellow_log'
         log_yellow_trace(pos_flag)
         main_loop_stage = 'carry_capture'
