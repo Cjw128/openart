@@ -1,7 +1,7 @@
 # v1.1.0 MASTER: optional ID2-first gate; motion-tolerant 3-in-5 first lock.
 # ==================== QUICK MATCH SETTINGS ====================
 # Edit this block first when changing cameras, models, or SD files.
-WB_GAINS = (92.00, 64.00, 101.00)
+WB_GAINS = (101.00,64.00,97.00)
 MODEL_PATH = '/sd/80lite0.5SS.tflite'
 COLOR_THR_PATH = '/sd/color_thr.txt'
 EXPOSURE_INIT = 880
@@ -32,7 +32,11 @@ ENABLE_WATCHDOG = True
 WATCHDOG_TIMEOUT_MS = 8000
 MAIN_LOG_PATH = '/sd/main_runtime.log'
 MAIN_LOG_INTERVAL_MS = 1000
-# Temporary yellow-line diagnostics; restore all three switches after capture.
+ENABLE_BEAR_DEBUG_LOG = False
+BEAR_DEBUG_LOG_PATH = '/sd/bear_debug.log'
+BEAR_DEBUG_LOG_BATCH_LINES = 8
+# SD diagnostics stay available for field debugging but are disabled by
+# default during normal operation.
 ENABLE_MAIN_SD_LOG = False
 ENABLE_YELLOW_FRAME_TRACE = False
 # Diagnostic JPEGs are written before any debug overlays are drawn. A new
@@ -48,6 +52,58 @@ try:
     boot_reset_cause = machine.reset_cause()
 except Exception:
     boot_reset_cause = -1
+boot_log_failure_reported = False
+def boot_reset_cause_name(value):
+    for name in ('PWRON_RESET', 'HARD_RESET', 'WDT_RESET',
+                 'DEEPSLEEP_RESET', 'SOFT_RESET'):
+        try:
+            if value == getattr(machine, name):
+                return name
+        except Exception:
+            pass
+    return 'UNKNOWN'
+boot_reset_name = boot_reset_cause_name(boot_reset_cause)
+def log_boot_stage(stage, status, detail=''):
+    global boot_log_failure_reported
+    if not ENABLE_MAIN_SD_LOG:
+        return
+    try:
+        now = time.ticks_ms()
+    except Exception:
+        now = -1
+    try:
+        free_heap = gc.mem_free()
+    except Exception:
+        free_heap = -1
+    detail = str(detail).replace('\r', '_').replace('\n', '_').replace(' ', '_')
+    if not detail:
+        detail = 'none'
+    line = (
+        't=%d event=BOOT_STAGE stage=%s status=%s reset_cause=%d '
+        'reset_name=%s heap=%d detail=%s' %
+        (now, stage, status, boot_reset_cause, boot_reset_name,
+         free_heap, detail))
+    try:
+        print('[BOOT] stage=%s status=%s detail=%s' %
+              (stage, status, detail))
+    except Exception:
+        pass
+    # Close every checkpoint immediately so the last completed call survives a
+    # hard hang or watchdog reset.
+    try:
+        with open(MAIN_LOG_PATH, 'a') as log_file:
+            log_file.write(line + '\n')
+    except Exception as error:
+        if not boot_log_failure_reported:
+            try:
+                print('[BOOT LOG] write failed: ' + str(error))
+            except Exception:
+                pass
+            boot_log_failure_reported = True
+def log_first_frame_stage(stage, status, detail=''):
+    if frame_count == 1:
+        log_boot_stage('first_frame_' + stage, status, detail)
+log_boot_stage('script', 'BEGIN')
 def init_watchdog():
     global wdt, watchdog_init_error
     if not ENABLE_WATCHDOG or WDT is None:
@@ -66,11 +122,20 @@ def feed_watchdog():
         wdt.feed()
     except Exception:
         pass
+log_boot_stage('watchdog_init', 'BEGIN')
 init_watchdog()
+log_boot_stage(
+    'watchdog_init', 'OK',
+    'enabled=%d,error=%s' %
+    (int(wdt is not None), watchdog_init_error if watchdog_init_error else 'none'))
+log_boot_stage('sensor_reset', 'BEGIN')
 sensor.reset()
+log_boot_stage('sensor_reset', 'OK')
+log_boot_stage('sensor_format', 'BEGIN')
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
 sensor.set_framerate(60)
+log_boot_stage('sensor_format', 'OK')
 def snapshot_frame():
     return sensor.snapshot()
 def validate_wb_gains(values):
@@ -96,9 +161,12 @@ def load_startup_wb_gains(path=COLOR_THR_PATH):
         print('[WB] load failed: ' + str(error))
     print('[WB] using fallback R=%.2f G=%.2f B=%.2f' % WB_GAINS)
     return WB_GAINS
+log_boot_stage('white_balance', 'BEGIN')
 startup_wb_gains = load_startup_wb_gains()
 sensor.set_auto_whitebal(False, rgb_gain_db=startup_wb_gains)
 sensor.set_auto_gain(False, gain_db=0)
+log_boot_stage(
+    'white_balance', 'OK', 'gains=%.2f:%.2f:%.2f' % startup_wb_gains)
 def validate_exposure(value):
     if value < EXPOSURE_MIN or value > EXPOSURE_MAX:
         raise ValueError('exposure_us out of range')
@@ -118,13 +186,21 @@ def load_startup_exposure(path=COLOR_THR_PATH):
         print('[EXPOSURE] load failed: ' + str(error))
     print('[EXPOSURE] using fallback %dus' % EXPOSURE_INIT)
     return EXPOSURE_INIT
+log_boot_stage('exposure', 'BEGIN')
 startup_exposure_us = load_startup_exposure()
 sensor.set_auto_exposure(False, exposure_us=startup_exposure_us)
+log_boot_stage('exposure', 'OK', 'exposure_us=%d' % startup_exposure_us)
 sensor.set_vflip(True)
+log_boot_stage('sensor_settle_200ms', 'BEGIN')
 sensor.skip_frames(time=200)
+log_boot_stage('sensor_settle_200ms', 'OK')
 sensor.set_hmirror(True)
+log_boot_stage('sensor_settle_800ms', 'BEGIN')
 sensor.skip_frames(time=800)
+log_boot_stage('sensor_settle_800ms', 'OK')
+log_boot_stage('uart_init', 'BEGIN')
 uart = UART(12, baudrate=115200)
+log_boot_stage('uart_init', 'OK', 'port=12,baud=115200')
 all_color_thresholds = [
     (34, 100, -41, 4, -72, -22),
     (10, 80, 22, 122, -17, 93),
@@ -202,11 +278,16 @@ def _load_calibrated_params(path=COLOR_THR_PATH):
     except Exception:
         pass
     return None, None
+log_boot_stage('color_calibration', 'BEGIN')
 _loaded, _loaded_ground_threshold = _load_calibrated_params()
 if _loaded:
     all_color_thresholds = _loaded
     all_color_thresholds[4] = _separate_white_bear_from_ground(
         all_color_thresholds[4], _loaded_ground_threshold)
+log_boot_stage(
+    'color_calibration', 'OK',
+    'colors=%d,ground=%d' %
+    (int(bool(_loaded)), int(_loaded_ground_threshold is not None)))
 COLOR_MIN_PIXELS = 70
 COLOR_MIN_AREA = 100
 TENNIS_MIN_PIXELS = 80
@@ -285,15 +366,15 @@ MODEL_MIN_BOX_AREA = 24
 MODEL_MATCH_CENTER2 = 130 * 130
 MODEL_PENDING_CENTER2 = 80 * 80
 FIRST_LOCK_SCORE_MIN = 0.30
-FIRST_LOCK_WINDOW_FRAMES = 5
-FIRST_LOCK_REQUIRED_HITS = 3
+FIRST_LOCK_WINDOW_FRAMES = 3
+FIRST_LOCK_REQUIRED_HITS = 2
 FIRST_LOCK_MATCH_CENTER_PX = 36
 FIRST_LOCK_MATCH_CENTER2 = FIRST_LOCK_MATCH_CENTER_PX * FIRST_LOCK_MATCH_CENTER_PX
 FIRST_LOCK_SIZE_DELTA_PERCENT = 50
 FIRST_LOCK_NEARER_MARGIN_CM = 0.0
 HOST_FORCED_FIRST_LOCK_SCORE_MIN = 0.25
-HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 5
-HOST_FORCED_FIRST_LOCK_REQUIRED_HITS = 3
+HOST_FORCED_FIRST_LOCK_WINDOW_FRAMES = 3
+HOST_FORCED_FIRST_LOCK_REQUIRED_HITS = 2
 HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX = 36
 HOST_FORCED_FIRST_LOCK_MATCH_CENTER2 = (
     HOST_FORCED_FIRST_LOCK_MATCH_CENTER_PX *
@@ -301,7 +382,6 @@ HOST_FORCED_FIRST_LOCK_MATCH_CENTER2 = (
 HOST_FORCED_FIRST_LOCK_SIZE_DELTA_PERCENT = 50
 HOST_FORCED_COLOR_SAMPLE_MAX_IQR = (65, 70, 85)
 BAG_RELAXED_MAX_IQR = (100, 255, 255)
-BAG_DIRECT_TRUST_SCORE = 0.60
 FORCED_TENNIS_FIRST_LOCK_SCORE_MIN = 0.18
 FORCED_TENNIS_LOCK_SCORE_MIN = 0.15
 TENNIS_TRACK_MIN_PIXELS = 30
@@ -395,6 +475,15 @@ adaptive_color_thresholds = [None, None, None, None, None]
 color_adapt_pending_id = 0
 color_adapt_pending_threshold = None
 color_adapt_pending_count = 0
+bear_debug_log_buffer = []
+bear_debug_log_failure_reported = False
+bear_debug_brown_pixels = -1
+bear_debug_white_pixels = -1
+bear_debug_required_pixels = -1
+bear_debug_pixel_id = 0
+bear_debug_stats_id = -1
+bear_debug_dynamic_valid = False
+bear_debug_evidence_reason = 'not_sampled'
 color_blob_box = None
 color_coordinate_anchor_blob_x = None
 color_coordinate_anchor_blob_y = None
@@ -407,6 +496,71 @@ dynamic_detect_roi = DETECT_ROI
 target_color_id = 0
 host_color_id_received = False
 completed_color_mask = 0
+def reset_bear_debug_evidence(reason='not_sampled'):
+    global bear_debug_brown_pixels, bear_debug_white_pixels
+    global bear_debug_required_pixels
+    global bear_debug_pixel_id, bear_debug_stats_id
+    global bear_debug_dynamic_valid, bear_debug_evidence_reason
+    bear_debug_brown_pixels = -1
+    bear_debug_white_pixels = -1
+    bear_debug_required_pixels = -1
+    bear_debug_pixel_id = 0
+    bear_debug_stats_id = -1
+    bear_debug_dynamic_valid = False
+    bear_debug_evidence_reason = reason
+def flush_bear_debug_log():
+    global bear_debug_log_failure_reported
+    if not ENABLE_BEAR_DEBUG_LOG or not bear_debug_log_buffer:
+        return
+    block = '\n'.join(bear_debug_log_buffer) + '\n'
+    bear_debug_log_buffer[:] = []
+    try:
+        with open(BEAR_DEBUG_LOG_PATH, 'a') as log_file:
+            log_file.write(block)
+    except Exception as error:
+        if not bear_debug_log_failure_reported:
+            print('[BEAR LOG] write failed: ' + str(error))
+            bear_debug_log_failure_reported = True
+def append_bear_debug_log(line, immediate=False):
+    if not ENABLE_BEAR_DEBUG_LOG:
+        return
+    bear_debug_log_buffer.append(line)
+    if immediate or len(bear_debug_log_buffer) >= BEAR_DEBUG_LOG_BATCH_LINES:
+        flush_bear_debug_log()
+def log_bear_debug(stage, score, box, sampled_id=0):
+    if not ENABLE_BEAR_DEBUG_LOG:
+        return
+    if box is None:
+        x = y = w = h = -1
+    else:
+        x, y, w, h = box
+    append_bear_debug_log(
+        ('event=BEAR frame=%d role=main stage=%s score=%d '
+         'box=%d:%d:%d:%d locked=%d requested=%d pixel_id=%d '
+         'brown=%d white=%d required=%d stats_id=%d dynamic=%d sample_id=%d '
+         'stable=%d pending=%d:%d hits=%d samples=%d evidence=%s') %
+        (frame_count, stage, int(score * 1000 + 0.5), x, y, w, h,
+         int(model_lock[1] is not None),
+         target_color_id if host_forced_target_active() else 0,
+         bear_debug_pixel_id, bear_debug_brown_pixels,
+         bear_debug_white_pixels, bear_debug_required_pixels,
+         bear_debug_stats_id,
+         int(bear_debug_dynamic_valid), sampled_id, model_color[0],
+         color_adapt_pending_id, color_adapt_pending_count,
+         first_lock_pending_hits, first_lock_pending_samples,
+         bear_debug_evidence_reason))
+def init_bear_debug_log():
+    if not ENABLE_BEAR_DEBUG_LOG:
+        return
+    append_bear_debug_log(
+        ('event=BEAR_BEGIN role=main frame=%d min_pixels=%d '
+         'min_pixels_floor=%d reference_roi_area=%d gap=%d '
+         'dominance_x100=%d color_confirm=%d') %
+        (frame_count, FRONT_SCAN_BEAR_MIN_PIXELS,
+         FRONT_SCAN_BEAR_MIN_PIXELS_FLOOR,
+         FRONT_SCAN_BEAR_REFERENCE_ROI_AREA,
+         FRONT_SCAN_BEAR_MIN_PIXEL_GAP, FRONT_SCAN_BEAR_DOMINANCE_X100,
+         COLOR_CONFIRM_FRAMES), True)
 pending_carry_color_id = 0
 target_scan_requested = False
 target_scan_color_id = 0
@@ -460,8 +614,12 @@ FRONT_SCAN_ID2_MIN_AREA = 100
 FRONT_SCAN_ID2_MIN_DENSITY = 0.40
 FRONT_SCAN_ID2_ASPECT_MIN_X100 = 60
 FRONT_SCAN_ID2_ASPECT_MAX_X100 = 600
+FRONT_SCAN_ID2_CURRENT_EDGE_MARGIN_PX = 16
+FRONT_SCAN_ID2_CURRENT_X_OVERLAP_X100 = 55
 FRONT_SCAN_BEAR_COMPONENT_MIN_PIXELS = 5
 FRONT_SCAN_BEAR_MIN_PIXELS = 12
+FRONT_SCAN_BEAR_MIN_PIXELS_FLOOR = 6
+FRONT_SCAN_BEAR_REFERENCE_ROI_AREA = 300
 FRONT_SCAN_BEAR_MIN_PIXEL_GAP = 6
 FRONT_SCAN_BEAR_DOMINANCE_X100 = 130
 front_scan_last_current_id = 0
@@ -1276,6 +1434,7 @@ def center_line_world_x_for_row(row):
         ground_center_x_cache[row] = cached
     return cached
 
+log_boot_stage('ground_projection', 'BEGIN')
 _loaded_ground_projection = load_ground_projection()
 if _loaded_ground_projection is not None:
     ground_mesh_triangles = _loaded_ground_projection[0]
@@ -1284,8 +1443,12 @@ if _loaded_ground_projection is not None:
     ground_fallback_h = _loaded_ground_projection[3]
     print('[GROUND] loaded %d triangles from %s' %
           (len(ground_mesh_triangles), CAMERA_GROUND_MESH_PATH))
+    log_boot_stage(
+        'ground_projection', 'OK',
+        'source=sd,triangles=%d' % len(ground_mesh_triangles))
 else:
     print('[GROUND] mesh unavailable; using embedded 28-point homography fallback')
+    log_boot_stage('ground_projection', 'OK', 'source=fallback')
 del _loaded_ground_projection
 gc.collect()
 
@@ -1685,9 +1848,6 @@ def model_candidate_matches_requested_color(img, label, box, score):
         if (not color_id_available_for_search(target_color_id) or
                 target_color_id not in candidates):
             return False, None
-        if label == 2 and score > BAG_DIRECT_TRUST_SCORE:
-            sampled = sample_direct_trust_bag_color(img, box)
-            return sampled[0] == target_color_id, sampled
         sampled = sample_model_color(img, label, box)
         if sampled[0] == target_color_id:
             return True, sampled
@@ -1707,9 +1867,6 @@ def model_candidate_matches_requested_color(img, label, box, score):
             available_count += 1
     if available_count <= 0:
         return False, None
-    if label == 2 and score > BAG_DIRECT_TRUST_SCORE:
-        sampled = sample_direct_trust_bag_color(img, box)
-        return color_id_available_for_search(sampled[0]), sampled
     if available_count == len(candidates):
         return True, None
     sampled = sample_model_color(img, label, box)
@@ -1824,6 +1981,9 @@ def run_model_best(img):
             if label < 0 or label >= label_count:
                 continue
             if desired_label >= 0 and label != desired_label:
+                if label == 0:
+                    reset_bear_debug_evidence('label_not_requested')
+                    log_bear_debug('label_not_requested', score, None)
                 continue
             left_ratio = float(x1)
             top_ratio = float(y1)
@@ -1833,11 +1993,17 @@ def run_model_best(img):
             h = int((float(y2) - top_ratio) * frame_height)
             # Model input is sensor-native; tracking uses the mirrored control frame.
             x = frame_width - model_x - w
+            if label == 0:
+                reset_bear_debug_evidence()
             if (w < MODEL_MIN_BOX_SIDE or h < MODEL_MIN_BOX_SIDE or
                     w * h < MODEL_MIN_BOX_AREA):
+                if label == 0:
+                    log_bear_debug('box_small', score, (x, y, w, h))
                 continue
             box = raw_model_box(x, y, w, h)
             if not orbit_y_cut_allows_box(box):
+                if label == 0:
+                    log_bear_debug('orbit_cut', score, box)
                 continue
             if locked and forced_id == TENNIS_COLOR_ID:
                 minimum_score = FORCED_TENNIS_LOCK_SCORE_MIN
@@ -1845,17 +2011,27 @@ def run_model_best(img):
                 minimum_score = (model_score_minimum(label, box, True)
                                  if locked else acquire_minimum_score)
             if score < minimum_score:
+                if label == 0:
+                    log_bear_debug('score_low', score, box)
                 continue
             if (ENABLE_TENNIS_LINE_FILTER and label == 1 and
                     tennis_candidate_is_yellow_line(img, box)):
                 continue
             if locked and not model_box_matches(
                     box, anchor, MODEL_MATCH_CENTER2):
+                if label == 0:
+                    log_bear_debug('track_mismatch', score, box)
                 continue
             matches, sampled = model_candidate_matches_requested_color(
                 img, label, box, score)
             if not matches:
+                if label == 0:
+                    log_bear_debug(
+                        'requested_color_reject', score, box,
+                        0 if sampled is None else sampled[0])
                 continue
+            if label == 0 and sampled is not None:
+                log_bear_debug('model_candidate', score, box, sampled[0])
             if locked:
                 rank = (int(score * 100000) +
                         int(box_iou(box, anchor) * 50000) -
@@ -1874,6 +2050,9 @@ def run_model_best(img):
                 return best + (0, None)
             if best_sampled is None:
                 best_sampled = sample_model_color(img, best[0], best[1])
+                if best[0] == 0:
+                    log_bear_debug(
+                        'model_candidate', best[2], best[1], best_sampled[0])
             return best + best_sampled
         return None
     except Exception as error:
@@ -2110,25 +2289,37 @@ def sample_box_lab_stats(img, label, box, max_iqr):
         return None
     return sample
 def sample_model_color(img, label, box):
+    global bear_debug_stats_id, bear_debug_dynamic_valid
+    global bear_debug_evidence_reason
     forced_color_id = (target_color_id
                        if host_forced_target_active() else 0)
     max_iqr = (HOST_FORCED_COLOR_SAMPLE_MAX_IQR
                if forced_color_id > 0 else COLOR_SAMPLE_MAX_IQR)
     if label == 0:
         color_id = front_scan_bear_color_id(img, box)
-        if (color_id <= 0 or
-                (forced_color_id > 0 and color_id != forced_color_id) or
-                not color_id_available_for_search(color_id)):
+        if color_id <= 0:
+            return 0, None
+        if forced_color_id > 0 and color_id != forced_color_id:
+            bear_debug_evidence_reason = 'forced_color_mismatch'
+            return 0, None
+        if not color_id_available_for_search(color_id):
+            bear_debug_evidence_reason = 'color_unavailable'
             return 0, None
         base_threshold = all_color_thresholds[color_id - 1]
         sample = sample_box_lab_stats(img, label, box, max_iqr)
         if sample is None:
+            bear_debug_evidence_reason = 'pixel_only_no_stats'
             return color_id, base_threshold
         stats_color_id = sample_color_id_from_stats(
             label, sample, forced_color_id)
+        bear_debug_stats_id = stats_color_id
         if stats_color_id != color_id:
+            bear_debug_evidence_reason = 'pixel_stats_mismatch'
             return color_id, base_threshold
         dynamic_threshold = build_dynamic_threshold(color_id, sample)
+        bear_debug_dynamic_valid = dynamic_threshold is not None
+        bear_debug_evidence_reason = ('dynamic_ok' if dynamic_threshold is not None
+                                      else 'dynamic_invalid')
         return (color_id, dynamic_threshold
                 if dynamic_threshold is not None else base_threshold)
     sample = sample_box_lab_stats(img, label, box, max_iqr)
@@ -2147,23 +2338,18 @@ def sample_model_color(img, label, box):
     if dynamic_threshold is None and label == 2:
         dynamic_threshold = all_color_thresholds[color_id - 1]
     return color_id, dynamic_threshold
-def sample_direct_trust_bag_color(img, box):
-    sample = sample_box_lab_stats(img, 2, box, BAG_RELAXED_MAX_IQR)
-    if sample is None:
-        return 0, None
-    lab = sample[6:9]
-    blue_distance = threshold_center_distance(lab, all_color_thresholds[0])
-    red_distance = threshold_center_distance(lab, all_color_thresholds[1])
-    color_id = 1 if blue_distance <= red_distance else 2
-    dynamic_threshold = build_dynamic_threshold(color_id, sample)
-    if dynamic_threshold is None:
-        dynamic_threshold = all_color_thresholds[color_id - 1]
-    return color_id, dynamic_threshold
-def confirm_model_color(observed_id, observed_threshold):
+def confirm_model_color(observed_id, observed_threshold,
+                        preserve_on_no_evidence=False):
     global color_adapt_pending_id, color_adapt_pending_threshold
     global color_adapt_pending_count
-    if (observed_id <= 0 or observed_threshold is None or
-            not color_id_available_for_search(observed_id)):
+    # An ambiguous color sample carries no contradictory evidence. Preserve
+    # the pending confirmation so intermittent small-box misses do not erase
+    # otherwise consistent observations.
+    if observed_id <= 0 or observed_threshold is None:
+        if not preserve_on_no_evidence:
+            reset_color_adaptation_pending()
+        return False
+    if not color_id_available_for_search(observed_id):
         reset_color_adaptation_pending()
         return False
     if model_color[0] > 0 and model_color[0] != observed_id:
@@ -2199,11 +2385,22 @@ def update_model_guided_color(img, score):
         return False
     if score < model_score_minimum(
             model_lock[0], model_lock[1], False):
-        reset_color_adaptation_pending()
+        if model_lock[0] == 0:
+            reset_bear_debug_evidence('color_score_low')
+            log_bear_debug('color_score_hold', score, model_lock[1])
+        else:
+            reset_color_adaptation_pending()
         return False
     color_id, threshold = sample_model_color(
         img, model_lock[0], model_lock[1])
-    return confirm_model_color(color_id, threshold)
+    confirmed = confirm_model_color(
+        color_id, threshold, model_lock[0] == 0)
+    if model_lock[0] == 0:
+        log_bear_debug(
+            'color_confirmed' if confirmed else
+            ('color_ambiguous' if color_id <= 0 else 'color_pending'),
+            score, model_lock[1], color_id)
+    return confirmed
 def box_from_center(center_x, center_y, width, height):
     width = clamp_int(int(width + 0.5), 1, 320)
     height = clamp_int(int(height + 0.5), 1, 240)
@@ -2679,6 +2876,11 @@ def process_model_only_target(img, frame_index, run_model):
             candidate = forced_tennis_fallback_candidate(img)
         acquiring = model_lock[1] is None
         observed = accept_model_candidate(candidate)
+        if (acquiring and candidate is not None and candidate[0] == 0):
+            log_bear_debug(
+                'first_lock_committed' if model_lock[1] is not None
+                else 'first_lock_pending',
+                candidate[2], candidate[1], candidate[4])
         color_confirmed = False
         if (observed and not acquiring and
                 not host_forced_target_active()):
@@ -2737,6 +2939,23 @@ def front_scan_box_is_current(box, current_box):
     if box_iou(box, current_box) >= FRONT_SCAN_EXCLUDE_IOU:
         return True
     return center_dist2(box, current_box) <= FRONT_SCAN_EXCLUDE_CENTER2
+def front_scan_id2_edge_is_current(box, current_box, current_id):
+    if (current_id != FRONT_SCAN_ID2_COLOR_ID or not current_box or
+            box[2] <= 0 or current_box[2] <= 0):
+        return False
+    overlap_left = max(box[0], current_box[0])
+    overlap_right = min(box[0] + box[2], current_box[0] + current_box[2])
+    overlap_width = overlap_right - overlap_left
+    if (overlap_width * 100 <
+            min(box[2], current_box[2]) *
+            FRONT_SCAN_ID2_CURRENT_X_OVERLAP_X100):
+        return False
+    margin = FRONT_SCAN_ID2_CURRENT_EDGE_MARGIN_PX
+    current_top = current_box[1]
+    candidate_top = box[1]
+    candidate_bottom = box[1] + box[3]
+    return (candidate_top <= current_top + margin and
+            candidate_bottom >= current_top - margin)
 def front_scan_roi():
     x, y, w, h = dynamic_detect_roi
     y2 = min(y + h, FRONT_SCAN_Y_MAX)
@@ -2765,26 +2984,48 @@ def front_scan_bear_threshold_pixels(img, roi, threshold, margin):
     for blob in blobs:
         pixels += blob.pixels()
     return pixels
+def front_scan_bear_required_pixels(roi):
+    roi_area = roi[2] * roi[3]
+    scaled = ((roi_area * FRONT_SCAN_BEAR_MIN_PIXELS +
+               FRONT_SCAN_BEAR_REFERENCE_ROI_AREA - 1) //
+              FRONT_SCAN_BEAR_REFERENCE_ROI_AREA)
+    return max(FRONT_SCAN_BEAR_MIN_PIXELS_FLOOR,
+               min(FRONT_SCAN_BEAR_MIN_PIXELS, scaled))
 def front_scan_bear_color_id(img, box):
+    global bear_debug_brown_pixels, bear_debug_white_pixels
+    global bear_debug_required_pixels
+    global bear_debug_pixel_id, bear_debug_evidence_reason
+    reset_bear_debug_evidence()
     roi = model_sample_roi(0, box)
     if roi is None:
+        bear_debug_evidence_reason = 'sample_roi_invalid'
         return 0
+    required_pixels = front_scan_bear_required_pixels(roi)
+    bear_debug_required_pixels = required_pixels
     brown_pixels = front_scan_bear_threshold_pixels(
         img, roi, all_color_thresholds[3], BRN_BEAR_MERGE_MARGIN)
     white_pixels = front_scan_bear_threshold_pixels(
         img, roi, all_color_thresholds[4], WHT_BEAR_MERGE_MARGIN)
+    bear_debug_brown_pixels = brown_pixels
+    bear_debug_white_pixels = white_pixels
     if brown_pixels < 0 or white_pixels < 0:
+        bear_debug_evidence_reason = 'blob_error'
         return 0
-    if (brown_pixels >= FRONT_SCAN_BEAR_MIN_PIXELS and
+    if (brown_pixels >= required_pixels and
             brown_pixels - white_pixels >= FRONT_SCAN_BEAR_MIN_PIXEL_GAP and
             brown_pixels * 100 >=
             white_pixels * FRONT_SCAN_BEAR_DOMINANCE_X100):
+        bear_debug_pixel_id = 4
+        bear_debug_evidence_reason = 'brown_pixels'
         return 4
-    if (white_pixels >= FRONT_SCAN_BEAR_MIN_PIXELS and
+    if (white_pixels >= required_pixels and
             white_pixels - brown_pixels >= FRONT_SCAN_BEAR_MIN_PIXEL_GAP and
             white_pixels * 100 >=
             brown_pixels * FRONT_SCAN_BEAR_DOMINANCE_X100):
+        bear_debug_pixel_id = 5
+        bear_debug_evidence_reason = 'white_pixels'
         return 5
+    bear_debug_evidence_reason = 'pixel_ambiguous'
     return 0
 def front_scan_color_id(img, label, box):
     if label < 0 or label >= len(MODEL_COLOR_IDS):
@@ -2798,7 +3039,7 @@ def front_scan_color_id(img, label, box):
     if sample is None:
         return 0
     return sample_color_id_from_stats(label, sample)
-def front_scan_id2_blob_valid(blob, current_box):
+def front_scan_id2_blob_valid(blob, current_box, current_id):
     w = blob.w()
     h = blob.h()
     if w <= 0 or h <= 0:
@@ -2814,7 +3055,11 @@ def front_scan_id2_blob_valid(blob, current_box):
     if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
         if box[1] + box[3] < dynamic_cut_left_y + CUT_BLOB_DELTA:
             return False
-    return not front_scan_box_is_current(box, current_box)
+    if front_scan_box_is_current(box, current_box):
+        return False
+    if front_scan_id2_edge_is_current(box, current_box, current_id):
+        return False
+    return True
 def front_scan_find_id2_blobs(img, roi, threshold):
     try:
         return img.find_blobs(
@@ -2823,12 +3068,12 @@ def front_scan_find_id2_blobs(img, roi, threshold):
             area_threshold=FRONT_SCAN_ID2_MIN_AREA, merge=True)
     except Exception:
         return None
-def front_scan_has_id2_blob(img, roi, current_box):
+def front_scan_has_id2_blob(img, roi, current_box, current_id):
     blobs = front_scan_find_id2_blobs(
         img, roi, all_color_thresholds[FRONT_SCAN_ID2_COLOR_ID - 1])
     if blobs:
         for blob in blobs:
-            if front_scan_id2_blob_valid(blob, current_box):
+            if front_scan_id2_blob_valid(blob, current_box, current_id):
                 return True
     return False
 def scan_front_other_color_ids(img):
@@ -2839,7 +3084,7 @@ def scan_front_other_color_ids(img):
     roi = front_scan_roi()
     if roi is None:
         return current_id, mask, count
-    if front_scan_has_id2_blob(img, roi, current_box):
+    if front_scan_has_id2_blob(img, roi, current_box, current_id):
         mask |= 1 << (FRONT_SCAN_ID2_COLOR_ID - 1)
         count += 1
     if not model_runtime_enabled or model_net is None:
@@ -4302,6 +4547,10 @@ def log_fatal_error(error):
     except Exception:
         pass
     try:
+        flush_bear_debug_log()
+    except Exception:
+        pass
+    try:
         free_heap = gc.mem_free()
     except Exception:
         free_heap = -1
@@ -4602,33 +4851,53 @@ def log_main_state(path, result=None, has_target=False, world_point=None):
     main_log_last_frame = frame_count
     main_log_last_target_count = main_tx_target_count
     main_log_last_no_target_count = main_tx_no_target_count
+log_boot_stage('model_runtime', 'BEGIN')
 init_model_runtime()
+log_boot_stage(
+    'model_runtime', 'OK',
+    'enabled=%d,retry=%d,error_count=%d' %
+    (int(model_runtime_enabled), int(model_retry_pending),
+     model_infer_error_count))
+log_boot_stage('runtime_log', 'BEGIN')
 init_main_log()
+log_boot_stage('runtime_log', 'OK')
+init_bear_debug_log()
+log_boot_stage('main_loop', 'ENTER')
 while True:
     try:
         main_loop_stage = 'frame_start'
         frame_count += 1
+        log_first_frame_stage('loop', 'BEGIN')
         main_loop_stage = 'model_retry'
         maybe_retry_model_runtime(frame_count)
         main_loop_stage = 'receive_command'
+        log_first_frame_stage('receive_command', 'BEGIN')
         receive_command_from_host()
+        log_first_frame_stage('receive_command', 'OK')
         main_loop_stage = 'snapshot'
+        log_first_frame_stage('snapshot', 'BEGIN')
         img = snapshot_frame()
+        log_first_frame_stage('snapshot', 'OK')
         if openart_mode == MODE_RETURN:
             main_loop_stage = 'return_yellow'
+            log_first_frame_stage('return_yellow', 'BEGIN')
             process_return_yellow(img)
+            log_first_frame_stage('return_yellow', 'OK')
             log_yellow_trace(POS_NO_BOUNDARY)
             log_main_state('return')
             maybe_collect(frame_count)
+            log_first_frame_stage('loop', 'OK', 'path=return')
             feed_watchdog()
             continue
         main_loop_stage = 'dynamic_cut'
+        log_first_frame_stage('preprocess', 'BEGIN')
         update_dynamic_cut(img, frame_count)
         if openart_mode == MODE_CARRY:
             main_loop_stage = 'yellow_detection'
             update_yellow_detection(img)
         main_loop_stage = 'yellow_state'
         pos_flag = current_pos_flag(frame_count)
+        log_first_frame_stage('preprocess', 'OK')
         if pos_flag == POS_CROSSED:
             main_loop_stage = 'crossed_transmit'
             send_world_no_target(yellow_detected, pos_flag)
@@ -4641,6 +4910,7 @@ while True:
             main_loop_stage = 'collect'
             maybe_collect(frame_count)
             main_loop_stage = 'watchdog'
+            log_first_frame_stage('loop', 'OK', 'path=wait_turn')
             feed_watchdog()
             continue
         main_loop_stage = 'yellow_log'
@@ -4658,6 +4928,7 @@ while True:
                 'target_scan', has_target=target_scan_hold,
                 world_point=((0, 0) if target_scan_hold else None))
             maybe_collect(frame_count)
+            log_first_frame_stage('loop', 'OK', 'path=target_scan')
             feed_watchdog()
             continue
         if process_front_scan_request(img):
@@ -4668,11 +4939,14 @@ while True:
                 'front_scan', has_target=front_scan_hold,
                 world_point=((0, 0) if front_scan_hold else None))
             maybe_collect(frame_count)
+            log_first_frame_stage('loop', 'OK', 'path=front_scan')
             feed_watchdog()
             continue
         main_loop_stage = 'model'
+        log_first_frame_stage('model', 'BEGIN')
         result = process_model_only_target(
             img, frame_count, should_run_model(frame_count))
+        log_first_frame_stage('model', 'OK')
         world_point = None
         has_target = result is not None
         if has_target:
@@ -4720,6 +4994,7 @@ while True:
         main_loop_stage = 'collect'
         maybe_collect(frame_count)
         main_loop_stage = 'watchdog'
+        log_first_frame_stage('loop', 'OK', 'path=' + state_path)
         feed_watchdog()
     except Exception as error:
         reset_after_fatal(error)
