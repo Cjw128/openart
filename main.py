@@ -1,16 +1,14 @@
-# v1.1.0 MASTER: optional ID2-first gate; motion-tolerant 3-in-5 first lock.
+# v1.2.0 MASTER: controller-selected lock policy; model/LAB target tracking.
 # ==================== QUICK MATCH SETTINGS ====================
 # Edit this block first when changing cameras, models, or SD files.
-WB_GAINS = (101.00,64.00,97.00)
+WB_GAINS = (92.0000,64.0000,91.0000)
 MODEL_PATH = '/sd/80lite0.5SS.tflite'
 COLOR_THR_PATH = '/sd/color_thr.txt'
-EXPOSURE_INIT = 880
+EXPOSURE_INIT = 700
 EXPOSURE_MIN = 100
 EXPOSURE_MAX = 4500
 # Provincial rule: each physical ID appears once per round.
 ENABLE_COMPLETED_COLOR_EXCLUSION = True
-# Keep every unfinished color searchable until the controller enables a policy.
-ID2_ABSOLUTE_PRIORITY = False
 # 0x09 enumerates every visible candidate of one color without changing the
 # active tracker. The controller selects an exact candidate with 0x0A.
 # ================== END QUICK MATCH SETTINGS ==================
@@ -134,7 +132,7 @@ log_boot_stage('sensor_reset', 'OK')
 log_boot_stage('sensor_format', 'BEGIN')
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
-sensor.set_framerate(60)
+sensor.set_framerate(50)
 log_boot_stage('sensor_format', 'OK')
 def snapshot_frame():
     return sensor.snapshot()
@@ -588,16 +586,23 @@ LOCK_POLICY_RED_FIRST_BLUE_LAST = (LOCK_POLICY_RED_FIRST |
                                    LOCK_POLICY_DELAY_BAGS)
 LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS = (
     LOCK_POLICY_TENNIS_FIRST | LOCK_POLICY_DELAY_BAGS)
+LOCK_POLICY_TENNIS_BEARS_BLUE_RED = (
+    LOCK_POLICY_RED_FIRST | LOCK_POLICY_TENNIS_FIRST |
+    LOCK_POLICY_DELAY_BAGS)
+LOCK_POLICY_BEARS_TENNIS_BLUE_RED = 0x08
 LOCK_POLICY_VALID_VALUES = (0, LOCK_POLICY_RED_FIRST,
                             LOCK_POLICY_TENNIS_FIRST,
                             LOCK_POLICY_RED_FIRST_BLUE_LAST,
-                            LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS)
+                            LOCK_POLICY_TENNIS_FIRST_BEARS_THEN_BAGS,
+                            LOCK_POLICY_TENNIS_BEARS_BLUE_RED,
+                            LOCK_POLICY_BEARS_TENNIS_BLUE_RED)
 ALL_COLOR_MASK = (1 << len(all_color_thresholds)) - 1
 BLUE_BAG_BIT = 1 << 0
+RED_BAG_COLOR_ID = 2
+RED_BAG_BIT = 1 << (RED_BAG_COLOR_ID - 1)
 BEAR_COLOR_MASK = (1 << 3) | (1 << 4)
 RED_MIDDLE_COLOR_MASK = (1 << 2) | BEAR_COLOR_MASK
-lock_policy_flags = (LOCK_POLICY_RED_FIRST
-                     if ID2_ABSOLUTE_PRIORITY else 0)
+lock_policy_flags = 0
 search_color_mask = ALL_COLOR_MASK
 TARGET_CANDIDATE_PACKET_ID = 0xC9
 FRONT_SCAN_PACKET_ID = 0xC7
@@ -608,7 +613,7 @@ FRONT_SCAN_Y_MAX = 150
 FRONT_SCAN_SCORE_MIN = FIRST_LOCK_SCORE_MIN
 FRONT_SCAN_STABLE_FRAMES = 6
 FRONT_SCAN_MAX_FRAMES = 12
-FRONT_SCAN_ID2_COLOR_ID = 2
+FRONT_SCAN_ID2_COLOR_ID = RED_BAG_COLOR_ID
 FRONT_SCAN_ID2_MIN_PIXELS = 70
 FRONT_SCAN_ID2_MIN_AREA = 100
 FRONT_SCAN_ID2_MIN_DENSITY = 0.40
@@ -799,9 +804,11 @@ def color_id_completed(color_id):
     return (1 <= color_id <= len(all_color_thresholds) and
             bool(completed_color_mask & (1 << (color_id - 1))))
 def forced_first_color_id():
+    if lock_policy_flags == LOCK_POLICY_TENNIS_BEARS_BLUE_RED:
+        return 3 if not color_id_completed(3) else 0
     if (lock_policy_flags & LOCK_POLICY_RED_FIRST and
-            not color_id_completed(2)):
-        return 2
+            not color_id_completed(RED_BAG_COLOR_ID)):
+        return RED_BAG_COLOR_ID
     if (lock_policy_flags & LOCK_POLICY_TENNIS_FIRST and
             not color_id_completed(3)):
         return 3
@@ -822,6 +829,28 @@ def rebuild_search_color_mask():
         unfinished_bears = BEAR_COLOR_MASK & ~completed_color_mask
         if unfinished_bears:
             available &= unfinished_bears
+    elif lock_policy_flags == LOCK_POLICY_TENNIS_BEARS_BLUE_RED:
+        unfinished_bears = BEAR_COLOR_MASK & ~completed_color_mask
+        if unfinished_bears:
+            available &= unfinished_bears
+        elif not color_id_completed(1):
+            available &= BLUE_BAG_BIT
+        elif not color_id_completed(RED_BAG_COLOR_ID):
+            available &= RED_BAG_BIT
+        else:
+            available = 0
+    elif lock_policy_flags == LOCK_POLICY_BEARS_TENNIS_BLUE_RED:
+        unfinished_bears = BEAR_COLOR_MASK & ~completed_color_mask
+        if unfinished_bears:
+            available &= unfinished_bears
+        elif not color_id_completed(3):
+            available &= 1 << 2
+        elif not color_id_completed(1):
+            available &= BLUE_BAG_BIT
+        elif not color_id_completed(RED_BAG_COLOR_ID):
+            available &= RED_BAG_BIT
+        else:
+            available = 0
     search_color_mask = available & ALL_COLOR_MASK
 def color_id_available_for_search(color_id):
     return (1 <= color_id <= len(all_color_thresholds) and
@@ -3394,7 +3423,8 @@ _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)
 _tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
 _tx_world_buf[1] = _tx_world_no_target_buf[1] = 0x55
-def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00):
+def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False,
+                    pos_flag=0x00):
     global main_tx_target_count
     wx_mm = clamp_int(wx_mm, -32768, 32767)
     wy_mm = clamp_int(wy_mm, -32768, 32767)

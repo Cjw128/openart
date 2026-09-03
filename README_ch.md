@@ -6,8 +6,8 @@
 
 | 文件 | 设备 | 用途 |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / 主车 | v1.1.0 模型 / 色块融合正式入口 |
-| `minimain.py` | OpenART Plus / 从车 | v1.1.0 模型 / 色块融合正式入口 |
+| `main.py` | OpenART Plus / 主车 | v1.2.0 比赛最终运行入口 |
+| `minimain.py` | OpenART Plus / 从车 | v1.2.0 比赛最终运行入口 |
 | `camera_ground_mesh.txt` | OpenART Plus / 主从 | 板端加载的 28 点、36 三角形地面网格 |
 | `ground_mesh_24_points_template.csv` | PC | 当前 28 个像素/世界坐标标定点 |
 | `calibrate_ground_camera.py` | PC | 网格生成、校验和报告工具 |
@@ -19,15 +19,25 @@
 - 当前部署继续使用单文件结构，`main.py` 和 `minimain.py` 分别维护主车与从车的完整主逻辑；两者启动时额外加载 `/sd/camera_ground_mesh.txt`。
 - 多文件运行模块已移除，不再使用 `openart_app.py`、`openart_config.py`、`openart_detectors.py`、`openart_trackers.py`、`openart_uart.py`、`openart_math.py`、`openart_camera.py`、`openart_calibration.py`。
 - 颜色检测、黄线状态、UART 协议和主循环仍在单文件主程序内；地面网格生成和实地复核保留为独立工具。
-- 模型 / 色块融合与坐标跟随的公共节点必须在 `main.py`、`minimain.py`、`world_coordinate_test.py` 三方同步；主从角色差异只保留在黄线、回库和任务状态等角色逻辑中，并由 AST 门禁防止公共框架漂移。
+- 模型 / 色块融合与坐标跟随的公共节点在 `main.py` 与 `minimain.py` 中保持同步；主从角色差异主要在黄线、回库和任务状态逻辑。
 - `fast_blob_backup/`、`stable_confirm/`、`stable_no_priority/` 与 `mainbak` 仅作历史对照，不是当前入口。
 - 测试/诊断文件放在仓库外或系统临时目录，不属于 Git 发布内容；`.gitignore` 的 `*test*.py` 与 `tests/` 规则只负责防止误提交。
 - 多文件版本曾导致 TFLite 检测卡死，原因和维护约束见 v0.4.0 日志；不要把 v0.3.0 的模块化结构重新作为比赛部署结构。
-- 根目录 `README.md` 只保留当前部署摘要，完整迭代记录写入 `README_ch.md` / `README_en.md`。
+- 根目录 `README.md` 是开源部署与协议手册，完整迭代记录写入 `README_ch.md` / `README_en.md`。
 
 ## 更新日志
 
 > **当前双车硬件规则：主车和从车均为 OpenART Plus，`main.py` 与 `minimain.py` 都固定使用 `UART12`、115200 bps。两份文件分别固定为主车/从车入口，不再保留无实际引用的 `IS_SLAVE_CAR` / `SLAVE_MODE` 开关。**
+
+### 2026-09-04 - v1.2.0 - 比赛最终归档版
+
+范围：`main.py`、`minimain.py`、根 README 和许可证。该版本封存比赛结束时最后一套 OpenART 视觉代码；RT1021 主控工程和 TFLite 模型不在最终发布树中。
+
+- 主从入口上电统一使用 `0x00` 自由竞争策略，由主控通过 `0x0C` 在运行时选择目标顺序；删除编译期 `ID2_ABSOLUTE_PRIORITY` 开关。
+- 新增 `0x07` 策略：ID3 -> ID4/ID5 -> ID1 -> ID2；新增 `0x08` 策略：ID4/ID5 -> ID3 -> ID1 -> ID2。`AA 55 0C 08 14` 是策略帧，仍与清空完成记录的 `AA 55 08 08` 区分。
+- 两车运行帧率由 60 调整为 50 fps。主车最终现场参数为白平衡 `(92,64,91)`、曝光 `700 us`；从车保持 `(101,64,97)`、`880 us`；两车模型路径均为 `/sd/80lite0.5SS.tflite`。
+- 从车回库 / 网球黄线阈值更新为 `(34,100,-51,11,40,127)`。主从通用日志、熊类日志和搬运照片均默认关闭，主车 `8 s` WDT 保留。
+- 根 README 按开源交付重写，补齐硬件与模型前提、目标 ID、部署、颜色 / 坐标标定、完整 UART 协议、验证、已知限制和贡献说明；源码与文档以 MIT License 发布。
 
 ### 2026-08-13 - 开发中 - 网球搬运黄线分离、白平衡配置与日志收敛
 
@@ -83,7 +93,7 @@
 - 锁定后的同类兼容模型候选首次推理即更新，不再要求 `0.70` 分数与连续两次一致框；任何距离下的新模型几何均进入同一 `70%` 跟随，不再在 `30 cm` 内因模型分数低于 `0.60` 而保持旧坐标。
 - `main.py`、`minimain.py` 和 `world_coordinate_test.py` 的公共融合节点已同步，三份入口头部版本标识统一为 `v1.1.0`，主循环移除未使用的框坐标拆包。观察脚本继续只增加 IDE 插桩，剔除 `_world_coord_*` 后必须与主车完整运行时 AST 一致。
 - 完整删除主车临时 `/sd/id2_coordinate_watchdog.log` 配置、缓冲、写入函数和主循环埋点，正式运行不再执行该 SD I/O；用于防死锁的 `8 s` 硬件 WDT 保留。
-- 三份入口新增 `ENABLE_COMPLETED_COLOR_EXCLUSION=False`。默认只记录 `completed_color_mask` 而不排除候选，需要时设为 `True` 即按现有完成位启用排除，再次关闭也不会清空记录。该开关与 `ID2_ABSOLUTE_PRIORITY` 独立：默认第一个仍为 ID2，完成后所有颜色（含 ID2）按距离竞争；开启排除后才变为从剩余未完成颜色中选择。
+- 三份入口新增 `ENABLE_COMPLETED_COLOR_EXCLUSION=False`。默认只记录 `completed_color_mask` 而不排除候选，需要时设为 `True` 即按现有完成位启用排除，再次关闭也不会清空记录。该开关与当时的 ID2 首目标门控独立：默认第一个仍为 ID2，完成后所有颜色（含 ID2）按距离竞争；开启排除后才变为从剩余未完成颜色中选择。
 - 28 个标定点、36 个三角形、单应回退、中心 X 修正、Y 映射和 UART 毫米单位均未修改。`test_model_blob_fusion.py` 现有 32 项，与 `test_ground_projection.py` 的 6 项合计 38 项全部通过。
 
 ### 2026-07-29 - 开发中 - 目标锚点与运动首锁
@@ -163,7 +173,7 @@
 
 范围：`main.py`、`minimain.py`、`world_coordinate_test.py`、`test_model_blob_fusion.py`、`test_ground_projection.py`、三份 README。
 
-- 从省赛 `01_稳定版_ID2先_5中7` 恢复首目标门控，并在三份当前入口的快速配置区增加 `ID2_ABSOLUTE_PRIORITY`，默认开启。
+- 从省赛 `01_稳定版_ID2先_5中7` 恢复首目标门控，并在三份当时的入口中默认开启。
 - 开启时，上电或 `0x08` 清零后只允许 ID2 进入普通模型搜索、动态 LAB 确认、主控 `0x03` 指定和世界坐标输出；即使其他 ID 更近或置信度更高也不会锁定。ID2 完成后，其余未完成 ID 自动恢复最近目标竞争。
 - 主车沿用越过黄线时写入完成 mask，从车沿用搬运结束后提交待完成 ID；`0x06` 全色前扫继续绕过优先门控。场上没有 ID2 时会持续等待，不自动降级。
 - 关闭开关时恢复 v0.11.0 的无颜色优先级行为，所有未完成 ID 从启动起按世界 Y 最近优先。

@@ -6,8 +6,8 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 | File | Device | Role |
 | --- | --- | --- |
-| `main.py` | OpenART Plus / master | v1.1.0 production model/blob fusion runtime |
-| `minimain.py` | OpenART Plus / slave | v1.1.0 production model/blob fusion runtime |
+| `main.py` | OpenART Plus / master | v1.2.0 final competition runtime |
+| `minimain.py` | OpenART Plus / slave | v1.2.0 final competition runtime |
 | `camera_ground_mesh.txt` | OpenART Plus / both | Board-side 28-point, 36-triangle ground mesh |
 | `ground_mesh_24_points_template.csv` | PC | Current 28 pixel/world calibration points |
 | `calibrate_ground_camera.py` | PC | Mesh generation, validation, and reporting tool |
@@ -19,15 +19,25 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 - Deployment keeps the single-file layout. `main.py` and `minimain.py` contain the complete master and slave logic and additionally load `/sd/camera_ground_mesh.txt` at startup.
 - The multi-file runtime modules have been removed. The deployment no longer uses `openart_app.py`, `openart_config.py`, `openart_detectors.py`, `openart_trackers.py`, `openart_uart.py`, `openart_math.py`, `openart_camera.py`, or `openart_calibration.py`.
 - Color detection, yellow-line state, the UART protocol, and the main loop remain in each single-file runtime. Ground-mesh generation and field verification remain standalone tools.
-- Shared model/blob fusion and coordinate-following nodes must remain synchronized across `main.py`, `minimain.py`, and `world_coordinate_test.py`. Role-specific differences stay limited to yellow-line, return, and task-state behavior, while the AST gate prevents drift in the shared framework.
+- Shared model/blob fusion and coordinate-following nodes remain synchronized across `main.py` and `minimain.py`; role-specific differences are primarily in yellow-line, return, and task-state behavior.
 - `fast_blob_backup/`, `stable_confirm/`, `stable_no_priority/`, and `mainbak` are historical references, not deployment entrypoints.
 - Test and diagnostic files live outside the repository or in a system temporary directory. The `*test*.py` and `tests/` ignore rules only prevent accidental commits.
 - The multi-file version caused TFLite detection freezes. See the v0.4.0 log for the investigation and maintenance rules; do not restore the v0.3.0 modular structure as the competition deployment layout.
-- The root `README.md` stays as a concise deployment guide; detailed changes live in `README_ch.md` and `README_en.md`.
+- The root `README.md` is the open-source deployment and protocol guide; detailed changes live in `README_ch.md` and `README_en.md`.
 
 ## Logs
 
 > **Current dual-car hardware rule: both cameras are OpenART Plus boards, and `main.py` and `minimain.py` both use `UART12` at 115200 bps. The files are fixed master/slave entrypoints; the unreferenced `IS_SLAVE_CAR` / `SLAVE_MODE` switches have been removed.**
+
+### 2026-09-04 - v1.2.0 - Final competition archive
+
+Scope: `main.py`, `minimain.py`, the root README, and the license. This release archives the last OpenART vision build after the competition; the RT1021 controller project and TFLite model are not included in the final release tree.
+
+- Both entrypoints now boot with the `0x00` free-competition policy and let the controller select target order at runtime through `0x0C`; the build-time `ID2_ABSOLUTE_PRIORITY` switch is removed.
+- Added policy `0x07`: ID3 -> ID4/ID5 -> ID1 -> ID2, and policy `0x08`: ID4/ID5 -> ID3 -> ID1 -> ID2. `AA 55 0C 08 14` is the policy frame and remains distinct from `AA 55 08 08`, which clears completed IDs.
+- Both cameras move from 60 to 50 fps. Final master field settings are white balance `(92,64,91)` and `700 us`; the slave remains at `(101,64,97)` and `880 us`. Both use `/sd/80lite0.5SS.tflite`.
+- The slave return / tennis yellow threshold is updated to `(34,100,-51,11,40,127)`. General logs, bear diagnostics, and carry captures are disabled by default; the master's `8 s` hardware WDT remains enabled.
+- The root README is rewritten for open-source handoff with hardware and model prerequisites, target IDs, deployment, color / coordinate calibration, the complete UART protocol, validation, known limitations, and contribution guidance. Source and documentation are released under the MIT License.
 
 ### 2026-08-13 - In development - Tennis carry-line isolation, configurable white balance, and logging cleanup
 
@@ -83,7 +93,7 @@ Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fu
 - A compatible locked-model candidate is accepted on its first inference instead of requiring a `0.70` score and two consistent boxes. Fresh model geometry at every distance enters the same `70%` follow and is no longer held below `30 cm` when model score is under `0.60`.
 - Shared fusion nodes are synchronized across `main.py`, `minimain.py`, and `world_coordinate_test.py`; all three headers now identify `v1.1.0`, and unused box-coordinate unpacking is removed from the runtime loops. The observer remains an IDE-instrumented master runtime and must match the complete `main.py` AST after `_world_coord_*` instrumentation is stripped.
 - The temporary master-side `/sd/id2_coordinate_watchdog.log` configuration, buffering, writers, and loop hooks are completely removed, eliminating that SD I/O from production. The `8 s` hardware WDT remains enabled for deadlock recovery.
-- Added `ENABLE_COMPLETED_COLOR_EXCLUSION=False` to all three entries. By default, `completed_color_mask` is recorded without excluding candidates; setting the switch true applies exclusion immediately from the existing record, and disabling it again does not clear that record. This switch is independent of `ID2_ABSOLUTE_PRIORITY`: ID2 remains first by default, after which every color including ID2 competes by distance; enabling exclusion changes subsequent selection to the nearest unfinished color.
+- Added `ENABLE_COMPLETED_COLOR_EXCLUSION=False` to all three entries. By default, `completed_color_mask` is recorded without excluding candidates; setting the switch true applies exclusion immediately from the existing record, and disabling it again does not clear that record. This switch was independent of the ID2-first gate used at the time: ID2 remained first by default, after which every color including ID2 competed by distance; enabling exclusion changed subsequent selection to the nearest unfinished color.
 - The 28 calibration points, 36 triangles, homography fallback, center-X correction, Y mapping, and UART millimeter units are unchanged. `test_model_blob_fusion.py` now contains 32 tests; together with the 6 projection tests, all 38 pass.
 
 ### 2026-07-29 - In development - Target anchors and motion first lock
@@ -163,7 +173,7 @@ Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fu
 
 Scope: `main.py`, `minimain.py`, `world_coordinate_test.py`, `test_model_blob_fusion.py`, `test_ground_projection.py`, and the three READMEs.
 
-- Restored the first-target gate from the provincial `01_稳定版_ID2先_5中7` build and added `ID2_ABSOLUTE_PRIORITY` to the quick settings in all three current entry points. It defaults to enabled.
+- Restored the first-target gate from the provincial `01_稳定版_ID2先_5中7` build and enabled it by default in all three entry points used at the time.
 - When enabled, startup and `0x08` reset only allow ID2 through ordinary model search, dynamic LAB confirmation, host `0x03` requests, and world-coordinate output. A nearer or higher-confidence non-ID2 target cannot lock. Once ID2 is completed, all other incomplete IDs return to nearest-world-Y competition.
 - The master retains yellow-line completion and the slave retains pending-ID completion after a carry. The `0x06` all-color front scan bypasses the priority gate. If ID2 is absent, the runtime waits rather than falling back to another ID.
 - Disabling the switch restores v0.11.0 behavior: every incomplete ID competes by nearest world Y from startup.
