@@ -1,33 +1,19 @@
-# Stable-confirm master: always-on nearest-first, confirm on 5 hits within 7 frames.
+# MATCH BUILD 01 STABLE SLAVE: ID2 first; then nearest; first lock 5 hits in 7 inference frames.
+# ==================== QUICK MATCH SETTINGS ====================
+# Edit this block first when changing cameras, models, or SD files.
+WB_GAINS = (92.00, 64.00, 101.00)
+MODEL_PATH = '/sd/80lite0.5SS.tflite'
+COLOR_THR_PATH = '/sd/color_thr.txt'
+EXPOSURE_INIT = 400
+EXPOSURE_MIN = 100
+EXPOSURE_MAX = 4500
+# ================== END QUICK MATCH SETTINGS ==================
 import sensor, gc, time, math
 try:
     import tf
 except Exception:
     tf = None
 from machine import UART
-try:
-    from machine import WDT
-except Exception:
-    WDT = None
-ENABLE_WATCHDOG = True
-WATCHDOG_TIMEOUT_MS = 8000
-wdt = None
-def init_watchdog():
-    global wdt
-    if not ENABLE_WATCHDOG or WDT is None:
-        return
-    try:
-        wdt = WDT(timeout=WATCHDOG_TIMEOUT_MS)
-    except Exception:
-        wdt = None
-def feed_watchdog():
-    if wdt is None:
-        return
-    try:
-        wdt.feed()
-    except Exception:
-        pass
-init_watchdog()
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA)
@@ -36,25 +22,19 @@ sensor.set_hmirror(False)
 sensor.set_vflip(True)
 def snapshot_frame():
     return sensor.snapshot().replace(hmirror=True)
-WB_GAINS = (101.00, 64.00, 97.00)
 sensor.set_auto_whitebal(False, rgb_gain_db=WB_GAINS)
 sensor.set_auto_gain(False, gain_db=0)
-EXPOSURE_INIT = 1400
-EXPOSURE_MIN = 100
-EXPOSURE_MAX = 4500
-def clamp_exposure(value):
-    if value < EXPOSURE_MIN:
-        return EXPOSURE_MIN
-    if value > EXPOSURE_MAX:
-        return EXPOSURE_MAX
+def validate_exposure(value):
+    if value < EXPOSURE_MIN or value > EXPOSURE_MAX:
+        raise ValueError('exposure_us out of range')
     return value
-def load_startup_exposure(path='/sd/color_thr.txt'):
+def load_startup_exposure(path=COLOR_THR_PATH):
     try:
         with open(path, 'r') as f:
             for line in f:
                 line = line.strip()
                 if line.startswith('exposure_us='):
-                    exposure = clamp_exposure(
+                    exposure = validate_exposure(
                         int(line.split('=', 1)[1].strip()))
                     print('[EXPOSURE] loaded %dus from %s' %
                           (exposure, path))
@@ -68,10 +48,10 @@ sensor.set_auto_exposure(False, exposure_us=startup_exposure_us)
 sensor.skip_frames(time=800)
 uart = UART(12, baudrate=115200)
 all_color_thresholds = [
-    (34, 100, -41, 4, -72, -22),
+    (34, 100, -41, 5, -72, -17),
     (10, 80, 22, 122, -17, 93),
     (50, 100, -128, -27, 20, 127),
-    (21, 52, -77, 25, 6, 99),
+    (21, 52, -77, 25, 1, 99),
     (51, 100, -5, 5, -38, 18)
 ]
 WHT_BEAR_GND_L_GAP = 2
@@ -102,7 +82,7 @@ def _parse_int_values(parts):
     for part in parts:
         values.append(int(part))
     return tuple(values)
-def _load_calibrated_params(path='/sd/color_thr.txt'):
+def _load_calibrated_params(path=COLOR_THR_PATH):
     try:
         rows = {}
         ground_rows = {}
@@ -181,15 +161,8 @@ BLUE_GROUND_THRESHOLD = ([_loaded_ground_threshold]
                          if _loaded_ground_threshold
                          else [(25, 62, -3, 57, -96, 127)])
 CUT_BLOB_MIN_H = 12
-CUT_BLOB_BOTTOM_MARGIN = 25
-CUT_GAP_BRIDGE = 10
 CUT_STRIP_XS = (10, 85, 160, 235, 310)
-CUT_MIN_VALID_STRIPS = 3
-CUT_SINGLE_STRIP_MAX_LEAD = 40
-CUT_MIN_VALID_X_SPAN = 180
-CUT_BAFFLE_SPREAD_PX = 30
-CUT_MAX_STEP_UP = 5
-CUT_MAX_STEP_DOWN = 16
+CUT_MIN_VALID_STRIPS = 2
 CUT_STRIP_HALF_W = 2
 CUT_SCAN_Y_MIN = 0
 CUT_SCAN_Y_MAX = 140
@@ -210,7 +183,6 @@ TRACK_MAX_JUMP2 = TRACK_MAX_JUMP_PX * TRACK_MAX_JUMP_PX
 TRACK_MIN_IOU = 0.05
 BRN_BEAR_MERGE_MARGIN = 12
 WHT_BEAR_MERGE_MARGIN = 10
-MODEL_PATH = '/sd/80lite0.5R.tflite'
 MODEL_COLOR_IDS = ((4, 5), (3,), (1, 2))
 MODEL_CONTACT_OFF_X = (-1, -1, -1)
 MODEL_CONTACT_OFF_Y = (0, 0, 0)
@@ -324,6 +296,8 @@ first_lock_pending_hits = 0
 first_lock_pending_samples = 0
 first_lock_pending_boxes = []
 first_lock_pending_scores = []
+first_lock_pending_color_ids = []
+first_lock_pending_color_thresholds = []
 first_lock_pending_sample_time = 0
 adaptive_color_thresholds = [None, None, None, None, None]
 color_adapt_pending_id = 0
@@ -340,6 +314,7 @@ dynamic_detect_roi = DETECT_ROI
 target_color_id = 0
 host_color_id_received = False
 completed_color_mask = 0
+pending_carry_color_id = 0
 color_track_active = False
 color_track_box = None
 color_track_coordinate_box = None
@@ -353,7 +328,7 @@ FRONT_SCAN_EXCLUDE_IOU = 0.20
 FRONT_SCAN_EXCLUDE_CENTER_PX = 35
 FRONT_SCAN_EXCLUDE_CENTER2 = FRONT_SCAN_EXCLUDE_CENTER_PX * FRONT_SCAN_EXCLUDE_CENTER_PX
 FRONT_SCAN_Y_MAX = 150
-FRONT_SCAN_MIN_PIXELS = 60
+FRONT_SCAN_SCORE_MIN = FIRST_LOCK_SCORE_MIN
 FRONT_SCAN_STABLE_FRAMES = 6
 FRONT_SCAN_MAX_FRAMES = 12
 front_scan_last_current_id = 0
@@ -361,11 +336,9 @@ front_scan_last_mask = -1
 front_scan_last_count = 0
 front_scan_stable_count = 0
 front_scan_total_count = 0
-yellow_threshold = [(27, 100, -55, 16, 21, 105)]
-ENABLE_YELLOW_DRAW = True
-TENNIS_LINE_THRESHOLD = yellow_threshold
 RETURN_YELLOW_PACKET_ID = 0xC8
-RETURN_YELLOW_THRESHOLD = yellow_threshold
+RETURN_YELLOW_THRESHOLD = [(27, 100, -55, 16, 21, 105)]
+TENNIS_LINE_THRESHOLD = RETURN_YELLOW_THRESHOLD
 RETURN_YELLOW_ROI = (150, 30, 20, 210)
 RETURN_YELLOW_MIN_PIXELS = 5
 RETURN_YELLOW_MIN_AREA = 5
@@ -380,42 +353,19 @@ return_yellow_detected = False
 return_yellow_y = 0
 return_stop_y = -1
 return_stop_requested = False
-YELLOW_ROI_TOP = (0, 90, 320, 20)
-YELLOW_ROI_BOTTOM = (0, 130, 320, 20)
-YELLOW_DETECT_INTERVAL = 2
-YELLOW_ENTER_PIXELS = 70
-YELLOW_KEEP_PIXELS = 20
-YELLOW_CARRY_CONFIRM_FRAMES = 2
-YELLOW_MIN_FIT_DX = 30
-YELLOW_MAX_FIT_SLOPE_X100 = 100
-YELLOW_TARGET_OVERLAP_PERCENT = 60
-YELLOW_BOTTOM_Y = 220
-YELLOW_LOST_THRESHOLD = 2
-yellow_line_k = 0.0
-yellow_line_b = 0.0
-yellow_bottom_visible = False
-yellow_detected = False
-yellow_tracking = False
-yellow_lost_count = 0
-yellow_seen_in_carry = False
-yellow_bottom_reached_in_carry = False
-yellow_carry_confirm_count = 0
-YELLOW_CARRY_IGNORE_FRAMES = 4
-carry_start_frame = -1
 MODE_SEARCH = 0
-MODE_CARRY = 1
-MODE_WAIT_TURN = 2
 MODE_RETURN = 3
 openart_mode = MODE_SEARCH
-POS_NO_BOUNDARY = 0x00
-POS_RIGHT_SIDE  = 0x01
-POS_CROSSED     = 0x02
 def color_id_completed(color_id):
     return (1 <= color_id <= len(all_color_thresholds) and
             bool(completed_color_mask & (1 << (color_id - 1))))
 def color_id_available_for_search(color_id):
-    return (1 <= color_id <= len(all_color_thresholds) and
-            not color_id_completed(color_id))
+    if (color_id < 1 or color_id > len(all_color_thresholds) or
+            color_id_completed(color_id)):
+        return False
+    if not color_id_completed(2):
+        return color_id == 2
+    return True
 def host_forced_target_active():
     return (host_color_id_received and
             1 <= target_color_id <= len(all_color_thresholds) and
@@ -425,8 +375,19 @@ def mark_color_completed(color_id):
     if color_id_available_for_search(color_id):
         completed_color_mask |= 1 << (color_id - 1)
 def clear_completed_carry_state():
-    global completed_color_mask
+    global completed_color_mask, pending_carry_color_id
     completed_color_mask = 0
+    pending_carry_color_id = 0
+def begin_pending_carry():
+    global pending_carry_color_id
+    color_id = active_selected_color_id()
+    pending_carry_color_id = (
+        color_id if 1 <= color_id <= len(all_color_thresholds) else 0)
+def finish_pending_carry():
+    global pending_carry_color_id
+    if 1 <= pending_carry_color_id <= len(all_color_thresholds):
+        mark_color_completed(pending_carry_color_id)
+    pending_carry_color_id = 0
 def active_selected_color_id():
     if host_color_id_received and 1 <= target_color_id <= len(all_color_thresholds):
         return target_color_id
@@ -447,19 +408,6 @@ def reset_target_tracking_state():
     color_track_color_id = 0
     color_lost_count = 0
     reset_hybrid_tracking()
-def reset_yellow_state():
-    global yellow_lost_count, yellow_seen_in_carry, yellow_tracking, yellow_detected
-    global yellow_bottom_reached_in_carry, yellow_carry_confirm_count
-    global yellow_bottom_visible, yellow_line_k, yellow_line_b
-    yellow_lost_count = 0
-    yellow_seen_in_carry = False
-    yellow_bottom_reached_in_carry = False
-    yellow_carry_confirm_count = 0
-    yellow_tracking = False
-    yellow_detected = False
-    yellow_bottom_visible = False
-    yellow_line_k = 0.0
-    yellow_line_b = 0.0
 def reset_return_yellow_state():
     global return_yellow_last_y, return_yellow_stable_count
     global return_yellow_detected, return_yellow_y
@@ -485,65 +433,34 @@ def pick_top_y_from_strip(blobs):
     for b in blobs:
         if b.h() < CUT_BLOB_MIN_H:
             continue
-        if b.y() + b.h() < CUT_SCAN_Y_MAX - CUT_BLOB_BOTTOM_MARGIN:
-            continue
         if top_y is None or b.y() < top_y:
             top_y = b.y()
-    if top_y is None:
-        return None
-    bridged_top = None
-    for b in blobs:
-        if b.h() < CUT_BLOB_MIN_H:
-            continue
-        by2 = b.y() + b.h()
-        if by2 <= top_y and top_y - by2 <= CUT_GAP_BRIDGE and b.y() < top_y:
-            if bridged_top is None or b.y() < bridged_top:
-                bridged_top = b.y()
-    if bridged_top is not None:
-        top_y = bridged_top
     return top_y
 def update_dynamic_cut(img, frame_count):
     global dynamic_cut_left_y
     global dynamic_cut_valid, dynamic_cut_miss_count, dynamic_detect_roi
     if (not ENABLE_DYNAMIC_CUT) or (frame_count % CUT_UPDATE_INTERVAL != 0):
         return
-    top_ys = []
-    strip_xs = []
-    for i in range(len(CUT_STRIP_ROIS)):
-        roi = CUT_STRIP_ROIS[i]
+    top_y_sum = 0
+    valid_strips = 0
+    for roi in CUT_STRIP_ROIS:
         blobs = img.find_blobs(BLUE_GROUND_THRESHOLD, roi=roi,
-                               pixels_threshold=CUT_MIN_PIXELS, area_threshold=CUT_MIN_AREA, merge=True)
-        ty = pick_top_y_from_strip(blobs)
-        if ty is not None:
-            top_ys.append(ty)
-            strip_xs.append(CUT_STRIP_XS[i])
-    valid_strips = len(top_ys)
+                               pixels_threshold=CUT_MIN_PIXELS,
+                               area_threshold=CUT_MIN_AREA, merge=True)
+        top_y = pick_top_y_from_strip(blobs)
+        if top_y is not None:
+            top_y_sum += top_y
+            valid_strips += 1
     if valid_strips >= CUT_MIN_VALID_STRIPS:
-        if max(strip_xs) - min(strip_xs) < CUT_MIN_VALID_X_SPAN:
-            valid_strips = 0
-    top_y_pick = None
-    if valid_strips >= 1:
-        top_ys.sort()
-        pick_i = (valid_strips - 1) * 2 // 3
-        top_y_pick = top_ys[pick_i]
-        if valid_strips >= 3 and top_ys[pick_i] - top_ys[0] > CUT_BAFFLE_SPREAD_PX:
-            top_y_pick = top_ys[pick_i]
-        elif valid_strips >= 2 and top_ys[1] - top_ys[0] > CUT_SINGLE_STRIP_MAX_LEAD:
-            top_y_pick = top_ys[1]
-    if valid_strips >= CUT_MIN_VALID_STRIPS:
+        top_y_average = top_y_sum // valid_strips
         dynamic_cut_miss_count = 0
         if not dynamic_cut_valid:
-            dynamic_cut_left_y = top_y_pick
+            dynamic_cut_left_y = top_y_average
             dynamic_cut_valid = True
         else:
             a = CUT_EMA_ALPHA
-            delta = top_y_pick - dynamic_cut_left_y
-            if delta < -CUT_MAX_STEP_UP:
-                top_y_pick = dynamic_cut_left_y - CUT_MAX_STEP_UP
-            elif delta > CUT_MAX_STEP_DOWN:
-                top_y_pick = dynamic_cut_left_y + CUT_MAX_STEP_DOWN
             dynamic_cut_left_y = int(
-                a * top_y_pick + (1.0 - a) * dynamic_cut_left_y)
+                a * top_y_average + (1.0 - a) * dynamic_cut_left_y)
         dynamic_cut_left_y = clamp_int(dynamic_cut_left_y, DETECT_Y_MIN, CUT_SCAN_Y_MAX)
     else:
         dynamic_cut_miss_count += 1
@@ -622,34 +539,6 @@ def valid_color_blob(blob, color_id, pixels_threshold_override=0):
         if blob.density() < 0.40:
             return False
     return True
-def valid_front_scan_blob(blob, color_id, pixels_threshold_override=0):
-    # 0x06 reports colored obstacles, not only pickup-target shapes.
-    # Keep color/size/density checks, but deliberately skip aspect ratios.
-    w = blob.w()
-    h = blob.h()
-    if w <= 0 or h <= 0:
-        return False
-    box_area = w * h
-    if blob.y() > NEAR_NOISE_Y_MIN and box_area < NEAR_NOISE_BOX_AREA:
-        return False
-    pixels_threshold, area_threshold = _color_blob_limits[color_id - 1]
-    if pixels_threshold_override > 0:
-        pixels_threshold = pixels_threshold_override
-    if blob.pixels() < pixels_threshold or box_area < area_threshold:
-        return False
-    density_minimum = (0.25 if color_id == 3 or color_id == 4 or color_id == 5
-                       else 0.40)
-    return blob.density() >= density_minimum
-def color_id_from_blob_code(code):
-    if code <= 0 or code & (code - 1):
-        return 0
-    color_id = 1
-    while code > 1:
-        code >>= 1
-        color_id += 1
-    if color_id > len(all_color_thresholds):
-        return 0
-    return color_id
 def find_color_blobs_once(img, roi, fixed_color_id=0, pixels_threshold_override=0):
     if fixed_color_id > 0:
         thresholds = _color_threshold_groups[fixed_color_id - 1]
@@ -744,6 +633,8 @@ def reset_first_lock_pending():
     first_lock_pending_samples = 0
     first_lock_pending_boxes[:] = []
     first_lock_pending_scores[:] = []
+    first_lock_pending_color_ids[:] = []
+    first_lock_pending_color_thresholds[:] = []
     first_lock_pending_sample_time = 0
 def reset_hybrid_tracking():
     global model_last_frame, model_last_score
@@ -796,10 +687,8 @@ def init_model_runtime():
         disable_model_runtime('tf module unavailable')
         return
     try:
-        feed_watchdog()
         model_net = tf.load(MODEL_PATH)
         model_fb = sensor.alloc_extra_fb(240, 240, sensor.RGB565)
-        feed_watchdog()
         print('[MODEL] loaded ' + MODEL_PATH)
     except Exception as error:
         disable_model_runtime('load failed: ' + str(error))
@@ -1023,7 +912,13 @@ def run_model_best(img):
                 best = (label, box, score, confirm, sample_time)
                 best_rank = rank
         model_infer_error_count = 0
-        return best
+        if best is not None:
+            if locked:
+                return best + (0, None)
+            color_id, color_threshold = sample_model_color(
+                img, best[0], best[1])
+            return best + (color_id, color_threshold)
+        return None
     except Exception as error:
         model_infer_error_count += 1
         if model_infer_error_count >= 3:
@@ -1089,6 +984,14 @@ def sample_color_id(label, lab, forced_color_id=0):
         if second_distance - best_distance < COLOR_CLASS_DISTANCE_MARGIN:
             return 0
     return best_id
+def sample_color_id_from_stats(label, sample, forced_color_id=0):
+    median_id = sample_color_id(label, sample[6:9], forced_color_id)
+    if label != 0 or median_id <= 0:
+        return median_id
+    # A bear is accepted only when its median and darker quartile agree.
+    lower_l_id = sample_color_id(
+        label, (sample[0], sample[7], sample[8]), forced_color_id)
+    return median_id if lower_l_id == median_id else 0
 def build_dynamic_channel(q_low, q_high, median_value, min_span, max_span,
                           margin, base_low, base_high, channel):
     iqr = max(1, q_high - q_low)
@@ -1168,7 +1071,8 @@ def sample_model_color(img, label, box):
     for channel in range(3):
         if sample[channel * 2 + 1] - sample[channel * 2] > max_iqr[channel]:
             return 0, None
-    color_id = sample_color_id(label, sample[6:9], forced_color_id)
+    color_id = sample_color_id_from_stats(
+        label, sample, forced_color_id)
     if color_id <= 0:
         return 0, None
     if not color_id_available_for_search(color_id):
@@ -1183,6 +1087,9 @@ def confirm_model_color(observed_id, observed_threshold):
             not color_id_available_for_search(observed_id)):
         reset_color_adaptation_pending()
         return False
+    if model_color[0] > 0 and model_color[0] != observed_id:
+        model_color[0] = 0
+        reset_color_blob_tracking()
     if (observed_id == color_adapt_pending_id and
             threshold_centers_close(
                 observed_threshold, color_adapt_pending_threshold)):
@@ -1472,22 +1379,55 @@ def first_lock_median_box():
         channel = sorted([box[index] for box in first_lock_pending_boxes])
         values.append(channel[middle])
     return tuple(values)
+def first_lock_color_consensus():
+    best_id = 0
+    best_count = 0
+    for color_id in range(1, len(all_color_thresholds) + 1):
+        count = 0
+        for observed_id in first_lock_pending_color_ids:
+            if observed_id == color_id:
+                count += 1
+        if count > best_count:
+            best_id = color_id
+            best_count = count
+    if (best_count < COLOR_CONFIRM_FRAMES or
+            not color_id_available_for_search(best_id)):
+        return 0, None
+    selected = []
+    for index in range(len(first_lock_pending_color_ids)):
+        if (first_lock_pending_color_ids[index] == best_id and
+                first_lock_pending_color_thresholds[index] is not None):
+            selected.append(first_lock_pending_color_thresholds[index])
+    if len(selected) < COLOR_CONFIRM_FRAMES:
+        return 0, None
+    values = []
+    middle = len(selected) // 2
+    for channel in range(6):
+        ordered = sorted([threshold[channel] for threshold in selected])
+        values.append(ordered[middle])
+    return best_id, tuple(values)
 def begin_first_lock_pending(candidate):
     global first_lock_pending_label, first_lock_pending_box
     global first_lock_pending_hits, first_lock_pending_samples
     global first_lock_pending_sample_time
-    label, box, score, _, sample_time = candidate
+    label, box, score, _, sample_time, color_id, color_threshold = candidate
+    if not host_forced_target_active():
+        model_color[:] = [0, 0, 0, False]
+        reset_color_adaptation_pending()
     first_lock_pending_label = label
     first_lock_pending_box = box
     first_lock_pending_hits = 1
     first_lock_pending_samples = 1
     first_lock_pending_boxes[:] = [box]
     first_lock_pending_scores[:] = [score]
+    first_lock_pending_color_ids[:] = [color_id]
+    first_lock_pending_color_thresholds[:] = [color_threshold]
     first_lock_pending_sample_time = sample_time
 def commit_first_lock():
     global model_last_score
     label = first_lock_pending_label
     box = first_lock_median_box()
+    color_id, color_threshold = first_lock_color_consensus()
     scores = sorted(first_lock_pending_scores)
     score = scores[len(scores) // 2]
     sample_time = first_lock_pending_sample_time
@@ -1499,6 +1439,15 @@ def commit_first_lock():
     if not observe_model_box(label, box, sample_time):
         model_lock[:] = [-1, None, -1, None, 0, 0]
         return False
+    if color_id > 0 and color_threshold is not None:
+        model_color[0] = color_id
+        existing = adaptive_color_thresholds[color_id - 1]
+        if existing is None:
+            adaptive_color_thresholds[color_id - 1] = color_threshold
+        else:
+            adaptive_color_thresholds[color_id - 1] = blend_threshold(
+                existing, color_threshold,
+                COLOR_DYNAMIC_UPDATE_ALPHA_X100)
     model_last_score = score
     return True
 def accept_first_lock_candidate(candidate):
@@ -1510,13 +1459,15 @@ def accept_first_lock_candidate(candidate):
         return False
     first_lock_pending_samples += 1
     if candidate is not None:
-        label, box, score, _, sample_time = candidate
+        label, box, score, _, sample_time, color_id, color_threshold = candidate
         if (label == first_lock_pending_label and
                 first_lock_boxes_match(box, first_lock_pending_box)):
             first_lock_pending_box = box
             first_lock_pending_hits += 1
             first_lock_pending_boxes.append(box)
             first_lock_pending_scores.append(score)
+            first_lock_pending_color_ids.append(color_id)
+            first_lock_pending_color_thresholds.append(color_threshold)
             first_lock_pending_sample_time = sample_time
         elif (model_box_distance(box) + FIRST_LOCK_NEARER_MARGIN_CM <
               model_box_distance(first_lock_pending_box)):
@@ -1541,7 +1492,7 @@ def accept_model_candidate(candidate):
         return accept_first_lock_candidate(candidate)
     if candidate is None:
         return False
-    label, box, score, _, sample_time = candidate
+    label, box, score, _, sample_time, _, _ = candidate
     if label != model_lock[0]:
         return False
     if not observe_model_box(label, box, sample_time):
@@ -1612,22 +1563,24 @@ def maybe_collect(frame_index):
             (frame_index % GC_FORCE_INTERVAL == 0 or gc.mem_free() < GC_MIN_FREE)):
         gc.collect()
 def process_model_only_target(img, frame_index, run_model):
-    if (not model_runtime_enabled or
-            (openart_mode != MODE_SEARCH and openart_mode != MODE_CARRY)):
+    if not model_runtime_enabled or openart_mode != MODE_SEARCH:
         reset_color_adaptation_pending()
         reset_color_blob_tracking()
         return None
     observed = False
     if run_model:
         candidate = run_model_best(img)
+        acquiring = model_lock[1] is None
         observed = accept_model_candidate(candidate)
-        if observed and not host_forced_target_active():
+        color_confirmed = False
+        if (observed and not acquiring and
+                not host_forced_target_active()):
             color_confirmed = update_model_guided_color(
                 img, model_last_score)
-            if (color_confirmed and host_color_id_received and
-                    model_color[0] != target_color_id):
-                restore_host_hybrid_lock()
-                return None
+        if (color_confirmed and host_color_id_received and
+                model_color[0] != target_color_id):
+            restore_host_hybrid_lock()
+            return None
         if model_lock[1] is not None and not observed:
             model_lock[5] += 1
             if model_lock[5] > MODEL_LOST_FRAMES:
@@ -1669,45 +1622,93 @@ def front_scan_current_target():
     if color_track_active and color_track_box:
         return color_track_box, color_track_color_id
     return None, target_color_id
-def front_scan_blob_is_current(blob, current_box):
+def front_scan_box_is_current(box, current_box):
     if not current_box:
         return False
-    b_box = (blob.x(), blob.y(), blob.w(), blob.h())
-    if box_iou(b_box, current_box) >= FRONT_SCAN_EXCLUDE_IOU:
+    if box_iou(box, current_box) >= FRONT_SCAN_EXCLUDE_IOU:
         return True
-    return center_dist2(b_box, current_box) <= FRONT_SCAN_EXCLUDE_CENTER2
+    return center_dist2(box, current_box) <= FRONT_SCAN_EXCLUDE_CENTER2
 def front_scan_roi():
     x, y, w, h = dynamic_detect_roi
     y2 = min(y + h, FRONT_SCAN_Y_MAX)
     if y2 <= y:
         return None
     return (x, y, w, y2 - y)
+def front_scan_color_id(img, label, box):
+    if label < 0 or label >= len(MODEL_COLOR_IDS):
+        return 0
+    candidates = MODEL_COLOR_IDS[label]
+    if len(candidates) == 1:
+        return candidates[0]
+    roi = model_sample_roi(label, box)
+    if roi is None:
+        return 0
+    try:
+        stats = img.get_statistics(roi=roi)
+        sample = (
+            stats.l_lq(), stats.l_uq(),
+            stats.a_lq(), stats.a_uq(),
+            stats.b_lq(), stats.b_uq(),
+            stats.l_median(), stats.a_median(), stats.b_median(),
+        )
+    except Exception:
+        return 0
+    for channel in range(3):
+        if (sample[channel * 2 + 1] - sample[channel * 2] >
+                COLOR_SAMPLE_MAX_IQR[channel]):
+            return 0
+    return sample_color_id_from_stats(label, sample)
 def scan_front_other_color_ids(img):
+    global model_infer_error_count, model_last_frame
     current_box, current_id = front_scan_current_target()
     mask = 0
     count = 0
     roi = front_scan_roi()
-    if roi is None:
+    if (roi is None or not model_runtime_enabled or model_net is None):
         return current_id, mask, count
-    blobs = find_color_blobs_once(img, roi, 0, FRONT_SCAN_MIN_PIXELS)
-    if not blobs:
+    try:
+        model_last_frame = frame_count
+        objects = tf.detect(model_net, model_copy_frame(img))
+        model_infer_error_count = 0
+    except Exception as error:
+        model_infer_error_count += 1
+        if model_infer_error_count >= 3:
+            disable_model_runtime(
+                'three front-scan inference failures: ' + str(error))
         return current_id, mask, count
-    for blob in blobs:
-        color_id = color_id_from_blob_code(blob.code())
+    if not objects:
+        return current_id, mask, count
+    for obj in objects:
+        x1, y1, x2, y2, label_value, score_value = obj
+        label = int(label_value)
+        score = float(score_value)
+        if (label < 0 or label >= len(MODEL_COLOR_IDS) or
+                score < FRONT_SCAN_SCORE_MIN):
+            continue
+        model_x = int(float(x1) * img.width())
+        y = int(float(y1) * img.height())
+        w = int((float(x2) - float(x1)) * img.width())
+        h = int((float(y2) - float(y1)) * img.height())
+        x = img.width() - model_x - w
+        if (w < MODEL_MIN_BOX_SIDE or h < MODEL_MIN_BOX_SIDE or
+                w * h < MODEL_MIN_BOX_AREA):
+            continue
+        box = raw_model_box(x, y, w, h)
+        if rect_intersection_area(box, roi) <= 0:
+            continue
+        if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
+            if box[1] + box[3] < dynamic_cut_left_y + CUT_BLOB_DELTA:
+                continue
+        if (ENABLE_TENNIS_LINE_FILTER and label == 1 and
+                tennis_candidate_is_yellow_line(img, box)):
+            continue
+        if front_scan_box_is_current(box, current_box):
+            continue
+        color_id = front_scan_color_id(img, label, box)
         if color_id <= 0:
             continue
         color_bit = 1 << (color_id - 1)
         if mask & color_bit:
-            continue
-        if ENABLE_DYNAMIC_CUT and dynamic_cut_valid:
-            if blob.y() + blob.h() < dynamic_cut_left_y + CUT_BLOB_DELTA:
-                continue
-        if blob.pixels() <= FRONT_SCAN_MIN_PIXELS:
-            continue
-        if not valid_front_scan_blob(
-                blob, color_id, FRONT_SCAN_MIN_PIXELS + 1):
-            continue
-        if front_scan_blob_is_current(blob, current_box):
             continue
         mask |= color_bit
         count += 1
@@ -1845,7 +1846,7 @@ _tx_world_buf = bytearray(16)
 _tx_world_no_target_buf = bytearray(16)
 _tx_world_buf[0] = _tx_world_no_target_buf[0] = 0xAA
 _tx_world_buf[1] = _tx_world_no_target_buf[1] = 0x55
-def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00):
+def send_world_data(color_id, wx_mm, wy_mm, pw):
     wx_mm = clamp_int(wx_mm, -32768, 32767)
     wy_mm = clamp_int(wy_mm, -32768, 32767)
     data = _tx_world_buf
@@ -1856,18 +1857,12 @@ def send_world_data(color_id, wx_mm, wy_mm, pw, yellow_flag=False, pos_flag=0x00
     data[6] = (wy_mm >> 8) & 0xFF
     data[7] = pw & 0xFF
     data[8] = (pw >> 8) & 0xFF
-    data[9] = 0x01 if yellow_flag else 0x00
-    data[10] = pos_flag & 0xFF
     data[15] = (data[2] + data[3] + data[4] + data[5] + data[6] +
-                data[7] + data[8] + data[9] + data[10]) & 0xFF
+                data[7] + data[8]) & 0xFF
     uart.write(data)
-def send_world_no_target(yellow_flag=False, pos_flag=0x00):
-    data = _tx_world_no_target_buf
-    data[9] = 0x01 if yellow_flag else 0x00
-    data[10] = pos_flag & 0xFF
-    data[15] = (data[9] + data[10]) & 0xFF
-    uart.write(data)
-def send_front_scan_target_hold(img, yellow_flag=False, pos_flag=0x00):
+def send_world_no_target():
+    uart.write(_tx_world_no_target_buf)
+def send_front_scan_target_hold(img):
     if (not color_track_active or color_track_color_id <= 0 or
             color_track_box is None or color_track_coordinate_box is None):
         return False
@@ -1878,72 +1873,80 @@ def send_front_scan_target_hold(img, yellow_flag=False, pos_flag=0x00):
         return False
     world_x, world_y = world_point
     send_world_data(color_track_color_id, int(world_x * 10), int(world_y * 10),
-                    color_track_box[2], yellow_flag, pos_flag)
+                    color_track_box[2])
     img.draw_rectangle(
         color_track_box, color=TARGET_BOX_COLORS[color_track_color_id - 1],
         thickness=2)
     return True
 def receive_command_from_host():
-    global lost_frame_count, openart_mode, carry_start_frame
+    global lost_frame_count, openart_mode
     global target_color_id, host_color_id_received
     global _cmd_rx_buf, front_scan_requested
     global first_lock_reset_cycle_active
     available = uart.any()
     if available:
-        data = uart.read(available)
-        if data:
-            _cmd_rx_buf.extend(data)
+        chunk = uart.read(available)
+        if chunk:
+            _cmd_rx_buf.extend(chunk)
     if len(_cmd_rx_buf) > 64:
         _cmd_rx_buf = _cmd_rx_buf[-32:]
     while len(_cmd_rx_buf) >= 4:
-        header = -1
-        for index in range(len(_cmd_rx_buf) - 1):
-            if _cmd_rx_buf[index] == 0xAA and _cmd_rx_buf[index + 1] == 0x55:
-                header = index
+        idx = -1
+        for i in range(len(_cmd_rx_buf) - 1):
+            if _cmd_rx_buf[i] == 0xAA and _cmd_rx_buf[i + 1] == 0x55:
+                idx = i
                 break
-        if header < 0:
+        if idx < 0:
             _cmd_rx_buf = bytearray()
             return
-        if header:
-            _cmd_rx_buf = _cmd_rx_buf[header:]
+        if idx > 0:
+            _cmd_rx_buf = _cmd_rx_buf[idx:]
         if len(_cmd_rx_buf) < 4:
             return
         command = _cmd_rx_buf[2]
-        frame_size = 5 if command == 0x03 or command == 0x04 else 4
-        if len(_cmd_rx_buf) < frame_size:
-            return
-        param = _cmd_rx_buf[3] if frame_size == 5 else 0
-        checksum = _cmd_rx_buf[frame_size - 1]
-        if checksum != ((command + param) & 0xFF):
+        if command == 0x03 or command == 0x04:
+            if len(_cmd_rx_buf) < 5:
+                return
+            param = _cmd_rx_buf[3]
+            checksum_recv = _cmd_rx_buf[4]
+            checksum_calc = (command + param) & 0xFF
+            frame_len = 5
+        else:
+            param = 0
+            checksum_recv = _cmd_rx_buf[3]
+            checksum_calc = command & 0xFF
+            frame_len = 4
+        if checksum_calc != checksum_recv:
             _cmd_rx_buf = _cmd_rx_buf[2:]
             continue
-        _cmd_rx_buf = _cmd_rx_buf[frame_size:]
-        if command == 0x03 and 1 <= param <= len(all_color_thresholds):
-            if not color_id_available_for_search(param):
-                reset_target_tracking_state()
-            else:
-                same_target = host_color_id_received and target_color_id == param
-                target_color_id = param
-                host_color_id_received = True
-                lost_frame_count = 0
-                if not same_target:
-                    apply_host_hybrid_color(param)
+        _cmd_rx_buf = _cmd_rx_buf[frame_len:]
+        if command == 0x03:
+            if 1 <= param <= len(all_color_thresholds):
+                if not color_id_available_for_search(param):
+                    reset_target_tracking_state()
+                else:
+                    same_target = host_color_id_received and target_color_id == param
+                    target_color_id = param
+                    host_color_id_received = True
+                    lost_frame_count = 0
+                    if not same_target:
+                        apply_host_hybrid_color(param)
         elif command == 0x01:
             first_lock_reset_cycle_active = False
             reset_first_lock_pending()
-            front_scan_requested = False
-            reset_front_scan_state()
+            begin_pending_carry()
+            openart_mode = MODE_SEARCH
             reset_return_yellow_state()
-            openart_mode = MODE_CARRY
-            carry_start_frame = frame_count
-            reset_yellow_state()
+        elif command == 0x04:
+            pass
+        elif command == 0x05:
+            pass
         elif command == CMD_CLEAR_COMPLETED:
             clear_completed_carry_state()
             openart_mode = MODE_SEARCH
             front_scan_requested = False
             reset_front_scan_state()
             reset_target_tracking_state()
-            reset_yellow_state()
             reset_return_yellow_state()
         elif command == 0x06:
             openart_mode = MODE_SEARCH
@@ -1956,126 +1959,21 @@ def receive_command_from_host():
             openart_mode = MODE_RETURN
             front_scan_requested = False
             reset_front_scan_state()
-            reset_yellow_state()
             reset_return_yellow_state()
         elif command == 0x02:
+            finish_pending_carry()
             if not first_lock_reset_cycle_active:
                 first_lock_reset_cycle_active = True
                 openart_mode = MODE_SEARCH
                 reset_target_tracking_state()
-                reset_yellow_state()
                 reset_return_yellow_state()
         elif command == 0x00:
+            finish_pending_carry()
             first_lock_reset_cycle_active = False
             openart_mode = MODE_SEARCH
             reset_target_tracking_state()
-            reset_yellow_state()
             reset_return_yellow_state()
         return
-def pick_yellow_blob(blobs):
-    best = None
-    for blob in blobs:
-        if openart_mode == MODE_CARRY and color_track_active and color_track_box:
-            tx, ty, tw, th = color_track_box
-            bx, by, bw, bh = blob.x(), blob.y(), blob.w(), blob.h()
-            overlap_w = min(tx + tw, bx + bw) - max(tx, bx)
-            overlap_h = min(ty + th, by + bh) - max(ty, by)
-            if (overlap_w > 0 and overlap_h > 0 and
-                    overlap_w * overlap_h * 100 >=
-                    bw * bh * YELLOW_TARGET_OVERLAP_PERCENT):
-                continue
-        if best is None or blob.pixels() > best.pixels():
-            best = blob
-    return best
-def yellow_line_y_at_x(x):
-    if not yellow_detected:
-        return 0
-    return int(yellow_line_k * x + yellow_line_b)
-def draw_carry_yellow_line(img):
-    if (not ENABLE_YELLOW_DRAW or
-            (openart_mode != MODE_SEARCH and openart_mode != MODE_CARRY) or
-            not yellow_detected):
-        return
-    points = []
-    for x in (0, 319):
-        y = yellow_line_k * x + yellow_line_b
-        if 0 <= y <= 239:
-            points.append((x, int(y)))
-    if abs(yellow_line_k) > 0.0001:
-        for y in (0, 239):
-            x = (y - yellow_line_b) / yellow_line_k
-            if 0 <= x <= 319:
-                point = (int(x), y)
-                if point not in points:
-                    points.append(point)
-    if len(points) >= 2:
-        img.draw_line(points[0][0], points[0][1],
-                      points[1][0], points[1][1],
-                      color=(255, 255, 0), thickness=2)
-def current_pos_flag(frame_index):
-    global yellow_lost_count, yellow_seen_in_carry
-    global yellow_bottom_reached_in_carry, yellow_carry_confirm_count
-    global openart_mode
-    if openart_mode == MODE_CARRY:
-        if carry_start_frame >= 0 and frame_index - carry_start_frame < YELLOW_CARRY_IGNORE_FRAMES:
-            yellow_lost_count = 0
-            return POS_NO_BOUNDARY
-        if yellow_detected:
-            if not yellow_seen_in_carry:
-                yellow_carry_confirm_count += 1
-                yellow_seen_in_carry = yellow_carry_confirm_count >= YELLOW_CARRY_CONFIRM_FRAMES
-            yellow_lost_count = 0
-            if yellow_seen_in_carry and yellow_bottom_visible:
-                yellow_bottom_reached_in_carry = True
-            return POS_NO_BOUNDARY
-        if not yellow_seen_in_carry:
-            yellow_carry_confirm_count = 0
-        if yellow_bottom_reached_in_carry:
-            yellow_lost_count += 1
-            if yellow_lost_count >= YELLOW_LOST_THRESHOLD:
-                mark_color_completed(active_selected_color_id())
-                openart_mode = MODE_WAIT_TURN
-                return POS_CROSSED
-        return POS_NO_BOUNDARY
-    if openart_mode == MODE_WAIT_TURN:
-        return POS_CROSSED
-    if openart_mode == MODE_SEARCH:
-        yellow_lost_count = 0
-        return POS_RIGHT_SIDE if yellow_detected else POS_NO_BOUNDARY
-    return POS_NO_BOUNDARY
-def update_yellow_detection(img, frame_index):
-    global yellow_tracking, yellow_detected, yellow_bottom_visible
-    global yellow_line_k, yellow_line_b
-    if (openart_mode != MODE_CARRY and
-            frame_index % YELLOW_DETECT_INTERVAL):
-        return
-    minimum = YELLOW_KEEP_PIXELS if yellow_tracking else YELLOW_ENTER_PIXELS
-    top = pick_yellow_blob(img.find_blobs(
-        yellow_threshold, roi=YELLOW_ROI_TOP, pixels_threshold=minimum,
-        area_threshold=20, merge=True))
-    bottom = pick_yellow_blob(img.find_blobs(
-        yellow_threshold, roi=YELLOW_ROI_BOTTOM, pixels_threshold=minimum,
-        area_threshold=20, merge=True))
-    valid = top is not None and bottom is not None
-    if valid:
-        dx = bottom.cx() - top.cx()
-        dy = bottom.cy() - top.cy()
-        valid = (abs(dx) >= YELLOW_MIN_FIT_DX and
-                 abs(dy) * 100 <= abs(dx) * YELLOW_MAX_FIT_SLOPE_X100)
-    yellow_detected = valid
-    yellow_bottom_visible = False
-    if valid:
-        yellow_tracking = True
-        slope = dy / dx
-        intercept = top.cy() - slope * top.cx()
-        yellow_line_k = slope
-        yellow_line_b = intercept
-        yellow_bottom_visible = (intercept >= YELLOW_BOTTOM_Y or
-                                 slope * 319 + intercept >= YELLOW_BOTTOM_Y)
-    elif openart_mode == MODE_SEARCH or not yellow_seen_in_carry:
-        yellow_tracking = False
-        yellow_line_k = 0.0
-        yellow_line_b = 0.0
 frame_count = 0
 init_model_runtime()
 while True:
@@ -2085,7 +1983,6 @@ while True:
     if openart_mode == MODE_RETURN:
         process_return_yellow(img)
         maybe_collect(frame_count)
-        feed_watchdog()
         continue
     lab_frame = (frame_count % CUT_UPDATE_INTERVAL == 0)
     if (model_lock[1] is not None and not model_color[3]
@@ -2094,14 +1991,9 @@ while True:
         lab_frame = True
     if lab_frame:
         update_dynamic_cut(img, frame_count)
-    if openart_mode == MODE_CARRY:
-        update_yellow_detection(img, frame_count)
-    pos_flag = current_pos_flag(frame_count)
-    draw_carry_yellow_line(img)
     if process_front_scan_request(img):
-        send_front_scan_target_hold(img, yellow_detected, pos_flag)
+        send_front_scan_target_hold(img)
         maybe_collect(frame_count)
-        feed_watchdog()
         continue
     result = process_model_only_target(
         img, frame_count, should_run_model(frame_count))
@@ -2119,7 +2011,7 @@ while True:
         world_x, world_y = world_point
         wx_mm = int(world_x * 10)
         wy_mm = int(world_y * 10)
-        send_world_data(send_color_id, wx_mm, wy_mm, w, yellow_detected, pos_flag)
+        send_world_data(send_color_id, wx_mm, wy_mm, w)
         img.draw_rectangle((x1, y1, w, h),
                            color=TARGET_BOX_COLORS[send_color_id - 1], thickness=2)
     else:
@@ -2134,6 +2026,5 @@ while True:
                 restore_host_hybrid_lock()
             else:
                 reset_target_tracking_state()
-        send_world_no_target(yellow_detected, pos_flag)
+        send_world_no_target()
     maybe_collect(frame_count)
-    feed_watchdog()

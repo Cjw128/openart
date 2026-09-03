@@ -1,20 +1,24 @@
+# Local agent workspace
+.agents/
+
+# Python caches and environments
 __pycache__/
 *.py[cod]
 *.mpy
+.venv/
+venv/
+env/
 
+# Generated packages and logs
+*.zip
+*.log
+
+# Models stay local and are never part of the public repository.
+*.tflite
+
+# Operating-system files
 .DS_Store
 Thumbs.db
 desktop.ini
 *.textClipping
 *.bak_*
-
-.venv/
-venv/
-env/
-
-*.log
-
-cmm_cfg.csv
-cmm_load.py
-
-*.tflite
