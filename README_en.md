@@ -33,6 +33,7 @@ This repository tracks a dual-OpenART-Plus smart-car vision system; both current
 
 Scope: `main.py`, `minimain.py`, the root README, and the license. This release archives the last OpenART vision build after the competition; the RT1021 controller project and TFLite model are not included in the final release tree.
 
+- Model weights are private, and every public branch and tag excludes `*.tflite`. The old provincial archive has been rewritten to retain only scripts and configuration; neither the model file nor its checksum remains in reachable Git history.
 - Both entrypoints now boot with the `0x00` free-competition policy and let the controller select target order at runtime through `0x0C`; the build-time `ID2_ABSOLUTE_PRIORITY` switch is removed.
 - Added policy `0x07`: ID3 -> ID4/ID5 -> ID1 -> ID2, and policy `0x08`: ID4/ID5 -> ID3 -> ID1 -> ID2. `AA 55 0C 08 14` is the policy frame and remains distinct from `AA 55 08 08`, which clears completed IDs.
 - Both cameras move from 60 to 50 fps. Final master field settings are white balance `(92,64,91)` and `700 us`; the slave remains at `(101,64,97)` and `880 us`. Both use `/sd/80lite0.5SS.tflite`.
